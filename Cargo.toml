@@ -8,9 +8,13 @@ name = "frequenz_microgrid"
 path = "src/lib.rs"
 
 [dependencies]
-tonic = "0.13"
 prost = "0.13"
 prost-types = "0.13"
+tokio = { version = "1.45" }
+tonic = "0.13"
+tracing = { version = "0.1" }
+tracing-subscriber = { version = "0.3" }
+
 
 [build-dependencies]
 tonic-build = "0.13"
