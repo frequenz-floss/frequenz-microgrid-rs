@@ -8,3 +8,10 @@ name = "frequenz_microgrid"
 path = "src/lib.rs"
 
 [dependencies]
+tonic = "0.13"
+prost = "0.13"
+prost-types = "0.13"
+
+[build-dependencies]
+tonic-build = "0.13"
+prost-build = "0.13"
