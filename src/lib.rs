@@ -3,4 +3,7 @@
 
 //! High-level interface for the Microgrid API.
 
+mod error;
+pub use error::{Error, ErrorKind};
+
 mod proto;
