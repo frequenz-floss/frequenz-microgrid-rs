@@ -10,3 +10,6 @@ mod error;
 pub use error::{Error, ErrorKind};
 
 mod proto;
+
+mod sample;
+pub use sample::Sample;
