@@ -3,6 +3,8 @@
 
 //! Generated protobuf modules for the Frequenz API.
 
+mod graph;
+
 #[allow(clippy::doc_lazy_continuation)]
 pub mod common {
     pub mod v1 {
