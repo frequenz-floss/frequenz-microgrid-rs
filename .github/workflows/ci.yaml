@@ -1,0 +1,20 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [ v0.x.x ]
+  pull_request:
+  merge_group:
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Fetch sources
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Run tests
+        uses: frequenz-floss/gh-action-cargo-test@v1.0.0

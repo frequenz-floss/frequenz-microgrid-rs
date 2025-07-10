@@ -1,0 +1,25 @@
+[package]
+name = "frequenz-microgrid-rs"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "frequenz_microgrid"
+path = "src/lib.rs"
+
+[dependencies]
+chrono = "0.4"
+frequenz-microgrid-component-graph = { git = "https://github.com/frequenz-floss/frequenz-microgrid-component-graph-rs.git", rev = "ab3b998" }
+frequenz-microgrid-formula-engine = { git = "https://github.com/frequenz-floss/frequenz-microgrid-formula-engine-rs.git", rev = "e0567c0" }
+frequenz-resampling = { git = "https://github.com/frequenz-floss/frequenz-resampling-rs.git", rev = "ce84d66" }
+prost = "0.13"
+prost-types = "0.13"
+tokio = { version = "1.45", features = ["rt", "rt-multi-thread"] }
+tonic = "0.13"
+tracing = { version = "0.1" }
+tracing-subscriber = { version = "0.3" }
+
+
+[build-dependencies]
+tonic-build = "0.13"
+prost-build = "0.13"
