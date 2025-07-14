@@ -8,7 +8,7 @@
 use chrono::{DateTime, TimeDelta, Timelike as _, Utc};
 use frequenz_microgrid_formula_engine::FormulaEngine;
 use frequenz_resampling::ResamplingFunction;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::{MissedTickBehavior, interval};
 
@@ -235,6 +235,20 @@ impl LogicalMeterActor {
                 tracing::debug!("Dropping formula: {}", formula_str);
                 drop(formula);
             }
+        }
+        if !formulas_to_drop.is_empty() {
+            let mut components = HashSet::<u64>::new();
+            for (_, formula) in formulas.iter() {
+                components.extend(formula.formula.components());
+            }
+            resamplers.retain(|component_id, _| {
+                if components.contains(component_id) {
+                    true
+                } else {
+                    tracing::debug!("Dropping resampler for component {}", component_id);
+                    false
+                }
+            });
         }
 
         self.next_ts += self.config.resampling_interval;
