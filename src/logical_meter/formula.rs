@@ -11,7 +11,7 @@ use super::logical_meter_actor;
 
 #[derive(Clone)]
 pub struct Formula {
-    formula: frequenz_microgrid_component_graph::Formula,
+    formula: frequenz_microgrid_component_graph::AggregationFormula,
     metric: Metric,
     instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
 }
@@ -24,7 +24,7 @@ impl std::fmt::Display for Formula {
 
 impl Formula {
     pub(super) fn new(
-        formula: frequenz_microgrid_component_graph::Formula,
+        formula: frequenz_microgrid_component_graph::AggregationFormula,
         metric: Metric,
         instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
     ) -> Self {
