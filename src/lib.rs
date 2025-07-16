@@ -15,4 +15,4 @@ mod sample;
 pub use sample::Sample;
 
 mod logical_meter;
-pub use logical_meter::{Formula, LogicalMeterConfig, LogicalMeterHandle, Metric};
+pub use logical_meter::{AggregationFormula, LogicalMeterConfig, LogicalMeterHandle, Metric};

@@ -10,19 +10,19 @@ use crate::{Error, Metric, Sample};
 use super::logical_meter_actor;
 
 #[derive(Clone)]
-pub struct Formula {
+pub struct AggregationFormula {
     formula: frequenz_microgrid_component_graph::AggregationFormula,
     metric: Metric,
     instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
 }
 
-impl std::fmt::Display for Formula {
+impl std::fmt::Display for AggregationFormula {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.formula.fmt(f)
     }
 }
 
-impl Formula {
+impl AggregationFormula {
     pub(super) fn new(
         formula: frequenz_microgrid_component_graph::AggregationFormula,
         metric: Metric,
@@ -54,7 +54,7 @@ impl Formula {
     }
 }
 
-impl std::ops::Add for Formula {
+impl std::ops::Add for AggregationFormula {
     type Output = Result<Self, Error>;
 
     fn add(self, other: Self) -> Self::Output {
@@ -69,7 +69,7 @@ impl std::ops::Add for Formula {
     }
 }
 
-impl std::ops::Sub for Formula {
+impl std::ops::Sub for AggregationFormula {
     type Output = Result<Self, Error>;
 
     fn sub(self, other: Self) -> Self::Output {
@@ -84,10 +84,10 @@ impl std::ops::Sub for Formula {
     }
 }
 
-impl std::ops::Add<Formula> for Result<Formula, Error> {
-    type Output = Result<Formula, Error>;
+impl std::ops::Add<AggregationFormula> for Result<AggregationFormula, Error> {
+    type Output = Result<AggregationFormula, Error>;
 
-    fn add(self, other: Formula) -> Self::Output {
+    fn add(self, other: AggregationFormula) -> Self::Output {
         match self {
             Ok(left) => left + other,
             Err(e) => Err(e),
@@ -95,10 +95,10 @@ impl std::ops::Add<Formula> for Result<Formula, Error> {
     }
 }
 
-impl std::ops::Sub<Formula> for Result<Formula, Error> {
-    type Output = Result<Formula, Error>;
+impl std::ops::Sub<AggregationFormula> for Result<AggregationFormula, Error> {
+    type Output = Result<AggregationFormula, Error>;
 
-    fn sub(self, other: Formula) -> Self::Output {
+    fn sub(self, other: AggregationFormula) -> Self::Output {
         match self {
             Ok(left) => left - other,
             Err(e) => Err(e),
@@ -106,10 +106,10 @@ impl std::ops::Sub<Formula> for Result<Formula, Error> {
     }
 }
 
-impl std::ops::Add<Result<Formula, Error>> for Formula {
-    type Output = Result<Formula, Error>;
+impl std::ops::Add<Result<AggregationFormula, Error>> for AggregationFormula {
+    type Output = Result<AggregationFormula, Error>;
 
-    fn add(self, other: Result<Formula, Error>) -> Self::Output {
+    fn add(self, other: Result<AggregationFormula, Error>) -> Self::Output {
         match other {
             Ok(right) => self + right,
             Err(e) => Err(e),
@@ -117,10 +117,10 @@ impl std::ops::Add<Result<Formula, Error>> for Formula {
     }
 }
 
-impl std::ops::Sub<Result<Formula, Error>> for Formula {
-    type Output = Result<Formula, Error>;
+impl std::ops::Sub<Result<AggregationFormula, Error>> for AggregationFormula {
+    type Output = Result<AggregationFormula, Error>;
 
-    fn sub(self, other: Result<Formula, Error>) -> Self::Output {
+    fn sub(self, other: Result<AggregationFormula, Error>) -> Self::Output {
         match other {
             Ok(right) => self - right,
             Err(e) => Err(e),

@@ -12,4 +12,4 @@ mod metric;
 pub use metric::Metric;
 
 pub use config::LogicalMeterConfig;
-pub use formula::Formula;
+pub use formula::AggregationFormula;
