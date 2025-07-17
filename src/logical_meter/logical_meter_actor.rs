@@ -32,7 +32,7 @@ struct ComponentDataResampler {
     receiver: broadcast::Receiver<ComponentData>,
 }
 
-pub(super) enum Instruction {
+pub(crate) enum Instruction {
     SubscribeFormula {
         formula: String,
         metric: Metric,
