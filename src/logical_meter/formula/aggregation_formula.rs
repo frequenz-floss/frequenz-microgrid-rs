@@ -3,6 +3,7 @@
 
 //! An formula that supports aggregation operations.
 
+use super::Formula;
 use crate::{Error, Metric, Sample, logical_meter::logical_meter_actor};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -31,8 +32,10 @@ impl AggregationFormula {
             instructions_tx,
         }
     }
+}
 
-    pub async fn subscribe(&self) -> Result<broadcast::Receiver<Sample>, Error> {
+impl Formula for AggregationFormula {
+    async fn subscribe(&self) -> Result<broadcast::Receiver<Sample>, Error> {
         let (tx, rx) = oneshot::channel();
 
         self.instructions_tx
