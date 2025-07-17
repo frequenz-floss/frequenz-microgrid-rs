@@ -36,7 +36,7 @@ async fn main() -> Result<(), Error> {
     let mut battery_rx = formula_battery.subscribe().await?;
     let mut consumer_rx = formula_consumer.subscribe().await?;
 
-    loop {
+    for _ in 0..10 {
         let sample = rx.recv().await.unwrap();
         let grid_sample = grid_rx.recv().await.unwrap();
         let battery_sample = battery_rx.recv().await.unwrap();
@@ -48,5 +48,12 @@ async fn main() -> Result<(), Error> {
             consumer_sample.value().unwrap(),
             sample.value().unwrap()
         );
+    }
+
+    let formula_grid_voltage = logical_meter.grid(metric::AcVoltagePhase1N)?;
+    let mut grid_voltage_rx = formula_grid_voltage.subscribe().await?;
+    loop {
+        let sample = grid_voltage_rx.recv().await.unwrap();
+        tracing::info!("grid voltage: {}", sample.value().unwrap());
     }
 }
