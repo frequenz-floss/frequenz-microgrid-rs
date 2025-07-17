@@ -41,4 +41,14 @@ define_metric! {
     {name: AcCurrentPhase1, formula: AggregationFormula},
     {name: AcCurrentPhase2, formula: AggregationFormula},
     {name: AcCurrentPhase3, formula: AggregationFormula},
+
+    {name: AcVoltage,             formula: CoalesceFormula},
+    {name: AcVoltagePhase1N,      formula: CoalesceFormula},
+    {name: AcVoltagePhase2N,      formula: CoalesceFormula},
+    {name: AcVoltagePhase3N,      formula: CoalesceFormula},
+    {name: AcVoltagePhase1Phase2, formula: CoalesceFormula},
+    {name: AcVoltagePhase2Phase3, formula: CoalesceFormula},
+    {name: AcVoltagePhase3Phase1, formula: CoalesceFormula},
+
+    {name: AcFrequency, formula: CoalesceFormula},
 }

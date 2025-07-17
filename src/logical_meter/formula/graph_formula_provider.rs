@@ -11,7 +11,7 @@ use frequenz_microgrid_component_graph::ComponentGraph;
 use std::collections::BTreeSet;
 use tokio::sync::mpsc;
 
-use super::AggregationFormula;
+use super::{AggregationFormula, CoalesceFormula};
 
 macro_rules! graph_formula_provider {
     ($(($fnname:ident $(, $idsparam:ident)?)),+ $(,)?) => {$(
@@ -80,5 +80,13 @@ impl GraphFormulaProvider for AggregationFormula {
         (chp, chp_formula, chp_ids),
         (pv, pv_formula, pv_inverter_ids),
         (ev_charger, ev_charger_formula, ev_charger_ids),
+    );
+}
+
+impl GraphFormulaProvider for CoalesceFormula {
+    impl_graph_formula_provider!(
+        (grid, grid_coalesce_formula),
+        (battery, battery_ac_coalesce_formula, battery_ids),
+        (pv, pv_ac_coalesce_formula, pv_inverter_ids),
     );
 }
