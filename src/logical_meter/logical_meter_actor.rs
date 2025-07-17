@@ -12,10 +12,10 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::{MissedTickBehavior, interval};
 
+use crate::proto::common::v1::metrics::Metric;
 use crate::proto::common::v1::metrics::metric_value_variant::MetricValueVariant;
 use crate::{
-    Error, Metric, MicrogridClientHandle, Sample,
-    proto::common::v1::microgrid::components::ComponentData,
+    Error, MicrogridClientHandle, Sample, proto::common::v1::microgrid::components::ComponentData,
 };
 
 use super::config::LogicalMeterConfig;

@@ -4,7 +4,9 @@
 //! An formula that supports aggregation operations.
 
 use super::Formula;
-use crate::{Error, Metric, Sample, logical_meter::logical_meter_actor};
+use crate::{
+    Error, Sample, logical_meter::logical_meter_actor, proto::common::v1::metrics::Metric,
+};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 #[derive(Clone)]

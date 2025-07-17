@@ -3,7 +3,7 @@
 
 use chrono::TimeDelta;
 use frequenz_microgrid::{
-    Error, LogicalMeterConfig, LogicalMeterHandle, Metric, MicrogridClientHandle,
+    Error, Formula, LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle, metric,
 };
 
 #[tokio::main]
@@ -23,13 +23,13 @@ async fn main() -> Result<(), Error> {
     .await?;
 
     // Create a formula that calculates `grid_power - battery_power`.
-    let formula_grid = logical_meter.grid(Metric::AcActivePower)?;
-    let formula_battery = logical_meter.battery(None, Metric::AcActivePower)?;
-    let formula_consumer = logical_meter.consumer(Metric::AcActivePower)?;
+    let formula_grid = logical_meter.grid(metric::AcActivePower)?;
+    let formula_battery = logical_meter.battery(None, metric::AcActivePower)?;
+    let formula_consumer = logical_meter.consumer(metric::AcActivePower)?;
 
-    let formula = (logical_meter.grid(Metric::AcActivePower)?
-        - logical_meter.battery(None, Metric::AcActivePower)?
-        + logical_meter.consumer(Metric::AcActivePower)?)?;
+    let formula = (logical_meter.grid(metric::AcActivePower)?
+        - logical_meter.battery(None, metric::AcActivePower)?
+        + logical_meter.consumer(metric::AcActivePower)?)?;
 
     let mut rx = formula.subscribe().await?;
     let mut grid_rx = formula_grid.subscribe().await?;
