@@ -95,8 +95,8 @@ impl LogicalMeterActor {
     }
 
     pub async fn run(mut self) {
-        let mut resamplers: HashMap<u64, ComponentDataResampler> = HashMap::new();
-        let mut formulas: HashMap<String, LogicalMeterFormula> = HashMap::new();
+        let mut resamplers: HashMap<(u64, Metric), ComponentDataResampler> = HashMap::new();
+        let mut formulas: HashMap<(String, Metric), LogicalMeterFormula> = HashMap::new();
 
         loop {
             tokio::select! {
@@ -109,7 +109,7 @@ impl LogicalMeterActor {
                     match instruction {
                         Some(Instruction::SubscribeFormula{formula, metric, response_tx}) => {
                             if let Err(err) = self.handle_subscribe_formula(
-                                &formula,
+                                formula,
                                 metric,
                                 response_tx,
                                 &mut formulas,
@@ -145,25 +145,27 @@ impl LogicalMeterActor {
     /// in the formula, if it does not already exist.
     async fn handle_subscribe_formula(
         &mut self,
-        formula: &str,
+        formula: String,
         metric: Metric,
         receiver_tx: oneshot::Sender<broadcast::Receiver<Sample>>,
-        formulas: &mut HashMap<String, LogicalMeterFormula>,
-        resamplers: &mut HashMap<u64, ComponentDataResampler>,
+        formulas: &mut HashMap<(String, Metric), LogicalMeterFormula>,
+        resamplers: &mut HashMap<(u64, Metric), ComponentDataResampler>,
     ) -> Result<(), Error> {
-        if formulas.contains_key(formula) {
+        let formula_key = (formula, metric);
+        if formulas.contains_key(&formula_key) {
             receiver_tx
-                .send(formulas[formula].sender.subscribe())
+                .send(formulas[&formula_key].sender.subscribe())
                 .map_err(|_| Error::internal("Failed to send receiver for formula".to_string()))?;
             return Ok(());
         }
 
-        let formula_engine = FormulaEngine::try_new(formula)
+        let formula_engine = FormulaEngine::try_new(&formula_key.0)
             .map_err(|e| Error::formula_engine_error(format!("Failed to parse formula: {e}")))?;
         let (sender, receiver) = broadcast::channel(8);
 
         for component_id in formula_engine.components() {
-            if resamplers.contains_key(component_id) {
+            let resampler_key = (*component_id, metric);
+            if resamplers.contains_key(&resampler_key) {
                 continue;
             }
             let resampler = ComponentDataResampler {
@@ -180,11 +182,11 @@ impl LogicalMeterActor {
                 ),
                 receiver: self.client.get_component_data_stream(*component_id).await?,
             };
-            resamplers.insert(*component_id, resampler);
+            resamplers.insert(resampler_key, resampler);
         }
 
         formulas.insert(
-            formula.to_string(),
+            formula_key,
             LogicalMeterFormula {
                 formula: formula_engine,
                 sender,
@@ -200,8 +202,8 @@ impl LogicalMeterActor {
     /// Resamples component data and evaluates formulas for the next timestamp.
     fn do_next(
         &mut self,
-        resamplers: &mut HashMap<u64, ComponentDataResampler>,
-        formulas: &mut HashMap<String, LogicalMeterFormula>,
+        resamplers: &mut HashMap<(u64, Metric), ComponentDataResampler>,
+        formulas: &mut HashMap<(String, Metric), LogicalMeterFormula>,
     ) -> Result<(), Error> {
         let mut comp_data = HashMap::new();
         for (_, resampler) in resamplers.iter_mut() {
@@ -219,33 +221,45 @@ impl LogicalMeterActor {
         }
 
         let mut formulas_to_drop = vec![];
-        for (formula_str, formula) in formulas.iter_mut() {
+        for (formula_key, formula) in formulas.iter_mut() {
             let result = formula.formula.calculate(&comp_data).map_err(|e| {
                 Error::formula_engine_error(format!("Failed to evaluate formula: {e}"))
             })?;
 
             if let Err(e) = formula.sender.send(Sample::new(self.next_ts, result)) {
-                tracing::debug!("No remaining subscribers for formula: {formula_str}. Err: {e}");
-                formulas_to_drop.push(formula_str.to_string());
+                tracing::debug!(
+                    "No remaining subscribers for formula: {}:({}). Err: {e}",
+                    formula_key.1.as_str_name(),
+                    formula_key.0
+                );
+                formulas_to_drop.push(formula_key.clone());
             }
         }
 
-        for formula_str in &formulas_to_drop {
-            if let Some(formula) = formulas.remove(formula_str) {
-                tracing::debug!("Dropping formula: {}", formula_str);
+        for formula_key in &formulas_to_drop {
+            if let Some(formula) = formulas.remove(formula_key) {
+                tracing::debug!(
+                    "Dropping formula: {}:({})",
+                    formula_key.1.as_str_name(),
+                    formula_key.0
+                );
                 drop(formula);
             }
         }
         if !formulas_to_drop.is_empty() {
-            let mut components = HashSet::<u64>::new();
-            for (_, formula) in formulas.iter() {
-                components.extend(formula.formula.components());
+            let mut components = HashSet::<(u64, Metric)>::new();
+            for ((_, metric), formula) in formulas.iter() {
+                components.extend(formula.formula.components().iter().map(|&id| (id, *metric)));
             }
             resamplers.retain(|component_id, _| {
                 if components.contains(component_id) {
                     true
                 } else {
-                    tracing::debug!("Dropping resampler for component {}", component_id);
+                    tracing::debug!(
+                        "Dropping resampler for component {}:{}",
+                        component_id.0,
+                        component_id.1.as_str_name()
+                    );
                     false
                 }
             });
@@ -268,6 +282,11 @@ impl LogicalMeterActor {
             .iter()
             .find(|s| s.metric == metric as i32)
         else {
+            tracing::warn!(
+                "No data for metric {:?} in component {}",
+                metric,
+                resampler.component_id
+            );
             return;
         };
         let timestamp = if let Some(timestamp) = dd.sampled_at {
