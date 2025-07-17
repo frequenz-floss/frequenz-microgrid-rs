@@ -4,6 +4,7 @@
 //! Formula module for the logical meter.
 
 mod aggregation_formula;
+pub(crate) mod graph_formula_provider;
 pub use aggregation_formula::AggregationFormula;
 
 use crate::{Error, Sample};
