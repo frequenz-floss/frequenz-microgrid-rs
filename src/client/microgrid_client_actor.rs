@@ -26,7 +26,8 @@ use crate::{
 
 enum StreamStatus {
     Failed(u64),
-    Succeeded(u64),
+    Connected(u64),
+    Ended(u64),
 }
 
 /// This actor owns the connection to the microgrid API and processes instructions
@@ -82,7 +83,10 @@ impl MicrogridClientActor {
                                  RetryTracker::new
                             ).mark_new_failure();
                         }
-                        Some(StreamStatus::Succeeded(component_id)) => {
+                        Some(StreamStatus::Connected(component_id)) => {
+                            components_to_retry.remove(&component_id);
+                        }
+                        Some(StreamStatus::Ended(component_id)) => {
                             components_to_retry.remove(&component_id);
                         }
                         None => {
@@ -241,7 +245,7 @@ async fn start_component_data_stream(
     };
 
     stream_stopped_tx
-        .send(StreamStatus::Succeeded(component_id))
+        .send(StreamStatus::Connected(component_id))
         .await
         .map_err(|e| {
             Error::connection_failure(format!(
@@ -263,6 +267,23 @@ async fn run_component_data_stream(
     stream_stopped_tx: mpsc::Sender<StreamStatus>,
 ) {
     loop {
+        if tx.receiver_count() == 0 {
+            tracing::debug!(
+                "Dropping ComponentData stream for component_id:{:?}",
+                component_id
+            );
+            stream_stopped_tx
+                .send(StreamStatus::Ended(component_id))
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::error!(
+                        "Failed to send stream ended message for {:?}: {:?}",
+                        component_id,
+                        e
+                    );
+                });
+            return;
+        }
         let message = match stream.message().await {
             Ok(m) => m,
             Err(e) => {
@@ -289,16 +310,8 @@ async fn run_component_data_stream(
             }
         };
 
-        match tx.send(data) {
-            Ok(_) => {}
-            Err(e) => {
-                tracing::error!(
-                    "Unable to send component data for {:?}: {}.  Closing stream.",
-                    component_id,
-                    e
-                );
-                break;
-            }
+        if tx.send(data).is_err() {
+            continue;
         };
     }
 

@@ -8,7 +8,7 @@
 use chrono::{DateTime, TimeDelta, Timelike as _, Utc};
 use frequenz_microgrid_formula_engine::FormulaEngine;
 use frequenz_resampling::ResamplingFunction;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::{MissedTickBehavior, interval};
 
@@ -218,14 +218,37 @@ impl LogicalMeterActor {
             comp_data.insert(resampler.component_id, resampled[0].clone().value());
         }
 
-        for (_, formula) in formulas.iter_mut() {
+        let mut formulas_to_drop = vec![];
+        for (formula_str, formula) in formulas.iter_mut() {
             let result = formula.formula.calculate(&comp_data).map_err(|e| {
                 Error::formula_engine_error(format!("Failed to evaluate formula: {e}"))
             })?;
-            formula
-                .sender
-                .send(Sample::new(self.next_ts, result))
-                .map_err(|_| Error::internal("Failed to send sample for formula".to_string()))?;
+
+            if let Err(e) = formula.sender.send(Sample::new(self.next_ts, result)) {
+                tracing::debug!("No remaining subscribers for formula: {formula_str}. Err: {e}");
+                formulas_to_drop.push(formula_str.to_string());
+            }
+        }
+
+        for formula_str in &formulas_to_drop {
+            if let Some(formula) = formulas.remove(formula_str) {
+                tracing::debug!("Dropping formula: {}", formula_str);
+                drop(formula);
+            }
+        }
+        if !formulas_to_drop.is_empty() {
+            let mut components = HashSet::<u64>::new();
+            for (_, formula) in formulas.iter() {
+                components.extend(formula.formula.components());
+            }
+            resamplers.retain(|component_id, _| {
+                if components.contains(component_id) {
+                    true
+                } else {
+                    tracing::debug!("Dropping resampler for component {}", component_id);
+                    false
+                }
+            });
         }
 
         self.next_ts += self.config.resampling_interval;
