@@ -213,7 +213,7 @@ async fn handle_retry_timer(
     Ok(())
 }
 
-/// Creates anew data stream for the given component ID and starts a task to
+/// Creates a new data stream for the given component ID and starts a task to
 /// fetch data from it in a loop.
 async fn start_component_data_stream(
     client: &mut MicrogridClient<Channel>,
