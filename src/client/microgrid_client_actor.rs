@@ -59,7 +59,7 @@ impl MicrogridClientActor {
 
         let mut component_streams: HashMap<u64, broadcast::Sender<ComponentData>> = HashMap::new();
 
-        let (stream_stopped_tx, mut stream_stopped_rx) = mpsc::channel(50);
+        let (stream_status_tx, mut stream_status_rx) = mpsc::channel(50);
         let mut retry_timer = tokio::time::interval(std::time::Duration::from_secs(1));
         retry_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut components_to_retry = HashMap::new();
@@ -71,12 +71,12 @@ impl MicrogridClientActor {
                         &mut client,
                         &mut component_streams,
                         instruction,
-                        stream_stopped_tx.clone(),
+                        stream_status_tx.clone(),
                     ).await {
                         tracing::error!("MicrogridClientActor: Error handling instruction: {e}");
                     }
                 }
-                stream_status = stream_stopped_rx.recv() => {
+                stream_status = stream_status_rx.recv() => {
                     match stream_status {
                         Some(StreamStatus::Failed(component_id)) => {
                             components_to_retry.entry(component_id).or_insert_with(
@@ -100,7 +100,7 @@ impl MicrogridClientActor {
                         &mut client,
                         &mut component_streams,
                         &mut components_to_retry,
-                        stream_stopped_tx.clone(),
+                        stream_status_tx.clone(),
                         now,
                     ).await {
                         tracing::error!("MicrogridClientActor: Error handling retry timer: {e}");
@@ -116,7 +116,7 @@ async fn handle_instruction(
     client: &mut MicrogridClient<Channel>,
     component_streams: &mut HashMap<u64, broadcast::Sender<ComponentData>>,
     instruction: Option<Instruction>,
-    stream_stopped_tx: mpsc::Sender<StreamStatus>,
+    stream_status_tx: mpsc::Sender<StreamStatus>,
 ) -> Result<(), Error> {
     match instruction {
         Some(Instruction::GetComponentDataStream {
@@ -137,7 +137,7 @@ async fn handle_instruction(
             // API service into the channel.
             let (tx, rx) = broadcast::channel::<ComponentData>(100);
             component_streams.insert(component_id, tx.clone());
-            start_component_data_stream(client, component_id, tx, stream_stopped_tx).await?;
+            start_component_data_stream(client, component_id, tx, stream_status_tx).await?;
 
             response_tx.send(rx).map_err(|_| {
                 tracing::error!("failed to send response");
@@ -189,7 +189,7 @@ async fn handle_retry_timer(
     client: &mut MicrogridClient<Channel>,
     component_streams: &mut HashMap<u64, broadcast::Sender<ComponentData>>,
     components_to_retry: &mut HashMap<u64, RetryTracker>,
-    stream_stopped_tx: mpsc::Sender<StreamStatus>,
+    stream_status_tx: mpsc::Sender<StreamStatus>,
     now: tokio::time::Instant,
 ) -> Result<(), Error> {
     for item in components_to_retry.iter_mut() {
@@ -200,7 +200,7 @@ async fn handle_retry_timer(
             item.1.mark_new_retry();
             let (component_id, _) = item;
             if let Some(tx) = component_streams.get(component_id).cloned() {
-                start_component_data_stream(client, *component_id, tx, stream_stopped_tx.clone())
+                start_component_data_stream(client, *component_id, tx, stream_status_tx.clone())
                     .await?;
             } else {
                 tracing::error!("Component stream not found for retry: {component_id}");
@@ -219,7 +219,7 @@ async fn start_component_data_stream(
     client: &mut MicrogridClient<Channel>,
     component_id: u64,
     tx: broadcast::Sender<ComponentData>,
-    stream_stopped_tx: mpsc::Sender<StreamStatus>,
+    stream_status_tx: mpsc::Sender<StreamStatus>,
 ) -> Result<(), Error> {
     let stream = match client
         .receive_component_data_stream(ReceiveComponentDataStreamRequest {
@@ -230,7 +230,7 @@ async fn start_component_data_stream(
     {
         Ok(s) => s.into_inner(),
         Err(e) => {
-            stream_stopped_tx
+            stream_status_tx
                 .send(StreamStatus::Failed(component_id))
                 .await
                 .map_err(|e| {
@@ -244,7 +244,7 @@ async fn start_component_data_stream(
         }
     };
 
-    stream_stopped_tx
+    stream_status_tx
         .send(StreamStatus::Connected(component_id))
         .await
         .map_err(|e| {
@@ -255,7 +255,7 @@ async fn start_component_data_stream(
 
     // create a task to fetch data from the stream in a loop and put into a channel.
     tokio::spawn(
-        run_component_data_stream(stream, component_id, tx, stream_stopped_tx).in_current_span(),
+        run_component_data_stream(stream, component_id, tx, stream_status_tx).in_current_span(),
     );
     Ok(())
 }
@@ -264,7 +264,7 @@ async fn run_component_data_stream(
     mut stream: tonic::Streaming<ReceiveComponentDataStreamResponse>,
     component_id: u64,
     tx: broadcast::Sender<ComponentData>,
-    stream_stopped_tx: mpsc::Sender<StreamStatus>,
+    stream_status_tx: mpsc::Sender<StreamStatus>,
 ) {
     loop {
         if tx.receiver_count() == 0 {
@@ -272,7 +272,7 @@ async fn run_component_data_stream(
                 "Dropping ComponentData stream for component_id:{:?}",
                 component_id
             );
-            stream_stopped_tx
+            stream_status_tx
                 .send(StreamStatus::Ended(component_id))
                 .await
                 .unwrap_or_else(|e| {
@@ -315,7 +315,7 @@ async fn run_component_data_stream(
         };
     }
 
-    if let Err(e) = stream_stopped_tx
+    if let Err(e) = stream_status_tx
         .send(StreamStatus::Failed(component_id))
         .await
     {
