@@ -205,7 +205,8 @@ impl LogicalMeterActor {
         resamplers: &mut HashMap<(u64, Metric), ComponentDataResampler>,
         formulas: &mut HashMap<(String, Metric), LogicalMeterFormula>,
     ) -> Result<(), Error> {
-        let mut comp_data = HashMap::new();
+        let mut resampled_metrics: HashMap<Metric, HashMap<u64, Option<f32>>> = HashMap::new();
+
         for (_, resampler) in resamplers.iter_mut() {
             while let Ok(data) = resampler.receiver.try_recv() {
                 self.push_to_resampler(resampler, data, resampler.metric);
@@ -217,14 +218,20 @@ impl LogicalMeterActor {
                     resampled.len()
                 )));
             }
-            comp_data.insert(resampler.component_id, resampled[0].clone().value());
+            resampled_metrics
+                .entry(resampler.metric)
+                .or_default()
+                .insert(resampler.component_id, resampled[0].clone().value());
         }
 
         let mut formulas_to_drop = vec![];
         for (formula_key, formula) in formulas.iter_mut() {
-            let result = formula.formula.calculate(&comp_data).map_err(|e| {
-                Error::formula_engine_error(format!("Failed to evaluate formula: {e}"))
-            })?;
+            let result = formula
+                .formula
+                .calculate(resampled_metrics.entry(formula_key.1).or_default())
+                .map_err(|e| {
+                    Error::formula_engine_error(format!("Failed to evaluate formula: {e}"))
+                })?;
 
             if let Err(e) = formula.sender.send(Sample::new(self.next_ts, result)) {
                 tracing::debug!(
