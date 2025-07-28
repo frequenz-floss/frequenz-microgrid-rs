@@ -131,8 +131,8 @@ impl LogicalMeterHandle {
         )
     }
 
-    /// Returns a receiver that streams samples for the given `metric` for all
-    /// the consumers in the microgrid.
+    /// Returns a receiver that streams samples for the given `metric` for the
+    /// logical `consumer` in the microgrid.
     pub fn consumer<M: super::metric::metric_trait::AcMetric>(
         &mut self,
         metric: M,
@@ -140,8 +140,8 @@ impl LogicalMeterHandle {
         M::FormulaType::consumer(&self.graph, metric, self.instructions_tx.clone())
     }
 
-    /// Returns a receiver that streams samples for the given `metric` for all
-    /// producers in the microgrid.
+    /// Returns a receiver that streams samples for the given `metric` for the
+    /// logical `producer` in the microgrid.
     pub fn producer<M: super::metric::metric_trait::AcMetric>(
         &mut self,
         metric: M,
