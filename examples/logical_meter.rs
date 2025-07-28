@@ -5,12 +5,17 @@ use chrono::TimeDelta;
 use frequenz_microgrid::{
     Error, Formula, LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle, metric,
 };
+use tracing_subscriber::{
+    EnvFilter,
+    fmt::{self},
+    prelude::*,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    tracing_subscriber::fmt::fmt()
-        .with_file(true)
-        .with_line_number(true)
+    tracing_subscriber::registry()
+        .with(EnvFilter::new("info,frequenz_microgrid=debug"))
+        .with(fmt::layer().with_file(true).with_line_number(true))
         .init();
 
     let client = MicrogridClientHandle::new("http://[::1]:8800");
@@ -36,7 +41,7 @@ async fn main() -> Result<(), Error> {
     let mut battery_rx = formula_battery.subscribe().await?;
     let mut consumer_rx = formula_consumer.subscribe().await?;
 
-    for _ in 0..10 {
+    for _ in 0..3 {
         let sample = rx.recv().await.unwrap();
         let grid_sample = grid_rx.recv().await.unwrap();
         let battery_sample = battery_rx.recv().await.unwrap();
@@ -49,9 +54,22 @@ async fn main() -> Result<(), Error> {
             sample.value().unwrap()
         );
     }
+    let formula_grid_voltage = logical_meter
+        .battery(None, metric::AcVoltagePhase1N)?
+        .coalesce(logical_meter.pv(None, metric::AcVoltagePhase1N)?)?;
 
-    let formula_grid_voltage = logical_meter.grid(metric::AcVoltagePhase1N)?;
+    tracing::info!("formula_grid_voltage: {}", formula_grid_voltage);
     let mut grid_voltage_rx = formula_grid_voltage.subscribe().await?;
+    for _ in 0..3 {
+        let sample = grid_voltage_rx.recv().await.unwrap();
+        tracing::info!("grid voltage: {}", sample.value().unwrap());
+    }
+
+    drop(rx);
+    drop(grid_rx);
+    drop(battery_rx);
+    drop(consumer_rx);
+
     loop {
         let sample = grid_voltage_rx.recv().await.unwrap();
         tracing::info!("grid voltage: {}", sample.value().unwrap());
