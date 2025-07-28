@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use super::{AggregationFormula, CoalesceFormula};
 
 macro_rules! graph_formula_provider {
-    ($(($fnname:ident $(, $idsparam:ident)?)),+ $(,)?) => {$(
+    ($(($fnname:ident $(, ids:$idsparam:ident)?)),+ $(,)?) => {$(
 
         fn $fnname<M: crate::metric::metric_trait::AcMetric>(
             _graph: &ComponentGraph<Component, ComponentConnection>,
@@ -45,15 +45,19 @@ pub trait GraphFormulaProvider: Sized {
         (grid),
         (consumer),
         (producer),
-        (battery, _battery_ids),
-        (chp, _chp_ids),
-        (pv, _pv_inverter_ids),
-        (ev_charger, _ev_charger_ids),
+        (battery, ids: _battery_ids),
+        (chp, ids: _chp_ids),
+        (pv, ids: _pv_inverter_ids),
+        (ev_charger, ids: _ev_charger_ids),
     );
 }
 
 macro_rules! impl_graph_formula_provider {
-    ($(($fnname:ident, $graphfnname:ident$(, $idsparam:ident)?)),+ $(,)?) => {$(
+    ($((
+        $fnname:ident,
+        $graphfnname:ident
+        $(, ids:$idsparam:ident)?
+    )),+ $(,)?) => {$(
 
         fn $fnname<M: crate::metric::metric_trait::AcMetric>(
             graph: &ComponentGraph<Component, ComponentConnection>,
@@ -76,17 +80,17 @@ impl GraphFormulaProvider for AggregationFormula {
         (grid, grid_formula),
         (consumer, consumer_formula),
         (producer, producer_formula),
-        (battery, battery_formula, battery_ids),
-        (chp, chp_formula, chp_ids),
-        (pv, pv_formula, pv_inverter_ids),
-        (ev_charger, ev_charger_formula, ev_charger_ids),
+        (battery, battery_formula, ids: battery_ids),
+        (chp, chp_formula, ids: chp_ids),
+        (pv, pv_formula, ids: pv_inverter_ids),
+        (ev_charger, ev_charger_formula, ids: ev_charger_ids),
     );
 }
 
 impl GraphFormulaProvider for CoalesceFormula {
     impl_graph_formula_provider!(
         (grid, grid_coalesce_formula),
-        (battery, battery_ac_coalesce_formula, battery_ids),
-        (pv, pv_ac_coalesce_formula, pv_inverter_ids),
+        (battery, battery_ac_coalesce_formula, ids: battery_ids),
+        (pv, pv_ac_coalesce_formula, ids: pv_inverter_ids),
     );
 }
