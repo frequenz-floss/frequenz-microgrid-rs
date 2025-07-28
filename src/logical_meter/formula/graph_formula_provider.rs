@@ -14,13 +14,14 @@ use tokio::sync::mpsc;
 use super::{AggregationFormula, CoalesceFormula};
 
 macro_rules! graph_formula_provider {
-    ($(($fnname:ident $(, ids:$idsparam:ident)?)),+ $(,)?) => {$(
+    ($(($fnname:ident $(, ids:$idsparam:ident)? $(, id:$idparam:ident)?)),+ $(,)?) => {$(
 
         fn $fnname<M: crate::metric::metric_trait::AcMetric>(
             _graph: &ComponentGraph<Component, ComponentConnection>,
             _metric: M,
             _instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
             $($idsparam: Option<BTreeSet<u64>>,)?
+            $($idparam: u64,)?
         ) -> Result<Self, Error> {
             return Err(Error::component_graph_error(
                 format!(
@@ -49,6 +50,7 @@ pub trait GraphFormulaProvider: Sized {
         (chp, ids: _chp_ids),
         (pv, ids: _pv_inverter_ids),
         (ev_charger, ids: _ev_charger_ids),
+        (component, id: _component_id),
     );
 }
 
@@ -57,6 +59,7 @@ macro_rules! impl_graph_formula_provider {
         $fnname:ident,
         $graphfnname:ident
         $(, ids:$idsparam:ident)?
+        $(, id:$idparam:ident)?
     )),+ $(,)?) => {$(
 
         fn $fnname<M: crate::metric::metric_trait::AcMetric>(
@@ -64,14 +67,16 @@ macro_rules! impl_graph_formula_provider {
             _metric: M,
             instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
             $($idsparam: Option<BTreeSet<u64>>,)?
+            $($idparam: u64,)?
         ) -> Result<Self, Error> {
-            let formula = graph.$graphfnname($($idsparam)?).map_err(|e| {
+            let formula = graph.$graphfnname($($idsparam)?$($idparam)?).map_err(|e| {
                 Error::component_graph_error(
                     format!("Could not get {} formula: {e}", stringify!($fnname))
                 )
             })?;
             Ok(Self::new(formula, M::METRIC, instructions_tx))
         }
+
     )+};
 }
 
@@ -84,6 +89,7 @@ impl GraphFormulaProvider for AggregationFormula {
         (chp, chp_formula, ids: chp_ids),
         (pv, pv_formula, ids: pv_inverter_ids),
         (ev_charger, ev_charger_formula, ids: ev_charger_ids),
+        (component, component_formula, id: component_id),
     );
 }
 
@@ -92,5 +98,6 @@ impl GraphFormulaProvider for CoalesceFormula {
         (grid, grid_coalesce_formula),
         (battery, battery_ac_coalesce_formula, ids: battery_ids),
         (pv, pv_ac_coalesce_formula, ids: pv_inverter_ids),
+        (component, component_ac_coalesce_formula, id: component_id),
     );
 }

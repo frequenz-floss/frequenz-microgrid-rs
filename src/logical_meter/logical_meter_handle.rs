@@ -2,7 +2,6 @@
 // Copyright © 2025 Frequenz Energy-as-a-Service GmbH
 
 use crate::logical_meter::formula::graph_formula_provider::GraphFormulaProvider;
-use crate::proto::common::v1::metrics::Metric;
 use crate::{
     client::MicrogridClientHandle,
     error::Error,
@@ -12,7 +11,7 @@ use frequenz_microgrid_component_graph::{self, ComponentGraph};
 use std::collections::BTreeSet;
 use tokio::sync::mpsc;
 
-use super::{AggregationFormula, LogicalMeterConfig, logical_meter_actor::LogicalMeterActor};
+use super::{LogicalMeterConfig, logical_meter_actor::LogicalMeterActor};
 
 /// This provides an interface  stream high-level metrics from a microgrid.
 #[derive(Clone)]
@@ -150,18 +149,18 @@ impl LogicalMeterHandle {
         M::FormulaType::producer(&self.graph, metric, self.instructions_tx.clone())
     }
 
-    pub fn coalesce(
+    /// Returns a receiver that streams samples for the given `metric` for the
+    /// given component ID.
+    pub fn component<M: super::metric::metric_trait::AcMetric>(
         &mut self,
-        component_ids: BTreeSet<u64>,
-        metric: Metric,
-    ) -> Result<AggregationFormula, Error> {
-        let formula = self.graph.coalesce(component_ids).map_err(|e| {
-            Error::component_graph_error(format!("Could not derive coalesce formula: {e}"))
-        })?;
-        Ok(AggregationFormula::new(
-            formula,
+        component_id: u64,
+        metric: M,
+    ) -> Result<M::FormulaType, Error> {
+        M::FormulaType::component(
+            &self.graph,
             metric,
             self.instructions_tx.clone(),
-        ))
+            component_id,
+        )
     }
 }
