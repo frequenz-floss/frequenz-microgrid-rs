@@ -4,6 +4,7 @@
 //! A composable formula type, that can be subscribed to.
 
 use crate::Error;
+use crate::logical_meter::formula::FormulaParams;
 use crate::logical_meter::logical_meter_actor;
 use crate::proto::common::v1::microgrid::components::Component;
 use crate::proto::common::v1::microgrid::components::ComponentConnection;
@@ -74,7 +75,7 @@ macro_rules! impl_graph_formula_provider {
                     format!("Could not get {} formula: {e}", stringify!($fnname))
                 )
             })?;
-            Ok(Self::new(formula, M::METRIC, instructions_tx))
+            Ok(FormulaParams::new(formula, M::METRIC, instructions_tx).into())
         }
 
     )+};

@@ -3,7 +3,7 @@
 
 //! An formula that supports aggregation operations.
 
-use super::{FormulaSubscriber, GraphFormulaProvider};
+use super::{FormulaParams, FormulaSubscriber, GraphFormulaProvider};
 use crate::{
     Error, Sample, logical_meter::logical_meter_actor, proto::common::v1::metrics::Metric,
 };
@@ -19,20 +19,6 @@ pub struct AggregationFormula {
 impl std::fmt::Display for AggregationFormula {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.formula.fmt(f)
-    }
-}
-
-impl AggregationFormula {
-    pub(crate) fn new(
-        formula: frequenz_microgrid_component_graph::AggregationFormula,
-        metric: Metric,
-        instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
-    ) -> Self {
-        Self {
-            formula,
-            metric,
-            instructions_tx,
-        }
     }
 }
 
@@ -91,7 +77,7 @@ impl std::ops::Add for AggregationFormula {
             )));
         }
         let new_formula = self.formula + other.formula;
-        Ok(Self::new(new_formula, self.metric, self.instructions_tx))
+        Ok(FormulaParams::new(new_formula, self.metric, self.instructions_tx).into())
     }
 }
 
@@ -106,7 +92,7 @@ impl std::ops::Sub for AggregationFormula {
             )));
         }
         let new_formula = self.formula - other.formula;
-        Ok(Self::new(new_formula, self.metric, self.instructions_tx))
+        Ok(FormulaParams::new(new_formula, self.metric, self.instructions_tx).into())
     }
 }
 

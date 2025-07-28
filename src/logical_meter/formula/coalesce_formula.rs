@@ -3,7 +3,7 @@
 
 //! An coalesce formula.
 
-use super::{FormulaSubscriber, GraphFormulaProvider};
+use super::{FormulaParams, FormulaSubscriber, GraphFormulaProvider};
 use crate::{
     Error, Sample, logical_meter::logical_meter_actor, proto::common::v1::metrics::Metric,
 };
@@ -19,20 +19,6 @@ pub struct CoalesceFormula {
 impl std::fmt::Display for CoalesceFormula {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.formula.fmt(f)
-    }
-}
-
-impl CoalesceFormula {
-    pub(crate) fn new(
-        formula: frequenz_microgrid_component_graph::CoalesceFormula,
-        metric: Metric,
-        instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
-    ) -> Self {
-        Self {
-            formula,
-            metric,
-            instructions_tx,
-        }
     }
 }
 
