@@ -59,3 +59,23 @@ impl FormulaSubscriber for CoalesceFormula {
         Ok(receiver)
     }
 }
+
+impl From<FormulaParams<CoalesceFormula>> for CoalesceFormula {
+    fn from(params: FormulaParams<CoalesceFormula>) -> Self {
+        Self {
+            formula: params.formula,
+            metric: params.metric,
+            instructions_tx: params.instructions_tx,
+        }
+    }
+}
+
+impl From<CoalesceFormula> for FormulaParams<CoalesceFormula> {
+    fn from(formula: CoalesceFormula) -> Self {
+        FormulaParams {
+            formula: formula.formula,
+            metric: formula.metric,
+            instructions_tx: formula.instructions_tx,
+        }
+    }
+}

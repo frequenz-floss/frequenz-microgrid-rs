@@ -60,6 +60,26 @@ impl FormulaSubscriber for AggregationFormula {
     }
 }
 
+impl From<FormulaParams<AggregationFormula>> for AggregationFormula {
+    fn from(params: FormulaParams<AggregationFormula>) -> Self {
+        Self {
+            formula: params.formula,
+            metric: params.metric,
+            instructions_tx: params.instructions_tx,
+        }
+    }
+}
+
+impl From<AggregationFormula> for FormulaParams<AggregationFormula> {
+    fn from(formula: AggregationFormula) -> Self {
+        FormulaParams {
+            formula: formula.formula,
+            metric: formula.metric,
+            instructions_tx: formula.instructions_tx,
+        }
+    }
+}
+
 impl std::ops::Add for AggregationFormula {
     type Output = Result<Self, Error>;
 
