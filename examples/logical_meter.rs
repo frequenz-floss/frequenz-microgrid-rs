@@ -3,7 +3,7 @@
 
 use chrono::TimeDelta;
 use frequenz_microgrid::{
-    Error, LogicalMeterConfig, LogicalMeterHandle, Metric, MicrogridClientHandle,
+    Error, Formula, LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle, metric,
 };
 
 #[tokio::main]
@@ -23,20 +23,20 @@ async fn main() -> Result<(), Error> {
     .await?;
 
     // Create a formula that calculates `grid_power - battery_power`.
-    let formula_grid = logical_meter.grid(Metric::AcActivePower)?;
-    let formula_battery = logical_meter.battery(None, Metric::AcActivePower)?;
-    let formula_consumer = logical_meter.consumer(Metric::AcActivePower)?;
+    let formula_grid = logical_meter.grid(metric::AcActivePower)?;
+    let formula_battery = logical_meter.battery(None, metric::AcActivePower)?;
+    let formula_consumer = logical_meter.consumer(metric::AcActivePower)?;
 
-    let formula = (logical_meter.grid(Metric::AcActivePower)?
-        - logical_meter.battery(None, Metric::AcActivePower)?
-        + logical_meter.consumer(Metric::AcActivePower)?)?;
+    let formula = (logical_meter.grid(metric::AcActivePower)?
+        - logical_meter.battery(None, metric::AcActivePower)?
+        + logical_meter.consumer(metric::AcActivePower)?)?;
 
     let mut rx = formula.subscribe().await?;
     let mut grid_rx = formula_grid.subscribe().await?;
     let mut battery_rx = formula_battery.subscribe().await?;
     let mut consumer_rx = formula_consumer.subscribe().await?;
 
-    loop {
+    for _ in 0..10 {
         let sample = rx.recv().await.unwrap();
         let grid_sample = grid_rx.recv().await.unwrap();
         let battery_sample = battery_rx.recv().await.unwrap();
@@ -48,5 +48,12 @@ async fn main() -> Result<(), Error> {
             consumer_sample.value().unwrap(),
             sample.value().unwrap()
         );
+    }
+
+    let formula_grid_voltage = logical_meter.grid(metric::AcVoltagePhase1N)?;
+    let mut grid_voltage_rx = formula_grid_voltage.subscribe().await?;
+    loop {
+        let sample = grid_voltage_rx.recv().await.unwrap();
+        tracing::info!("grid voltage: {}", sample.value().unwrap());
     }
 }

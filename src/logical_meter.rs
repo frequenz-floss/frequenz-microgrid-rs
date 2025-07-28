@@ -8,8 +8,7 @@ mod formula;
 mod logical_meter_actor;
 mod logical_meter_handle;
 pub use logical_meter_handle::LogicalMeterHandle;
-mod metric;
-pub use metric::Metric;
+pub mod metric;
 
 pub use config::LogicalMeterConfig;
-pub use formula::Formula;
+pub use formula::{AggregationFormula, Formula};

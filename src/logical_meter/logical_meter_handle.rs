@@ -1,6 +1,8 @@
 // License: MIT
 // Copyright © 2025 Frequenz Energy-as-a-Service GmbH
 
+use crate::logical_meter::formula::graph_formula_provider::GraphFormulaProvider;
+use crate::proto::common::v1::metrics::Metric;
 use crate::{
     client::MicrogridClientHandle,
     error::Error,
@@ -10,7 +12,7 @@ use frequenz_microgrid_component_graph::{self, ComponentGraph};
 use std::collections::BTreeSet;
 use tokio::sync::mpsc;
 
-use super::{Formula, LogicalMeterConfig, Metric, logical_meter_actor::LogicalMeterActor};
+use super::{AggregationFormula, LogicalMeterConfig, logical_meter_actor::LogicalMeterActor};
 
 /// This provides an interface  stream high-level metrics from a microgrid.
 #[derive(Clone)]
@@ -54,77 +56,62 @@ impl LogicalMeterHandle {
 
     /// Returns a receiver that streams samples for the given `metric` at the grid
     /// connection point.
-    pub fn grid(&mut self, metric: Metric) -> Result<Formula, Error> {
-        if !metric.power() && !metric.current() {
-            return Err(Error::invalid_metric(format!(
-                "The grid formula only supports power or current metrics, but got: {metric:?}"
-            )));
-        }
-        let formula = self.graph.grid_formula().map_err(|e| {
-            Error::component_graph_error(format!("Could not derive grid formula: {e}"))
-        })?;
-
-        Ok(Formula::new(formula, metric, self.instructions_tx.clone()))
+    pub fn grid<M: super::metric::metric_trait::AcMetric>(
+        &mut self,
+        metric: M,
+    ) -> Result<M::FormulaType, Error> {
+        M::FormulaType::grid(&self.graph, metric, self.instructions_tx.clone())
     }
 
     /// Returns a receiver that streams samples for the given `metric` for the
     /// given battery IDs.
     ///
     /// When `component_ids` is `None`, all batteries in the microgrid are used.
-    pub fn battery(
+    pub fn battery<M: super::metric::metric_trait::AcMetric>(
         &mut self,
         component_ids: Option<BTreeSet<u64>>,
-        metric: Metric,
-    ) -> Result<Formula, Error> {
-        if !metric.power() && !metric.current() {
-            return Err(Error::invalid_metric(format!(
-                "The battery formula only supports power or current metrics, but got: {metric:?}"
-            )));
-        }
-        let formula = self.graph.battery_formula(component_ids).map_err(|e| {
-            Error::component_graph_error(format!("Could not derive battery formula: {e}"))
-        })?;
-        Ok(Formula::new(formula, metric, self.instructions_tx.clone()))
+        metric: M,
+    ) -> Result<M::FormulaType, Error> {
+        M::FormulaType::battery(
+            &self.graph,
+            metric,
+            self.instructions_tx.clone(),
+            component_ids,
+        )
     }
 
     /// Returns a receiver that streams samples for the given `metric` for the
     /// given CHP IDs.
     ///
     /// When `component_ids` is `None`, all CHPs in the microgrid are used.
-    pub fn chp(
+    pub fn chp<M: super::metric::metric_trait::AcMetric>(
         &mut self,
         component_ids: Option<BTreeSet<u64>>,
-        metric: Metric,
-    ) -> Result<Formula, Error> {
-        if !metric.power() && !metric.current() {
-            return Err(Error::invalid_metric(format!(
-                "The CHP formula only supports power or current metrics, but got: {metric:?}"
-            )));
-        }
-        let formula = self.graph.chp_formula(component_ids).map_err(|e| {
-            Error::component_graph_error(format!("Could not derive CHP formula: {e}"))
-        })?;
-        Ok(Formula::new(formula, metric, self.instructions_tx.clone()))
+        metric: M,
+    ) -> Result<M::FormulaType, Error> {
+        M::FormulaType::chp(
+            &self.graph,
+            metric,
+            self.instructions_tx.clone(),
+            component_ids,
+        )
     }
 
     /// Returns a receiver that streams samples for the given `metric` for the
     /// given PV IDs.
     ///
     /// When `component_ids` is `None`, all PVs in the microgrid are used.
-    pub fn pv(
+    pub fn pv<M: super::metric::metric_trait::AcMetric>(
         &mut self,
         component_ids: Option<BTreeSet<u64>>,
-        metric: Metric,
-    ) -> Result<Formula, Error> {
-        if !metric.power() && !metric.current() {
-            return Err(Error::invalid_metric(format!(
-                "The PV formula only supports power or current metrics, but got: {metric:?}"
-            )));
-        }
-        let formula = self.graph.pv_formula(component_ids).map_err(|e| {
-            Error::component_graph_error(format!("Could not derive PV formula: {e}"))
-        })?;
-        Ok(Formula::new(formula, metric, self.instructions_tx.clone()))
+        metric: M,
+    ) -> Result<M::FormulaType, Error> {
+        M::FormulaType::pv(
+            &self.graph,
+            metric,
+            self.instructions_tx.clone(),
+            component_ids,
+        )
     }
 
     /// Returns a receiver that streams samples for the given `metric` for the
@@ -132,58 +119,49 @@ impl LogicalMeterHandle {
     ///
     /// When `component_ids` is `None`, all EV chargers in the microgrid are
     /// used.
-    pub fn ev_charger(
+    pub fn ev_charger<M: super::metric::metric_trait::AcMetric>(
         &mut self,
         component_ids: Option<BTreeSet<u64>>,
-        metric: Metric,
-    ) -> Result<Formula, Error> {
-        if !metric.power() && !metric.current() {
-            return Err(Error::invalid_metric(format!(
-                "The EV charger formula only supports power or current metrics, but got: {metric:?}"
-            )));
-        }
-        let formula = self.graph.ev_charger_formula(component_ids).map_err(|e| {
-            Error::component_graph_error(format!("Could not derive EV charger formula: {e}"))
-        })?;
-        Ok(Formula::new(formula, metric, self.instructions_tx.clone()))
+        metric: M,
+    ) -> Result<M::FormulaType, Error> {
+        M::FormulaType::ev_charger(
+            &self.graph,
+            metric,
+            self.instructions_tx.clone(),
+            component_ids,
+        )
     }
 
     /// Returns a receiver that streams samples for the given `metric` for all
     /// the consumers in the microgrid.
-    pub fn consumer(&mut self, metric: Metric) -> Result<Formula, Error> {
-        if !metric.power() && !metric.current() {
-            return Err(Error::invalid_metric(format!(
-                "The consumer formula only supports power or current metrics, but got: {metric:?}"
-            )));
-        }
-        let formula = self.graph.consumer_formula().map_err(|e| {
-            Error::component_graph_error(format!("Could not derive consumer formula: {e}"))
-        })?;
-        Ok(Formula::new(formula, metric, self.instructions_tx.clone()))
+    pub fn consumer<M: super::metric::metric_trait::AcMetric>(
+        &mut self,
+        metric: M,
+    ) -> Result<M::FormulaType, Error> {
+        M::FormulaType::consumer(&self.graph, metric, self.instructions_tx.clone())
     }
 
     /// Returns a receiver that streams samples for the given `metric` for all
     /// producers in the microgrid.
-    pub fn producer(&mut self, metric: Metric) -> Result<Formula, Error> {
-        if !metric.power() && !metric.current() {
-            return Err(Error::invalid_metric(format!(
-                "The producer formula only supports power or current metrics, but got: {metric:?}"
-            )));
-        }
-        let formula = self.graph.producer_formula().map_err(|e| {
-            Error::component_graph_error(format!("Could not derive producer formula: {e}"))
-        })?;
-        Ok(Formula::new(formula, metric, self.instructions_tx.clone()))
+    pub fn producer<M: super::metric::metric_trait::AcMetric>(
+        &mut self,
+        metric: M,
+    ) -> Result<M::FormulaType, Error> {
+        M::FormulaType::producer(&self.graph, metric, self.instructions_tx.clone())
     }
 
     pub fn coalesce(
         &mut self,
         component_ids: BTreeSet<u64>,
         metric: Metric,
-    ) -> Result<Formula, Error> {
+    ) -> Result<AggregationFormula, Error> {
         let formula = self.graph.coalesce(component_ids).map_err(|e| {
             Error::component_graph_error(format!("Could not derive coalesce formula: {e}"))
         })?;
-        Ok(Formula::new(formula, metric, self.instructions_tx.clone()))
+        Ok(AggregationFormula::new(
+            formula,
+            metric,
+            self.instructions_tx.clone(),
+        ))
     }
 }

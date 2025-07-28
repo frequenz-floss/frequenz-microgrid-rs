@@ -1,129 +1,18 @@
 // License: MIT
 // Copyright © 2025 Frequenz Energy-as-a-Service GmbH
 
-//! A composable formula type, that can be subscribed to.
+//! Formula module for the logical meter.
 
-use tokio::sync::{broadcast, mpsc, oneshot};
+mod aggregation_formula;
+mod coalesce_formula;
+pub(crate) mod graph_formula_provider;
+pub use aggregation_formula::AggregationFormula;
+pub use coalesce_formula::CoalesceFormula;
 
-use crate::{Error, Metric, Sample};
+use crate::{Error, Sample};
+use tokio::sync::broadcast;
 
-use super::logical_meter_actor;
-
-#[derive(Clone)]
-pub struct Formula {
-    formula: frequenz_microgrid_component_graph::Formula,
-    metric: Metric,
-    instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
-}
-
-impl std::fmt::Display for Formula {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.formula.fmt(f)
-    }
-}
-
-impl Formula {
-    pub(super) fn new(
-        formula: frequenz_microgrid_component_graph::Formula,
-        metric: Metric,
-        instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
-    ) -> Self {
-        Self {
-            formula,
-            metric,
-            instructions_tx,
-        }
-    }
-
-    pub async fn subscribe(&self) -> Result<broadcast::Receiver<Sample>, Error> {
-        let (tx, rx) = oneshot::channel();
-
-        self.instructions_tx
-            .send(logical_meter_actor::Instruction::SubscribeFormula {
-                formula: self.formula.to_string(),
-                metric: self.metric,
-                response_tx: tx,
-            })
-            .await
-            .map_err(|e| Error::connection_failure(format!("Could not send instruction: {e}")))?;
-        let receiver = rx.await.map_err(|e| {
-            Error::connection_failure(format!("Could not receive instruction: {e}"))
-        })?;
-
-        Ok(receiver)
-    }
-}
-
-impl std::ops::Add for Formula {
-    type Output = Result<Self, Error>;
-
-    fn add(self, other: Self) -> Self::Output {
-        if self.metric != other.metric {
-            return Err(Error::invalid_metric(format!(
-                "Cannot add formulas with different metrics: {} and {}",
-                self.metric as isize, other.metric as isize
-            )));
-        }
-        let new_formula = self.formula + other.formula;
-        Ok(Self::new(new_formula, self.metric, self.instructions_tx))
-    }
-}
-
-impl std::ops::Sub for Formula {
-    type Output = Result<Self, Error>;
-
-    fn sub(self, other: Self) -> Self::Output {
-        if self.metric != other.metric {
-            return Err(Error::invalid_metric(format!(
-                "Cannot subtract formulas with different metrics: {} and {}",
-                self.metric as isize, other.metric as isize
-            )));
-        }
-        let new_formula = self.formula - other.formula;
-        Ok(Self::new(new_formula, self.metric, self.instructions_tx))
-    }
-}
-
-impl std::ops::Add<Formula> for Result<Formula, Error> {
-    type Output = Result<Formula, Error>;
-
-    fn add(self, other: Formula) -> Self::Output {
-        match self {
-            Ok(left) => left + other,
-            Err(e) => Err(e),
-        }
-    }
-}
-
-impl std::ops::Sub<Formula> for Result<Formula, Error> {
-    type Output = Result<Formula, Error>;
-
-    fn sub(self, other: Formula) -> Self::Output {
-        match self {
-            Ok(left) => left - other,
-            Err(e) => Err(e),
-        }
-    }
-}
-
-impl std::ops::Add<Result<Formula, Error>> for Formula {
-    type Output = Result<Formula, Error>;
-
-    fn add(self, other: Result<Formula, Error>) -> Self::Output {
-        match other {
-            Ok(right) => self + right,
-            Err(e) => Err(e),
-        }
-    }
-}
-
-impl std::ops::Sub<Result<Formula, Error>> for Formula {
-    type Output = Result<Formula, Error>;
-
-    fn sub(self, other: Result<Formula, Error>) -> Self::Output {
-        match other {
-            Ok(right) => self - right,
-            Err(e) => Err(e),
-        }
-    }
+/// Defines a formula that can be subscribed to for receiving samples.
+pub trait Formula: std::fmt::Display {
+    fn subscribe(&self) -> impl Future<Output = Result<broadcast::Receiver<Sample>, Error>> + Send;
 }
