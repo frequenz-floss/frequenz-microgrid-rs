@@ -13,6 +13,6 @@ use crate::{Error, Sample};
 use tokio::sync::broadcast;
 
 /// Defines a formula that can be subscribed to for receiving samples.
-pub trait Formula: std::fmt::Display {
+pub(crate) trait FormulaSubscriber: std::fmt::Display {
     fn subscribe(&self) -> impl Future<Output = Result<broadcast::Receiver<Sample>, Error>> + Send;
 }

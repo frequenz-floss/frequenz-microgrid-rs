@@ -3,7 +3,7 @@
 
 //! An formula that supports aggregation operations.
 
-use super::Formula;
+use super::FormulaSubscriber;
 use crate::{
     Error, Sample, logical_meter::logical_meter_actor, proto::common::v1::metrics::Metric,
 };
@@ -36,7 +36,7 @@ impl AggregationFormula {
     }
 }
 
-impl Formula for AggregationFormula {
+impl FormulaSubscriber for AggregationFormula {
     async fn subscribe(&self) -> Result<broadcast::Receiver<Sample>, Error> {
         let (tx, rx) = oneshot::channel();
 

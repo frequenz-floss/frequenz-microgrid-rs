@@ -3,7 +3,7 @@
 
 //! An coalesce formula.
 
-use super::Formula;
+use super::FormulaSubscriber;
 use crate::{
     Error, Sample, logical_meter::logical_meter_actor, proto::common::v1::metrics::Metric,
 };
@@ -36,7 +36,7 @@ impl CoalesceFormula {
     }
 }
 
-impl Formula for CoalesceFormula {
+impl FormulaSubscriber for CoalesceFormula {
     async fn subscribe(&self) -> Result<broadcast::Receiver<Sample>, Error> {
         let (tx, rx) = oneshot::channel();
 
