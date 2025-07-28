@@ -12,6 +12,11 @@ pub use coalesce_formula::CoalesceFormula;
 use crate::{Error, Sample};
 use tokio::sync::broadcast;
 
+/// Connects logical meter formulas to the component graph formulas.
+pub(crate) trait GraphFormulaProvider: std::fmt::Display {
+    type GraphFormulaType: frequenz_microgrid_component_graph::Formula;
+}
+
 /// Defines a formula that can be subscribed to for receiving samples.
 pub(crate) trait FormulaSubscriber: std::fmt::Display {
     fn subscribe(&self) -> impl Future<Output = Result<broadcast::Receiver<Sample>, Error>> + Send;

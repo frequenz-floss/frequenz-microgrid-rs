@@ -3,7 +3,7 @@
 
 //! An coalesce formula.
 
-use super::FormulaSubscriber;
+use super::{FormulaSubscriber, GraphFormulaProvider};
 use crate::{
     Error, Sample, logical_meter::logical_meter_actor, proto::common::v1::metrics::Metric,
 };
@@ -34,6 +34,10 @@ impl CoalesceFormula {
             instructions_tx,
         }
     }
+}
+
+impl GraphFormulaProvider for CoalesceFormula {
+    type GraphFormulaType = frequenz_microgrid_component_graph::CoalesceFormula;
 }
 
 impl FormulaSubscriber for CoalesceFormula {

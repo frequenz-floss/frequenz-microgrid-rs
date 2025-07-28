@@ -3,7 +3,7 @@
 
 //! An formula that supports aggregation operations.
 
-use super::FormulaSubscriber;
+use super::{FormulaSubscriber, GraphFormulaProvider};
 use crate::{
     Error, Sample, logical_meter::logical_meter_actor, proto::common::v1::metrics::Metric,
 };
@@ -34,6 +34,10 @@ impl AggregationFormula {
             instructions_tx,
         }
     }
+}
+
+impl GraphFormulaProvider for AggregationFormula {
+    type GraphFormulaType = frequenz_microgrid_component_graph::AggregationFormula;
 }
 
 impl FormulaSubscriber for AggregationFormula {
