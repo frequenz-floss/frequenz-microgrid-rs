@@ -3,12 +3,15 @@
 
 //! Metrics supported by the logical meter.
 
-pub(crate) mod metric_trait;
-
 use crate::proto::common::v1::metrics::Metric as MetricPb;
 
 use super::formula;
-pub use metric_trait::Metric;
+
+pub trait Metric: std::fmt::Display {
+    type FormulaType: formula::Formula + formula::graph_formula_provider::GraphFormulaProvider;
+
+    const METRIC: MetricPb;
+}
 
 macro_rules! define_metric {
     ($({name: $metric_name:ident, formula: $formula:ident}),+ $(,)?) => {

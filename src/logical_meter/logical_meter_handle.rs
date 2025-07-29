@@ -55,10 +55,7 @@ impl LogicalMeterHandle {
 
     /// Returns a receiver that streams samples for the given `metric` at the grid
     /// connection point.
-    pub fn grid<M: super::metric::metric_trait::Metric>(
-        &mut self,
-        metric: M,
-    ) -> Result<M::FormulaType, Error> {
+    pub fn grid<M: super::metric::Metric>(&mut self, metric: M) -> Result<M::FormulaType, Error> {
         M::FormulaType::grid(&self.graph, metric, self.instructions_tx.clone())
     }
 
@@ -66,7 +63,7 @@ impl LogicalMeterHandle {
     /// given battery IDs.
     ///
     /// When `component_ids` is `None`, all batteries in the microgrid are used.
-    pub fn battery<M: super::metric::metric_trait::Metric>(
+    pub fn battery<M: super::metric::Metric>(
         &mut self,
         component_ids: Option<BTreeSet<u64>>,
         metric: M,
@@ -83,7 +80,7 @@ impl LogicalMeterHandle {
     /// given CHP IDs.
     ///
     /// When `component_ids` is `None`, all CHPs in the microgrid are used.
-    pub fn chp<M: super::metric::metric_trait::Metric>(
+    pub fn chp<M: super::metric::Metric>(
         &mut self,
         component_ids: Option<BTreeSet<u64>>,
         metric: M,
@@ -100,7 +97,7 @@ impl LogicalMeterHandle {
     /// given PV IDs.
     ///
     /// When `component_ids` is `None`, all PVs in the microgrid are used.
-    pub fn pv<M: super::metric::metric_trait::Metric>(
+    pub fn pv<M: super::metric::Metric>(
         &mut self,
         component_ids: Option<BTreeSet<u64>>,
         metric: M,
@@ -118,7 +115,7 @@ impl LogicalMeterHandle {
     ///
     /// When `component_ids` is `None`, all EV chargers in the microgrid are
     /// used.
-    pub fn ev_charger<M: super::metric::metric_trait::Metric>(
+    pub fn ev_charger<M: super::metric::Metric>(
         &mut self,
         component_ids: Option<BTreeSet<u64>>,
         metric: M,
@@ -133,7 +130,7 @@ impl LogicalMeterHandle {
 
     /// Returns a receiver that streams samples for the given `metric` for the
     /// logical `consumer` in the microgrid.
-    pub fn consumer<M: super::metric::metric_trait::Metric>(
+    pub fn consumer<M: super::metric::Metric>(
         &mut self,
         metric: M,
     ) -> Result<M::FormulaType, Error> {
@@ -142,7 +139,7 @@ impl LogicalMeterHandle {
 
     /// Returns a receiver that streams samples for the given `metric` for the
     /// logical `producer` in the microgrid.
-    pub fn producer<M: super::metric::metric_trait::Metric>(
+    pub fn producer<M: super::metric::Metric>(
         &mut self,
         metric: M,
     ) -> Result<M::FormulaType, Error> {
@@ -151,7 +148,7 @@ impl LogicalMeterHandle {
 
     /// Returns a receiver that streams samples for the given `metric` for the
     /// given component ID.
-    pub fn component<M: super::metric::metric_trait::Metric>(
+    pub fn component<M: super::metric::Metric>(
         &mut self,
         component_id: u64,
         metric: M,
