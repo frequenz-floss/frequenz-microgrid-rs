@@ -17,7 +17,7 @@ use super::{AggregationFormula, CoalesceFormula};
 macro_rules! graph_formula_provider {
     ($(($fnname:ident $(, ids:$idsparam:ident)? $(, id:$idparam:ident)?)),+ $(,)?) => {$(
 
-        fn $fnname<M: crate::metric::metric_trait::AcMetric>(
+        fn $fnname<M: crate::metric::metric_trait::Metric>(
             _graph: &ComponentGraph<Component, ComponentConnection>,
             _metric: M,
             _instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
@@ -63,7 +63,7 @@ macro_rules! impl_graph_formula_provider {
         $(, id:$idparam:ident)?
     )),+ $(,)?) => {$(
 
-        fn $fnname<M: crate::metric::metric_trait::AcMetric>(
+        fn $fnname<M: crate::metric::metric_trait::Metric>(
             graph: &ComponentGraph<Component, ComponentConnection>,
             _metric: M,
             instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,

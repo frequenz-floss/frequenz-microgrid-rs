@@ -7,7 +7,7 @@
 use super::formula;
 use crate::proto::common::v1::metrics::Metric as MetricPb;
 
-pub trait AcMetric: std::fmt::Display {
+pub trait Metric: std::fmt::Display {
     type FormulaType: formula::Formula + formula::graph_formula_provider::GraphFormulaProvider;
 
     const METRIC: MetricPb;
