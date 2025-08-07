@@ -3,7 +3,7 @@
 
 //! An coalesce formula.
 
-use super::Formula;
+use super::{FormulaParams, FormulaSubscriber, GraphFormulaProvider};
 use crate::{
     Error, Sample, logical_meter::logical_meter_actor, proto::common::v1::metrics::Metric,
 };
@@ -22,21 +22,11 @@ impl std::fmt::Display for CoalesceFormula {
     }
 }
 
-impl CoalesceFormula {
-    pub(crate) fn new(
-        formula: frequenz_microgrid_component_graph::CoalesceFormula,
-        metric: Metric,
-        instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
-    ) -> Self {
-        Self {
-            formula,
-            metric,
-            instructions_tx,
-        }
-    }
+impl GraphFormulaProvider for CoalesceFormula {
+    type GraphFormulaType = frequenz_microgrid_component_graph::CoalesceFormula;
 }
 
-impl Formula for CoalesceFormula {
+impl FormulaSubscriber for CoalesceFormula {
     async fn subscribe(&self) -> Result<broadcast::Receiver<Sample>, Error> {
         let (tx, rx) = oneshot::channel();
 
@@ -53,5 +43,25 @@ impl Formula for CoalesceFormula {
         })?;
 
         Ok(receiver)
+    }
+}
+
+impl From<FormulaParams<CoalesceFormula>> for CoalesceFormula {
+    fn from(params: FormulaParams<CoalesceFormula>) -> Self {
+        Self {
+            formula: params.formula,
+            metric: params.metric,
+            instructions_tx: params.instructions_tx,
+        }
+    }
+}
+
+impl From<CoalesceFormula> for FormulaParams<CoalesceFormula> {
+    fn from(formula: CoalesceFormula) -> Self {
+        FormulaParams {
+            formula: formula.formula,
+            metric: formula.metric,
+            instructions_tx: formula.instructions_tx,
+        }
     }
 }

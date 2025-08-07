@@ -3,7 +3,7 @@
 
 //! An formula that supports aggregation operations.
 
-use super::Formula;
+use super::{FormulaParams, FormulaSubscriber, GraphFormulaProvider};
 use crate::{
     Error, Sample, logical_meter::logical_meter_actor, proto::common::v1::metrics::Metric,
 };
@@ -22,21 +22,11 @@ impl std::fmt::Display for AggregationFormula {
     }
 }
 
-impl AggregationFormula {
-    pub(crate) fn new(
-        formula: frequenz_microgrid_component_graph::AggregationFormula,
-        metric: Metric,
-        instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
-    ) -> Self {
-        Self {
-            formula,
-            metric,
-            instructions_tx,
-        }
-    }
+impl GraphFormulaProvider for AggregationFormula {
+    type GraphFormulaType = frequenz_microgrid_component_graph::AggregationFormula;
 }
 
-impl Formula for AggregationFormula {
+impl FormulaSubscriber for AggregationFormula {
     async fn subscribe(&self) -> Result<broadcast::Receiver<Sample>, Error> {
         let (tx, rx) = oneshot::channel();
 
@@ -56,6 +46,26 @@ impl Formula for AggregationFormula {
     }
 }
 
+impl From<FormulaParams<AggregationFormula>> for AggregationFormula {
+    fn from(params: FormulaParams<AggregationFormula>) -> Self {
+        Self {
+            formula: params.formula,
+            metric: params.metric,
+            instructions_tx: params.instructions_tx,
+        }
+    }
+}
+
+impl From<AggregationFormula> for FormulaParams<AggregationFormula> {
+    fn from(formula: AggregationFormula) -> Self {
+        FormulaParams {
+            formula: formula.formula,
+            metric: formula.metric,
+            instructions_tx: formula.instructions_tx,
+        }
+    }
+}
+
 impl std::ops::Add for AggregationFormula {
     type Output = Result<Self, Error>;
 
@@ -67,7 +77,7 @@ impl std::ops::Add for AggregationFormula {
             )));
         }
         let new_formula = self.formula + other.formula;
-        Ok(Self::new(new_formula, self.metric, self.instructions_tx))
+        Ok(FormulaParams::new(new_formula, self.metric, self.instructions_tx).into())
     }
 }
 
@@ -82,7 +92,7 @@ impl std::ops::Sub for AggregationFormula {
             )));
         }
         let new_formula = self.formula - other.formula;
-        Ok(Self::new(new_formula, self.metric, self.instructions_tx))
+        Ok(FormulaParams::new(new_formula, self.metric, self.instructions_tx).into())
     }
 }
 

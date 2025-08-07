@@ -4,6 +4,7 @@
 //! A composable formula type, that can be subscribed to.
 
 use crate::Error;
+use crate::logical_meter::formula::FormulaParams;
 use crate::logical_meter::logical_meter_actor;
 use crate::proto::common::v1::microgrid::components::Component;
 use crate::proto::common::v1::microgrid::components::ComponentConnection;
@@ -14,13 +15,14 @@ use tokio::sync::mpsc;
 use super::{AggregationFormula, CoalesceFormula};
 
 macro_rules! graph_formula_provider {
-    ($(($fnname:ident $(, $idsparam:ident)?)),+ $(,)?) => {$(
+    ($(($fnname:ident $(, ids:$idsparam:ident)? $(, id:$idparam:ident)?)),+ $(,)?) => {$(
 
-        fn $fnname<M: crate::metric::metric_trait::AcMetric>(
+        fn $fnname<M: crate::metric::Metric>(
             _graph: &ComponentGraph<Component, ComponentConnection>,
             _metric: M,
             _instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
             $($idsparam: Option<BTreeSet<u64>>,)?
+            $($idparam: u64,)?
         ) -> Result<Self, Error> {
             return Err(Error::component_graph_error(
                 format!(
@@ -45,29 +47,37 @@ pub trait GraphFormulaProvider: Sized {
         (grid),
         (consumer),
         (producer),
-        (battery, _battery_ids),
-        (chp, _chp_ids),
-        (pv, _pv_inverter_ids),
-        (ev_charger, _ev_charger_ids),
+        (battery, ids: _battery_ids),
+        (chp, ids: _chp_ids),
+        (pv, ids: _pv_inverter_ids),
+        (ev_charger, ids: _ev_charger_ids),
+        (component, id: _component_id),
     );
 }
 
 macro_rules! impl_graph_formula_provider {
-    ($(($fnname:ident, $graphfnname:ident$(, $idsparam:ident)?)),+ $(,)?) => {$(
+    ($((
+        $fnname:ident,
+        $graphfnname:ident
+        $(, ids:$idsparam:ident)?
+        $(, id:$idparam:ident)?
+    )),+ $(,)?) => {$(
 
-        fn $fnname<M: crate::metric::metric_trait::AcMetric>(
+        fn $fnname<M: crate::metric::Metric>(
             graph: &ComponentGraph<Component, ComponentConnection>,
             _metric: M,
             instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
             $($idsparam: Option<BTreeSet<u64>>,)?
+            $($idparam: u64,)?
         ) -> Result<Self, Error> {
-            let formula = graph.$graphfnname($($idsparam)?).map_err(|e| {
+            let formula = graph.$graphfnname($($idsparam)?$($idparam)?).map_err(|e| {
                 Error::component_graph_error(
                     format!("Could not get {} formula: {e}", stringify!($fnname))
                 )
             })?;
-            Ok(Self::new(formula, M::METRIC, instructions_tx))
+            Ok(FormulaParams::new(formula, M::METRIC, instructions_tx).into())
         }
+
     )+};
 }
 
@@ -76,17 +86,19 @@ impl GraphFormulaProvider for AggregationFormula {
         (grid, grid_formula),
         (consumer, consumer_formula),
         (producer, producer_formula),
-        (battery, battery_formula, battery_ids),
-        (chp, chp_formula, chp_ids),
-        (pv, pv_formula, pv_inverter_ids),
-        (ev_charger, ev_charger_formula, ev_charger_ids),
+        (battery, battery_formula, ids: battery_ids),
+        (chp, chp_formula, ids: chp_ids),
+        (pv, pv_formula, ids: pv_inverter_ids),
+        (ev_charger, ev_charger_formula, ids: ev_charger_ids),
+        (component, component_formula, id: component_id),
     );
 }
 
 impl GraphFormulaProvider for CoalesceFormula {
     impl_graph_formula_provider!(
         (grid, grid_coalesce_formula),
-        (battery, battery_ac_coalesce_formula, battery_ids),
-        (pv, pv_ac_coalesce_formula, pv_inverter_ids),
+        (battery, battery_ac_coalesce_formula, ids: battery_ids),
+        (pv, pv_ac_coalesce_formula, ids: pv_inverter_ids),
+        (component, component_ac_coalesce_formula, id: component_id),
     );
 }

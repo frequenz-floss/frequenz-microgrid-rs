@@ -2,7 +2,6 @@
 // Copyright © 2025 Frequenz Energy-as-a-Service GmbH
 
 use crate::logical_meter::formula::graph_formula_provider::GraphFormulaProvider;
-use crate::proto::common::v1::metrics::Metric;
 use crate::{
     client::MicrogridClientHandle,
     error::Error,
@@ -12,7 +11,7 @@ use frequenz_microgrid_component_graph::{self, ComponentGraph};
 use std::collections::BTreeSet;
 use tokio::sync::mpsc;
 
-use super::{AggregationFormula, LogicalMeterConfig, logical_meter_actor::LogicalMeterActor};
+use super::{LogicalMeterConfig, logical_meter_actor::LogicalMeterActor};
 
 /// This provides an interface  stream high-level metrics from a microgrid.
 #[derive(Clone)]
@@ -56,10 +55,7 @@ impl LogicalMeterHandle {
 
     /// Returns a receiver that streams samples for the given `metric` at the grid
     /// connection point.
-    pub fn grid<M: super::metric::metric_trait::AcMetric>(
-        &mut self,
-        metric: M,
-    ) -> Result<M::FormulaType, Error> {
+    pub fn grid<M: super::metric::Metric>(&mut self, metric: M) -> Result<M::FormulaType, Error> {
         M::FormulaType::grid(&self.graph, metric, self.instructions_tx.clone())
     }
 
@@ -67,7 +63,7 @@ impl LogicalMeterHandle {
     /// given battery IDs.
     ///
     /// When `component_ids` is `None`, all batteries in the microgrid are used.
-    pub fn battery<M: super::metric::metric_trait::AcMetric>(
+    pub fn battery<M: super::metric::Metric>(
         &mut self,
         component_ids: Option<BTreeSet<u64>>,
         metric: M,
@@ -84,7 +80,7 @@ impl LogicalMeterHandle {
     /// given CHP IDs.
     ///
     /// When `component_ids` is `None`, all CHPs in the microgrid are used.
-    pub fn chp<M: super::metric::metric_trait::AcMetric>(
+    pub fn chp<M: super::metric::Metric>(
         &mut self,
         component_ids: Option<BTreeSet<u64>>,
         metric: M,
@@ -101,7 +97,7 @@ impl LogicalMeterHandle {
     /// given PV IDs.
     ///
     /// When `component_ids` is `None`, all PVs in the microgrid are used.
-    pub fn pv<M: super::metric::metric_trait::AcMetric>(
+    pub fn pv<M: super::metric::Metric>(
         &mut self,
         component_ids: Option<BTreeSet<u64>>,
         metric: M,
@@ -119,7 +115,7 @@ impl LogicalMeterHandle {
     ///
     /// When `component_ids` is `None`, all EV chargers in the microgrid are
     /// used.
-    pub fn ev_charger<M: super::metric::metric_trait::AcMetric>(
+    pub fn ev_charger<M: super::metric::Metric>(
         &mut self,
         component_ids: Option<BTreeSet<u64>>,
         metric: M,
@@ -132,36 +128,36 @@ impl LogicalMeterHandle {
         )
     }
 
-    /// Returns a receiver that streams samples for the given `metric` for all
-    /// the consumers in the microgrid.
-    pub fn consumer<M: super::metric::metric_trait::AcMetric>(
+    /// Returns a receiver that streams samples for the given `metric` for the
+    /// logical `consumer` in the microgrid.
+    pub fn consumer<M: super::metric::Metric>(
         &mut self,
         metric: M,
     ) -> Result<M::FormulaType, Error> {
         M::FormulaType::consumer(&self.graph, metric, self.instructions_tx.clone())
     }
 
-    /// Returns a receiver that streams samples for the given `metric` for all
-    /// producers in the microgrid.
-    pub fn producer<M: super::metric::metric_trait::AcMetric>(
+    /// Returns a receiver that streams samples for the given `metric` for the
+    /// logical `producer` in the microgrid.
+    pub fn producer<M: super::metric::Metric>(
         &mut self,
         metric: M,
     ) -> Result<M::FormulaType, Error> {
         M::FormulaType::producer(&self.graph, metric, self.instructions_tx.clone())
     }
 
-    pub fn coalesce(
+    /// Returns a receiver that streams samples for the given `metric` for the
+    /// given component ID.
+    pub fn component<M: super::metric::Metric>(
         &mut self,
-        component_ids: BTreeSet<u64>,
-        metric: Metric,
-    ) -> Result<AggregationFormula, Error> {
-        let formula = self.graph.coalesce(component_ids).map_err(|e| {
-            Error::component_graph_error(format!("Could not derive coalesce formula: {e}"))
-        })?;
-        Ok(AggregationFormula::new(
-            formula,
+        component_id: u64,
+        metric: M,
+    ) -> Result<M::FormulaType, Error> {
+        M::FormulaType::component(
+            &self.graph,
             metric,
             self.instructions_tx.clone(),
-        ))
+            component_id,
+        )
     }
 }
