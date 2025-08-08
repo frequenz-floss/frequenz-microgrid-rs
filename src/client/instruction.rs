@@ -19,9 +19,9 @@ pub(super) enum Instruction {
         electrical_component_id: u64,
         response_tx: oneshot::Sender<broadcast::Receiver<ElectricalComponentTelemetry>>,
     },
-    ListComponents {
-        component_ids: Vec<u64>,
-        categories: Vec<i32>,
+    ListElectricalComponents {
+        electrical_component_ids: Vec<u64>,
+        electrical_component_categories: Vec<i32>,
         response_tx: oneshot::Sender<Result<Vec<ElectricalComponent>, Error>>,
     },
     ListConnections {

@@ -30,7 +30,7 @@ impl LogicalMeterHandle {
     ) -> Result<Self, Error> {
         let (sender, receiver) = mpsc::channel(8);
         let graph = ComponentGraph::try_new(
-            client.list_components(vec![], vec![]).await?,
+            client.list_electrical_components(vec![], vec![]).await?,
             client.list_connections(vec![], vec![]).await?,
             frequenz_microgrid_component_graph::ComponentGraphConfig {
                 allow_component_validation_failures: true,

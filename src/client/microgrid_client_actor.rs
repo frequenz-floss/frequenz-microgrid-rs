@@ -155,15 +155,15 @@ async fn handle_instruction(
                 Error::internal("failed to send response")
             })?;
         }
-        Some(Instruction::ListComponents {
+        Some(Instruction::ListElectricalComponents {
             response_tx,
-            component_ids,
-            categories,
+            electrical_component_ids,
+            electrical_component_categories,
         }) => {
             let components = client
                 .list_electrical_components(ListElectricalComponentsRequest {
-                    electrical_component_ids: component_ids,
-                    electrical_component_categories: categories,
+                    electrical_component_ids,
+                    electrical_component_categories,
                 })
                 .await
                 .map_err(|e| Error::connection_failure(format!("list_components failed: {e}")))

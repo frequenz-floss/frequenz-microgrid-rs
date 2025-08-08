@@ -77,18 +77,18 @@ impl MicrogridClientHandle {
     /// `ComponentCategory::COMPONENT_CATEGORY_BATTERY`.
     ///
     /// If a filter list is empty, then that filter is not applied.
-    pub async fn list_components(
+    pub async fn list_electrical_components(
         &self,
-        component_ids: Vec<u64>,
-        categories: Vec<i32>,
+        electrical_component_ids: Vec<u64>,
+        electrical_component_categories: Vec<i32>,
     ) -> Result<Vec<ElectricalComponent>, Error> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.instructions_tx
-            .send(Instruction::ListComponents {
+            .send(Instruction::ListElectricalComponents {
                 response_tx,
-                component_ids,
-                categories,
+                electrical_component_ids,
+                electrical_component_categories,
             })
             .await
             .map_err(|_| Error::internal("failed to send instruction"))?;
