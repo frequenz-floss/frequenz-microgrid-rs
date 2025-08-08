@@ -12,10 +12,10 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::{MissedTickBehavior, interval};
 
-use crate::proto::common::v1::metrics::Metric;
-use crate::proto::common::v1::metrics::metric_value_variant::MetricValueVariant;
+use crate::proto::common::v1alpha8::metrics::{Metric, metric_value_variant::MetricValueVariant};
 use crate::{
-    Error, MicrogridClientHandle, Sample, proto::common::v1::microgrid::components::ComponentData,
+    Error, MicrogridClientHandle, Sample,
+    proto::common::v1alpha8::microgrid::electrical_components::ElectricalComponentTelemetry,
 };
 
 use super::config::LogicalMeterConfig;
@@ -29,7 +29,7 @@ struct ComponentDataResampler {
     component_id: u64,
     metric: Metric,
     resampler: frequenz_resampling::Resampler<f32, Sample>,
-    receiver: broadcast::Receiver<ComponentData>,
+    receiver: broadcast::Receiver<ElectricalComponentTelemetry>,
 }
 
 pub(crate) enum Instruction {
@@ -281,7 +281,7 @@ impl LogicalMeterActor {
     fn push_to_resampler(
         &mut self,
         resampler: &mut ComponentDataResampler,
-        data: ComponentData,
+        data: ElectricalComponentTelemetry,
         metric: Metric,
     ) {
         let Some(dd) = data
@@ -296,7 +296,7 @@ impl LogicalMeterActor {
             );
             return;
         };
-        let timestamp = if let Some(timestamp) = dd.sampled_at {
+        let timestamp = if let Some(timestamp) = dd.sample_time {
             if let Some(timestamp) =
                 DateTime::from_timestamp(timestamp.seconds, timestamp.nanos as u32)
             {

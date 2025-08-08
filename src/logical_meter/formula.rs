@@ -10,7 +10,7 @@ pub(crate) mod graph_formula_provider;
 pub use aggregation_formula::AggregationFormula;
 pub use coalesce_formula::CoalesceFormula;
 
-use crate::{Error, Sample, proto::common::v1::metrics::Metric};
+use crate::{Error, Sample, proto::common::v1alpha8::metrics::Metric};
 use tokio::sync::{broadcast, mpsc};
 
 use super::logical_meter_actor;

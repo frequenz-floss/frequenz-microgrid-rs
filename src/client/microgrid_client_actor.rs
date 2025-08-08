@@ -3,7 +3,14 @@
 
 //! The microgrid client actor that handles communication with the microgrid API.
 
-use crate::client::{instruction::Instruction, retry_tracker::RetryTracker};
+use crate::{
+    client::{instruction::Instruction, retry_tracker::RetryTracker},
+    proto::microgrid::v1alpha18::{
+        ListElectricalComponentConnectionsRequest, ListElectricalComponentsRequest,
+        ReceiveElectricalComponentTelemetryStreamRequest,
+        ReceiveElectricalComponentTelemetryStreamResponse,
+    },
+};
 use std::collections::HashMap;
 
 use tokio::{
@@ -16,11 +23,8 @@ use tracing::Instrument as _;
 use crate::{
     Error,
     proto::{
-        common::v1::microgrid::components::ComponentData,
-        microgrid::v1::{
-            ListComponentsRequest, ListConnectionsRequest, ReceiveComponentDataStreamRequest,
-            ReceiveComponentDataStreamResponse, microgrid_client::MicrogridClient,
-        },
+        common::v1alpha8::microgrid::electrical_components::ElectricalComponentTelemetry,
+        microgrid::v1alpha18::microgrid_client::MicrogridClient,
     },
 };
 
@@ -57,7 +61,8 @@ impl MicrogridClientActor {
             }
         };
 
-        let mut component_streams: HashMap<u64, broadcast::Sender<ComponentData>> = HashMap::new();
+        let mut component_streams: HashMap<u64, broadcast::Sender<ElectricalComponentTelemetry>> =
+            HashMap::new();
 
         let (stream_status_tx, mut stream_status_rx) = mpsc::channel(50);
         let mut retry_timer = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -114,7 +119,7 @@ impl MicrogridClientActor {
 /// Handles the instructions received from the `MicrogridClientHandle` instances.
 async fn handle_instruction(
     client: &mut MicrogridClient<Channel>,
-    component_streams: &mut HashMap<u64, broadcast::Sender<ComponentData>>,
+    component_streams: &mut HashMap<u64, broadcast::Sender<ElectricalComponentTelemetry>>,
     instruction: Option<Instruction>,
     stream_status_tx: mpsc::Sender<StreamStatus>,
 ) -> Result<(), Error> {
@@ -135,7 +140,7 @@ async fn handle_instruction(
             // If a stream for the given component does not exist, create a new
             // channel and start a task for streaming component data from the
             // API service into the channel.
-            let (tx, rx) = broadcast::channel::<ComponentData>(100);
+            let (tx, rx) = broadcast::channel::<ElectricalComponentTelemetry>(100);
             component_streams.insert(component_id, tx.clone());
             start_component_data_stream(client, component_id, tx, stream_status_tx).await?;
 
@@ -150,13 +155,13 @@ async fn handle_instruction(
             categories,
         }) => {
             let components = client
-                .list_components(ListComponentsRequest {
-                    component_ids,
-                    categories,
+                .list_electrical_components(ListElectricalComponentsRequest {
+                    electrical_component_ids: component_ids,
+                    electrical_component_categories: categories,
                 })
                 .await
                 .map_err(|e| Error::connection_failure(format!("list_components failed: {e}")))
-                .map(|r| r.into_inner().components);
+                .map(|r| r.into_inner().electrical_components);
 
             response_tx
                 .send(components)
@@ -168,10 +173,13 @@ async fn handle_instruction(
             ends,
         }) => {
             let connections = client
-                .list_connections(ListConnectionsRequest { starts, ends })
+                .list_electrical_component_connections(ListElectricalComponentConnectionsRequest {
+                    source_electrical_component_ids: starts,
+                    destination_electrical_component_ids: ends,
+                })
                 .await
                 .map_err(|e| Error::connection_failure(format!("list_connections failed: {e}")))
-                .map(|r| r.into_inner().connections);
+                .map(|r| r.into_inner().electrical_component_connections);
 
             response_tx
                 .send(connections)
@@ -187,7 +195,7 @@ async fn handle_instruction(
 /// need to be retried and restarting their streaming tasks if necessary.
 async fn handle_retry_timer(
     client: &mut MicrogridClient<Channel>,
-    component_streams: &mut HashMap<u64, broadcast::Sender<ComponentData>>,
+    component_streams: &mut HashMap<u64, broadcast::Sender<ElectricalComponentTelemetry>>,
     components_to_retry: &mut HashMap<u64, RetryTracker>,
     stream_status_tx: mpsc::Sender<StreamStatus>,
     now: tokio::time::Instant,
@@ -218,14 +226,16 @@ async fn handle_retry_timer(
 async fn start_component_data_stream(
     client: &mut MicrogridClient<Channel>,
     component_id: u64,
-    tx: broadcast::Sender<ComponentData>,
+    tx: broadcast::Sender<ElectricalComponentTelemetry>,
     stream_status_tx: mpsc::Sender<StreamStatus>,
 ) -> Result<(), Error> {
     let stream = match client
-        .receive_component_data_stream(ReceiveComponentDataStreamRequest {
-            component_id,
-            filter: None,
-        })
+        .receive_electrical_component_telemetry_stream(
+            ReceiveElectricalComponentTelemetryStreamRequest {
+                electrical_component_id: component_id,
+                filter: None,
+            },
+        )
         .await
     {
         Ok(s) => s.into_inner(),
@@ -261,9 +271,9 @@ async fn start_component_data_stream(
 }
 
 async fn run_component_data_stream(
-    mut stream: tonic::Streaming<ReceiveComponentDataStreamResponse>,
+    mut stream: tonic::Streaming<ReceiveElectricalComponentTelemetryStreamResponse>,
     component_id: u64,
-    tx: broadcast::Sender<ComponentData>,
+    tx: broadcast::Sender<ElectricalComponentTelemetry>,
     stream_status_tx: mpsc::Sender<StreamStatus>,
 ) {
     loop {
@@ -296,8 +306,8 @@ async fn run_component_data_stream(
             }
         };
         let data = match message {
-            Some(ReceiveComponentDataStreamResponse { data: Some(d) }) => d,
-            Some(ReceiveComponentDataStreamResponse { data: None }) => {
+            Some(ReceiveElectricalComponentTelemetryStreamResponse { telemetry: Some(d) }) => d,
+            Some(ReceiveElectricalComponentTelemetryStreamResponse { telemetry: None }) => {
                 tracing::warn!(
                     "get_component_data stream returned empty data for {}",
                     component_id

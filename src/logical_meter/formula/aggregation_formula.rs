@@ -5,7 +5,7 @@
 
 use super::{FormulaParams, FormulaSubscriber, GraphFormulaProvider};
 use crate::{
-    Error, Sample, logical_meter::logical_meter_actor, proto::common::v1::metrics::Metric,
+    Error, Sample, logical_meter::logical_meter_actor, proto::common::v1alpha8::metrics::Metric,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 

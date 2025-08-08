@@ -5,7 +5,9 @@ use crate::logical_meter::formula::graph_formula_provider::GraphFormulaProvider;
 use crate::{
     client::MicrogridClientHandle,
     error::Error,
-    proto::common::v1::microgrid::components::{Component, ComponentConnection},
+    proto::common::v1alpha8::microgrid::electrical_components::{
+        ElectricalComponent, ElectricalComponentConnection,
+    },
 };
 use frequenz_microgrid_component_graph::{self, ComponentGraph};
 use std::collections::BTreeSet;
@@ -17,7 +19,7 @@ use super::{LogicalMeterConfig, logical_meter_actor::LogicalMeterActor};
 #[derive(Clone)]
 pub struct LogicalMeterHandle {
     instructions_tx: mpsc::Sender<super::logical_meter_actor::Instruction>,
-    graph: ComponentGraph<Component, ComponentConnection>,
+    graph: ComponentGraph<ElectricalComponent, ElectricalComponentConnection>,
 }
 
 impl LogicalMeterHandle {

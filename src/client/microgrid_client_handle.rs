@@ -10,7 +10,9 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::{
     Error,
-    proto::common::v1::microgrid::components::{Component, ComponentConnection, ComponentData},
+    proto::common::v1alpha8::microgrid::electrical_components::{
+        ElectricalComponent, ElectricalComponentConnection, ElectricalComponentTelemetry,
+    },
 };
 
 use super::{instruction::Instruction, microgrid_client_actor::MicrogridClientActor};
@@ -41,7 +43,7 @@ impl MicrogridClientHandle {
     pub async fn get_component_data_stream(
         &self,
         component_id: u64,
-    ) -> Result<broadcast::Receiver<ComponentData>, Error> {
+    ) -> Result<broadcast::Receiver<ElectricalComponentTelemetry>, Error> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.instructions_tx
@@ -79,7 +81,7 @@ impl MicrogridClientHandle {
         &self,
         component_ids: Vec<u64>,
         categories: Vec<i32>,
-    ) -> Result<Vec<Component>, Error> {
+    ) -> Result<Vec<ElectricalComponent>, Error> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.instructions_tx
@@ -117,7 +119,7 @@ impl MicrogridClientHandle {
         &self,
         starts: Vec<u64>,
         ends: Vec<u64>,
-    ) -> Result<Vec<ComponentConnection>, Error> {
+    ) -> Result<Vec<ElectricalComponentConnection>, Error> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.instructions_tx
