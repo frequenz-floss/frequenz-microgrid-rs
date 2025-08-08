@@ -35,20 +35,20 @@ impl MicrogridClientHandle {
         Self { instructions_tx }
     }
 
-    /// Returns a stream containing data from a component with a given ID.
+    /// Returns a telemetry stream from an electrical component with a given ID.
     ///
     /// When a connection to the API service is lost, reconnecting is handled
     /// automatically, and the receiver will resume receiving data from the
     /// component once the connection is re-established.
-    pub async fn get_component_data_stream(
+    pub async fn receive_electrical_component_telemetry_stream(
         &self,
-        component_id: u64,
+        electrical_component_id: u64,
     ) -> Result<broadcast::Receiver<ElectricalComponentTelemetry>, Error> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.instructions_tx
-            .send(Instruction::GetComponentDataStream {
-                component_id,
+            .send(Instruction::ReceiveElectricalComponentTelemetryStream {
+                electrical_component_id,
                 response_tx,
             })
             .await

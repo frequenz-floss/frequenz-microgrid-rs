@@ -124,25 +124,31 @@ async fn handle_instruction(
     stream_status_tx: mpsc::Sender<StreamStatus>,
 ) -> Result<(), Error> {
     match instruction {
-        Some(Instruction::GetComponentDataStream {
-            component_id,
+        Some(Instruction::ReceiveElectricalComponentTelemetryStream {
+            electrical_component_id,
             response_tx,
         }) => {
             // If a stream for the given component already exists, subscribe to
             // it and return.
-            if let Some(stream) = component_streams.get(&component_id) {
+            if let Some(stream) = component_streams.get(&electrical_component_id) {
                 response_tx
                     .send(stream.subscribe())
                     .map_err(|_| Error::internal("failed to send response"))?;
                 return Ok(());
             }
 
-            // If a stream for the given component does not exist, create a new
-            // channel and start a task for streaming component data from the
-            // API service into the channel.
+            // If a stream for the given electrical component does not exist,
+            // create a new channel and start a task for streaming telemetry
+            // from the API service into the channel.
             let (tx, rx) = broadcast::channel::<ElectricalComponentTelemetry>(100);
-            component_streams.insert(component_id, tx.clone());
-            start_component_data_stream(client, component_id, tx, stream_status_tx).await?;
+            component_streams.insert(electrical_component_id, tx.clone());
+            start_electrical_component_telemetry_stream(
+                client,
+                electrical_component_id,
+                tx,
+                stream_status_tx,
+            )
+            .await?;
 
             response_tx.send(rx).map_err(|_| {
                 tracing::error!("failed to send response");
@@ -208,8 +214,13 @@ async fn handle_retry_timer(
             item.1.mark_new_retry();
             let (component_id, _) = item;
             if let Some(tx) = component_streams.get(component_id).cloned() {
-                start_component_data_stream(client, *component_id, tx, stream_status_tx.clone())
-                    .await?;
+                start_electrical_component_telemetry_stream(
+                    client,
+                    *component_id,
+                    tx,
+                    stream_status_tx.clone(),
+                )
+                .await?;
             } else {
                 tracing::error!("Component stream not found for retry: {component_id}");
                 return Err(Error::internal(format!(
@@ -223,16 +234,16 @@ async fn handle_retry_timer(
 
 /// Creates a new data stream for the given component ID and starts a task to
 /// fetch data from it in a loop.
-async fn start_component_data_stream(
+async fn start_electrical_component_telemetry_stream(
     client: &mut MicrogridClient<Channel>,
-    component_id: u64,
+    electrical_component_id: u64,
     tx: broadcast::Sender<ElectricalComponentTelemetry>,
     stream_status_tx: mpsc::Sender<StreamStatus>,
 ) -> Result<(), Error> {
     let stream = match client
         .receive_electrical_component_telemetry_stream(
             ReceiveElectricalComponentTelemetryStreamRequest {
-                electrical_component_id: component_id,
+                electrical_component_id,
                 filter: None,
             },
         )
@@ -241,38 +252,44 @@ async fn start_component_data_stream(
         Ok(s) => s.into_inner(),
         Err(e) => {
             stream_status_tx
-                .send(StreamStatus::Failed(component_id))
+                .send(StreamStatus::Failed(electrical_component_id))
                 .await
                 .map_err(|e| {
                     Error::connection_failure(format!(
-                        "receive_component_data_stream failed for {component_id}: {e}",
+                        "receive_component_data_stream failed for {electrical_component_id}: {e}",
                     ))
                 })?;
             return Err(Error::connection_failure(format!(
-                "receive_component_data_stream failed for {component_id}: {e}",
+                "receive_component_data_stream failed for {electrical_component_id}: {e}",
             )));
         }
     };
 
     stream_status_tx
-        .send(StreamStatus::Connected(component_id))
+        .send(StreamStatus::Connected(electrical_component_id))
         .await
         .map_err(|e| {
             Error::connection_failure(format!(
-                "Failed to send stream recovered message for {component_id}: {e}",
+                "Failed to send stream recovered message for {electrical_component_id}: {e}",
             ))
         })?;
 
     // create a task to fetch data from the stream in a loop and put into a channel.
     tokio::spawn(
-        run_component_data_stream(stream, component_id, tx, stream_status_tx).in_current_span(),
+        run_electrical_component_telemetry_stream(
+            stream,
+            electrical_component_id,
+            tx,
+            stream_status_tx,
+        )
+        .in_current_span(),
     );
     Ok(())
 }
 
-async fn run_component_data_stream(
+async fn run_electrical_component_telemetry_stream(
     mut stream: tonic::Streaming<ReceiveElectricalComponentTelemetryStreamResponse>,
-    component_id: u64,
+    electrical_component_id: u64,
     tx: broadcast::Sender<ElectricalComponentTelemetry>,
     stream_status_tx: mpsc::Sender<StreamStatus>,
 ) {
@@ -280,15 +297,15 @@ async fn run_component_data_stream(
         if tx.receiver_count() == 0 {
             tracing::debug!(
                 "Dropping ComponentData stream for component_id:{:?}",
-                component_id
+                electrical_component_id
             );
             stream_status_tx
-                .send(StreamStatus::Ended(component_id))
+                .send(StreamStatus::Ended(electrical_component_id))
                 .await
                 .unwrap_or_else(|e| {
                     tracing::error!(
                         "Failed to send stream ended message for {:?}: {:?}",
-                        component_id,
+                        electrical_component_id,
                         e
                     );
                 });
@@ -299,7 +316,7 @@ async fn run_component_data_stream(
             Err(e) => {
                 tracing::error!(
                     "get_component_data stream failed for {:?}: {:?}",
-                    component_id,
+                    electrical_component_id,
                     e
                 );
                 break;
@@ -310,12 +327,15 @@ async fn run_component_data_stream(
             Some(ReceiveElectricalComponentTelemetryStreamResponse { telemetry: None }) => {
                 tracing::warn!(
                     "get_component_data stream returned empty data for {}",
-                    component_id
+                    electrical_component_id
                 );
                 continue;
             }
             None => {
-                tracing::warn!("get_component_data stream ended for {:?}", component_id);
+                tracing::warn!(
+                    "get_component_data stream ended for {:?}",
+                    electrical_component_id
+                );
                 break;
             }
         };
@@ -326,12 +346,12 @@ async fn run_component_data_stream(
     }
 
     if let Err(e) = stream_status_tx
-        .send(StreamStatus::Failed(component_id))
+        .send(StreamStatus::Failed(electrical_component_id))
         .await
     {
         tracing::error!(
             "Failed to send stream stopped message for {:?}: {:?}",
-            component_id,
+            electrical_component_id,
             e
         );
     }

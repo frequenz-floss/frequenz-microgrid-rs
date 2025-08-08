@@ -15,8 +15,8 @@ use crate::{
 /// Instructions that can be sent to the client actor from client handles.
 #[derive(Debug)]
 pub(super) enum Instruction {
-    GetComponentDataStream {
-        component_id: u64,
+    ReceiveElectricalComponentTelemetryStream {
+        electrical_component_id: u64,
         response_tx: oneshot::Sender<broadcast::Receiver<ElectricalComponentTelemetry>>,
     },
     ListComponents {

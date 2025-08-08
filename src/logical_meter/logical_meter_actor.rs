@@ -180,7 +180,10 @@ impl LogicalMeterActor {
                         .ok_or_else(|| Error::chrono_error("Failed to get current time."))?,
                     false,
                 ),
-                receiver: self.client.get_component_data_stream(*component_id).await?,
+                receiver: self
+                    .client
+                    .receive_electrical_component_telemetry_stream(*component_id)
+                    .await?,
             };
             resamplers.insert(resampler_key, resampler);
         }
