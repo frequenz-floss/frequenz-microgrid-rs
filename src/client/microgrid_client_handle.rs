@@ -115,18 +115,18 @@ impl MicrogridClientHandle {
     /// * each `start` component ID is either `1`, `2`, OR `3`,
     ///   AND
     /// * each `end` component ID is either `4`, `5`, OR `6`.
-    pub async fn list_connections(
+    pub async fn list_electrical_component_connections(
         &self,
-        starts: Vec<u64>,
-        ends: Vec<u64>,
+        source_electrical_component_ids: Vec<u64>,
+        destination_electrical_component_ids: Vec<u64>,
     ) -> Result<Vec<ElectricalComponentConnection>, Error> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.instructions_tx
-            .send(Instruction::ListConnections {
+            .send(Instruction::ListElectricalComponentConnections {
                 response_tx,
-                starts,
-                ends,
+                source_electrical_component_ids,
+                destination_electrical_component_ids,
             })
             .await
             .map_err(|_| Error::internal("failed to send instruction"))?;

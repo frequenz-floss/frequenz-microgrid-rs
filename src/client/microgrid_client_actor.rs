@@ -173,15 +173,15 @@ async fn handle_instruction(
                 .send(components)
                 .map_err(|_| Error::internal("failed to send response"))?;
         }
-        Some(Instruction::ListConnections {
+        Some(Instruction::ListElectricalComponentConnections {
             response_tx,
-            starts,
-            ends,
+            source_electrical_component_ids,
+            destination_electrical_component_ids,
         }) => {
             let connections = client
                 .list_electrical_component_connections(ListElectricalComponentConnectionsRequest {
-                    source_electrical_component_ids: starts,
-                    destination_electrical_component_ids: ends,
+                    source_electrical_component_ids,
+                    destination_electrical_component_ids,
                 })
                 .await
                 .map_err(|e| Error::connection_failure(format!("list_connections failed: {e}")))

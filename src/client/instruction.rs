@@ -24,9 +24,9 @@ pub(super) enum Instruction {
         electrical_component_categories: Vec<i32>,
         response_tx: oneshot::Sender<Result<Vec<ElectricalComponent>, Error>>,
     },
-    ListConnections {
-        starts: Vec<u64>,
-        ends: Vec<u64>,
+    ListElectricalComponentConnections {
+        source_electrical_component_ids: Vec<u64>,
+        destination_electrical_component_ids: Vec<u64>,
         response_tx: oneshot::Sender<Result<Vec<ElectricalComponentConnection>, Error>>,
     },
 }
