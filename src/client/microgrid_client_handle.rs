@@ -10,7 +10,9 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::{
     Error,
-    proto::common::v1::microgrid::components::{Component, ComponentConnection, ComponentData},
+    proto::common::v1alpha8::microgrid::electrical_components::{
+        ElectricalComponent, ElectricalComponentConnection, ElectricalComponentTelemetry,
+    },
 };
 
 use super::{instruction::Instruction, microgrid_client_actor::MicrogridClientActor};
@@ -33,20 +35,20 @@ impl MicrogridClientHandle {
         Self { instructions_tx }
     }
 
-    /// Returns a stream containing data from a component with a given ID.
+    /// Returns a telemetry stream from an electrical component with a given ID.
     ///
     /// When a connection to the API service is lost, reconnecting is handled
     /// automatically, and the receiver will resume receiving data from the
     /// component once the connection is re-established.
-    pub async fn get_component_data_stream(
+    pub async fn receive_electrical_component_telemetry_stream(
         &self,
-        component_id: u64,
-    ) -> Result<broadcast::Receiver<ComponentData>, Error> {
+        electrical_component_id: u64,
+    ) -> Result<broadcast::Receiver<ElectricalComponentTelemetry>, Error> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.instructions_tx
-            .send(Instruction::GetComponentDataStream {
-                component_id,
+            .send(Instruction::ReceiveElectricalComponentTelemetryStream {
+                electrical_component_id,
                 response_tx,
             })
             .await
@@ -75,18 +77,18 @@ impl MicrogridClientHandle {
     /// `ComponentCategory::COMPONENT_CATEGORY_BATTERY`.
     ///
     /// If a filter list is empty, then that filter is not applied.
-    pub async fn list_components(
+    pub async fn list_electrical_components(
         &self,
-        component_ids: Vec<u64>,
-        categories: Vec<i32>,
-    ) -> Result<Vec<Component>, Error> {
+        electrical_component_ids: Vec<u64>,
+        electrical_component_categories: Vec<i32>,
+    ) -> Result<Vec<ElectricalComponent>, Error> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.instructions_tx
-            .send(Instruction::ListComponents {
+            .send(Instruction::ListElectricalComponents {
                 response_tx,
-                component_ids,
-                categories,
+                electrical_component_ids,
+                electrical_component_categories,
             })
             .await
             .map_err(|_| Error::internal("failed to send instruction"))?;
@@ -113,18 +115,18 @@ impl MicrogridClientHandle {
     /// * each `start` component ID is either `1`, `2`, OR `3`,
     ///   AND
     /// * each `end` component ID is either `4`, `5`, OR `6`.
-    pub async fn list_connections(
+    pub async fn list_electrical_component_connections(
         &self,
-        starts: Vec<u64>,
-        ends: Vec<u64>,
-    ) -> Result<Vec<ComponentConnection>, Error> {
+        source_electrical_component_ids: Vec<u64>,
+        destination_electrical_component_ids: Vec<u64>,
+    ) -> Result<Vec<ElectricalComponentConnection>, Error> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.instructions_tx
-            .send(Instruction::ListConnections {
+            .send(Instruction::ListElectricalComponentConnections {
                 response_tx,
-                starts,
-                ends,
+                source_electrical_component_ids,
+                destination_electrical_component_ids,
             })
             .await
             .map_err(|_| Error::internal("failed to send instruction"))?;

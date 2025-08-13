@@ -6,8 +6,10 @@
 use crate::Error;
 use crate::logical_meter::formula::FormulaParams;
 use crate::logical_meter::logical_meter_actor;
-use crate::proto::common::v1::microgrid::components::Component;
-use crate::proto::common::v1::microgrid::components::ComponentConnection;
+use crate::proto::common::v1alpha8::microgrid::electrical_components::{
+    ElectricalComponent, ElectricalComponentConnection,
+};
+
 use frequenz_microgrid_component_graph::ComponentGraph;
 use std::collections::BTreeSet;
 use tokio::sync::mpsc;
@@ -18,7 +20,7 @@ macro_rules! graph_formula_provider {
     ($(($fnname:ident $(, ids:$idsparam:ident)? $(, id:$idparam:ident)?)),+ $(,)?) => {$(
 
         fn $fnname<M: crate::metric::Metric>(
-            _graph: &ComponentGraph<Component, ComponentConnection>,
+            _graph: &ComponentGraph<ElectricalComponent, ElectricalComponentConnection>,
             _metric: M,
             _instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
             $($idsparam: Option<BTreeSet<u64>>,)?
@@ -64,7 +66,7 @@ macro_rules! impl_graph_formula_provider {
     )),+ $(,)?) => {$(
 
         fn $fnname<M: crate::metric::Metric>(
-            graph: &ComponentGraph<Component, ComponentConnection>,
+            graph: &ComponentGraph<ElectricalComponent, ElectricalComponentConnection>,
             _metric: M,
             instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
             $($idsparam: Option<BTreeSet<u64>>,)?

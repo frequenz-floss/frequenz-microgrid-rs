@@ -5,7 +5,9 @@ use crate::logical_meter::formula::graph_formula_provider::GraphFormulaProvider;
 use crate::{
     client::MicrogridClientHandle,
     error::Error,
-    proto::common::v1::microgrid::components::{Component, ComponentConnection},
+    proto::common::v1alpha8::microgrid::electrical_components::{
+        ElectricalComponent, ElectricalComponentConnection,
+    },
 };
 use frequenz_microgrid_component_graph::{self, ComponentGraph};
 use std::collections::BTreeSet;
@@ -17,7 +19,7 @@ use super::{LogicalMeterConfig, logical_meter_actor::LogicalMeterActor};
 #[derive(Clone)]
 pub struct LogicalMeterHandle {
     instructions_tx: mpsc::Sender<super::logical_meter_actor::Instruction>,
-    graph: ComponentGraph<Component, ComponentConnection>,
+    graph: ComponentGraph<ElectricalComponent, ElectricalComponentConnection>,
 }
 
 impl LogicalMeterHandle {
@@ -28,8 +30,10 @@ impl LogicalMeterHandle {
     ) -> Result<Self, Error> {
         let (sender, receiver) = mpsc::channel(8);
         let graph = ComponentGraph::try_new(
-            client.list_components(vec![], vec![]).await?,
-            client.list_connections(vec![], vec![]).await?,
+            client.list_electrical_components(vec![], vec![]).await?,
+            client
+                .list_electrical_component_connections(vec![], vec![])
+                .await?,
             frequenz_microgrid_component_graph::ComponentGraphConfig {
                 allow_component_validation_failures: true,
                 allow_unconnected_components: true,

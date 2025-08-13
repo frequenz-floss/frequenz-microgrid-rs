@@ -28,13 +28,13 @@ async fn main() -> Result<(), Error> {
     .await?;
 
     // Create a formula that calculates `grid_power - battery_power`.
-    let formula_grid = logical_meter.grid(metric::AcActivePower)?;
-    let formula_battery = logical_meter.battery(None, metric::AcActivePower)?;
-    let formula_consumer = logical_meter.consumer(metric::AcActivePower)?;
+    let formula_grid = logical_meter.grid(metric::AcPowerActive)?;
+    let formula_battery = logical_meter.battery(None, metric::AcPowerActive)?;
+    let formula_consumer = logical_meter.consumer(metric::AcPowerActive)?;
 
-    let formula = (logical_meter.grid(metric::AcActivePower)?
-        - logical_meter.battery(None, metric::AcActivePower)?
-        + logical_meter.consumer(metric::AcActivePower)?)?;
+    let formula = (logical_meter.grid(metric::AcPowerActive)?
+        - logical_meter.battery(None, metric::AcPowerActive)?
+        + logical_meter.consumer(metric::AcPowerActive)?)?;
 
     let mut rx = formula.subscribe().await?;
     let mut grid_rx = formula_grid.subscribe().await?;

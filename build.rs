@@ -7,7 +7,7 @@ fn main() -> Result<(), std::io::Error> {
     tonic_build::configure()
         .compile_protos_with_config(
             config,
-            &["submodules/frequenz-api-microgrid/proto/frequenz/api/microgrid/v1/microgrid.proto"],
+            &["submodules/frequenz-api-microgrid/proto/frequenz/api/microgrid/v1alpha18/microgrid.proto"],
             &[
                 "submodules/frequenz-api-microgrid/proto",
                 "submodules/frequenz-api-microgrid/submodules/frequenz-api-common/proto",

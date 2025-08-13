@@ -3,7 +3,7 @@
 
 //! Metrics supported by the logical meter.
 
-use crate::proto::common::v1::metrics::Metric as MetricPb;
+use crate::proto::common::v1alpha8::metrics::Metric as MetricPb;
 
 use super::formula;
 
@@ -38,8 +38,8 @@ macro_rules! define_metric {
 }
 
 define_metric! {
-    {name: AcActivePower,   formula: AggregationFormula},
-    {name: AcReactivePower, formula: AggregationFormula},
+    {name: AcPowerActive,   formula: AggregationFormula},
+    {name: AcPowerReactive, formula: AggregationFormula},
     {name: AcCurrent,       formula: AggregationFormula},
     {name: AcCurrentPhase1, formula: AggregationFormula},
     {name: AcCurrentPhase2, formula: AggregationFormula},
