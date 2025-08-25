@@ -45,7 +45,7 @@ pub(super) struct LogicalMeterActor {
     client: MicrogridClientHandle,
     config: LogicalMeterConfig,
     resampler_ts: DateTime<Utc>,
-    timer: tokio::time::Interval,
+    resampler_timer: tokio::time::Interval,
 }
 
 /// Returns the next timestamp aligned to the epoch based on the given interval.
@@ -89,7 +89,7 @@ impl LogicalMeterActor {
             client,
             config,
             resampler_ts: last_aligned_ts,
-            timer,
+            resampler_timer: timer,
         })
     }
 
@@ -99,7 +99,7 @@ impl LogicalMeterActor {
 
         loop {
             tokio::select! {
-                _ = self.timer.tick() => {
+                _ = self.resampler_timer.tick() => {
                     self.resampler_ts += self.config.resampling_interval;
 
                     if let Err(err) = self.do_next(&mut resamplers, &mut formulas) {
