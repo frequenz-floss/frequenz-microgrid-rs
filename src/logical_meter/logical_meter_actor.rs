@@ -44,7 +44,7 @@ pub(super) struct LogicalMeterActor {
     instructions_rx: mpsc::Receiver<Instruction>,
     client: MicrogridClientHandle,
     config: LogicalMeterConfig,
-    next_ts: DateTime<Utc>,
+    resampler_ts: DateTime<Utc>,
     timer: tokio::time::Interval,
 }
 
@@ -58,8 +58,7 @@ pub(crate) fn epoch_align(timestamp: DateTime<Utc>, interval: TimeDelta) -> Opti
 
     let aligned_timestamp = DateTime::from_timestamp_millis(aligned_millis_since_epoch)?;
 
-    let next_aligned_ts = aligned_timestamp + interval;
-    Some(next_aligned_ts)
+    Some(aligned_timestamp)
 }
 
 impl LogicalMeterActor {
@@ -69,7 +68,7 @@ impl LogicalMeterActor {
         config: LogicalMeterConfig,
     ) -> Result<Self, Error> {
         let now = Utc::now();
-        let next_ts = epoch_align(now, config.resampling_interval).ok_or_else(|| {
+        let last_aligned_ts = epoch_align(now, config.resampling_interval).ok_or_else(|| {
             Error::chrono_error("Failed to align current time to the epoch".to_string())
         })?;
         let mut timer =
@@ -80,7 +79,7 @@ impl LogicalMeterActor {
 
         // The next tick should be at the next aligned timestamp.
         timer.reset_after(
-            (next_ts - now)
+            (last_aligned_ts + config.resampling_interval - now)
                 .to_std()
                 .map_err(|e| Error::chrono_error(format!("Failed to calculate time delta: {e}")))?,
         );
@@ -89,7 +88,7 @@ impl LogicalMeterActor {
             instructions_rx,
             client,
             config,
-            next_ts,
+            resampler_ts: last_aligned_ts,
             timer,
         })
     }
@@ -101,6 +100,8 @@ impl LogicalMeterActor {
         loop {
             tokio::select! {
                 _ = self.timer.tick() => {
+                    self.resampler_ts += self.config.resampling_interval;
+
                     if let Err(err) = self.do_next(&mut resamplers, &mut formulas) {
                         tracing::error!("Error resampling: {}", err);
                     };
@@ -214,7 +215,7 @@ impl LogicalMeterActor {
             while let Ok(data) = resampler.receiver.try_recv() {
                 self.push_to_resampler(resampler, data, resampler.metric);
             }
-            let resampled = resampler.resampler.resample(self.next_ts);
+            let resampled = resampler.resampler.resample(self.resampler_ts);
             if resampled.len() != 1 {
                 return Err(Error::connection_failure(format!(
                     "Resampling produced {} values",
@@ -236,7 +237,7 @@ impl LogicalMeterActor {
                     Error::formula_engine_error(format!("Failed to evaluate formula: {e}"))
                 })?;
 
-            if let Err(e) = formula.sender.send(Sample::new(self.next_ts, result)) {
+            if let Err(e) = formula.sender.send(Sample::new(self.resampler_ts, result)) {
                 tracing::debug!(
                     "No remaining subscribers for formula: {}:({}). Err: {e}",
                     formula_key.1.as_str_name(),
@@ -275,7 +276,6 @@ impl LogicalMeterActor {
             });
         }
 
-        self.next_ts += self.config.resampling_interval;
         Ok(())
     }
 
