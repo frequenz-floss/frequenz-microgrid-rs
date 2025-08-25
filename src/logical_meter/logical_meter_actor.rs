@@ -111,11 +111,11 @@ impl LogicalMeterActor {
                         }
                     };
 
-                    if let Err(err) = self.do_next(&mut resampled, &mut resamplers, &mut formulas) {
+                    if let Err(err) = self.evaluate_formulas(&mut resampled, &mut formulas) {
                         if err.kind() == ErrorKind::DroppedUnusedFormulas {
                             self.cleanup_resamplers(&formulas, &mut resamplers);
                         } else {
-                            tracing::error!("Error applying formulas: {}", err);
+                            tracing::error!("Error evaluating formulas: {}", err);
                         }
                     };
                 }
@@ -217,10 +217,9 @@ impl LogicalMeterActor {
     }
 
     /// Resamples component data and evaluates formulas for the next timestamp.
-    fn do_next(
+    fn evaluate_formulas(
         &mut self,
         resampled_metrics: &mut HashMap<Metric, HashMap<u64, Option<f32>>>,
-        resamplers: &mut HashMap<(u64, Metric), ComponentDataResampler>,
         formulas: &mut HashMap<(String, Metric), LogicalMeterFormula>,
     ) -> Result<(), Error> {
         let mut formulas_to_drop = vec![];
