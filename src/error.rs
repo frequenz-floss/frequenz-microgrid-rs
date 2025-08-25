@@ -56,6 +56,7 @@ ErrorKind!(
     (ComponentGraphError, component_graph_error),
     (ConnectionFailure, connection_failure),
     (ChronoError, chrono_error),
+    (DroppedUnusedFormulas, dropped_unused_formulas),
     (FormulaEngineError, formula_engine_error),
     (InvalidMetric, invalid_metric),
     (Internal, internal)

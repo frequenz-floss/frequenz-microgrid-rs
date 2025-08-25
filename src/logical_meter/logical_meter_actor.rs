@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::{MissedTickBehavior, interval};
 
+use crate::ErrorKind;
 use crate::proto::common::v1alpha8::metrics::{Metric, metric_value_variant::MetricValueVariant};
 use crate::{
     Error, MicrogridClientHandle, Sample,
@@ -111,7 +112,11 @@ impl LogicalMeterActor {
                     };
 
                     if let Err(err) = self.do_next(&mut resampled, &mut resamplers, &mut formulas) {
-                        tracing::error!("Error applying formulas: {}", err);
+                        if err.kind() == ErrorKind::DroppedUnusedFormulas {
+                            self.cleanup_resamplers(&formulas, &mut resamplers);
+                        } else {
+                            tracing::error!("Error applying formulas: {}", err);
+                        }
                     };
                 }
                 instruction = self.instructions_rx.recv() => {
@@ -248,22 +253,7 @@ impl LogicalMeterActor {
             }
         }
         if !formulas_to_drop.is_empty() {
-            let mut components = HashSet::<(u64, Metric)>::new();
-            for ((_, metric), formula) in formulas.iter() {
-                components.extend(formula.formula.components().iter().map(|&id| (id, *metric)));
-            }
-            resamplers.retain(|component_id, _| {
-                if components.contains(component_id) {
-                    true
-                } else {
-                    tracing::debug!(
-                        "Dropping resampler for component {}:{}",
-                        component_id.0,
-                        component_id.1.as_str_name()
-                    );
-                    false
-                }
-            });
+            return Err(Error::dropped_unused_formulas("Dropped unused formulas"));
         }
 
         Ok(())
@@ -294,6 +284,30 @@ impl LogicalMeterActor {
         }
 
         Ok(resampled_metrics)
+    }
+
+    /// Cleans up resamplers that are no longer needed by any formula.
+    fn cleanup_resamplers(
+        &mut self,
+        formulas: &HashMap<(String, Metric), LogicalMeterFormula>,
+        resamplers: &mut HashMap<(u64, Metric), ComponentDataResampler>,
+    ) {
+        let mut components = HashSet::<(u64, Metric)>::new();
+        for ((_, metric), formula) in formulas.iter() {
+            components.extend(formula.formula.components().iter().map(|&id| (id, *metric)));
+        }
+        resamplers.retain(|component_id, _| {
+            if components.contains(component_id) {
+                true
+            } else {
+                tracing::debug!(
+                    "Dropping resampler for component {}:{}",
+                    component_id.0,
+                    component_id.1.as_str_name()
+                );
+                false
+            }
+        });
     }
 
     /// Extracts the given metric from the given ComponentData and pushes it to
