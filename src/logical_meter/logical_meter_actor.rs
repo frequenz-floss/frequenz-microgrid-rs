@@ -14,6 +14,7 @@ use tokio::time::{MissedTickBehavior, interval};
 
 use crate::ErrorKind;
 use crate::proto::common::v1alpha8::metrics::{Metric, metric_value_variant::MetricValueVariant};
+use crate::quantity::Quantity;
 use crate::{
     Error, MicrogridClientHandle, Sample,
     proto::common::v1alpha8::microgrid::electrical_components::ElectricalComponentTelemetry,
@@ -21,9 +22,9 @@ use crate::{
 
 use super::config::LogicalMeterConfig;
 
-struct LogicalMeterFormula {
+struct LogicalMeterFormula<Q: Quantity = f32> {
     formula: FormulaEngine<f32>,
-    sender: broadcast::Sender<Sample>,
+    sender: broadcast::Sender<Sample<Q>>,
 }
 
 struct ComponentDataResampler {
