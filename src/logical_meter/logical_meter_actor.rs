@@ -112,7 +112,7 @@ impl LogicalMeterActor {
                         }
                     };
 
-                    if let Err(err) = self.evaluate_formulas(&mut resampled, &mut formulas) {
+                    if let Err(err) = self.evaluate_formulas(&mut resampled, &mut formulas, |x| x) {
                         if err.kind() == ErrorKind::DroppedUnusedFormulas {
                             self.cleanup_resamplers(&formulas, &mut resamplers);
                         } else {
@@ -218,10 +218,11 @@ impl LogicalMeterActor {
     }
 
     /// Resamples component data and evaluates formulas for the next timestamp.
-    fn evaluate_formulas(
+    fn evaluate_formulas<Q: Quantity>(
         &mut self,
         resampled_metrics: &mut HashMap<Metric, HashMap<u64, Option<f32>>>,
-        formulas: &mut HashMap<(String, Metric), LogicalMeterFormula>,
+        formulas: &mut HashMap<(String, Metric), LogicalMeterFormula<Q>>,
+        transform: impl Fn(f32) -> Q,
     ) -> Result<(), Error> {
         let mut formulas_to_drop = vec![];
         for (formula_key, formula) in formulas.iter_mut() {
@@ -232,7 +233,10 @@ impl LogicalMeterActor {
                     Error::formula_engine_error(format!("Failed to evaluate formula: {e}"))
                 })?;
 
-            if let Err(e) = formula.sender.send(Sample::new(self.resampler_ts, result)) {
+            if let Err(e) = formula
+                .sender
+                .send(Sample::new(self.resampler_ts, result.map(&transform)))
+            {
                 tracing::debug!(
                     "No remaining subscribers for formula: {}:({}). Err: {e}",
                     formula_key.1.as_str_name(),
