@@ -74,12 +74,6 @@ impl<M: Metric> std::ops::Add for AggregationFormula<M> {
     type Output = Result<Self, Error>;
 
     fn add(self, other: Self) -> Self::Output {
-        if self.metric != other.metric {
-            return Err(Error::invalid_metric(format!(
-                "Cannot add formulas with different metrics: {} and {}",
-                self.metric as isize, other.metric as isize
-            )));
-        }
         let new_formula = self.formula + other.formula;
         Ok(FormulaParams::new(new_formula, self.metric, self.instructions_tx).into())
     }
@@ -89,12 +83,6 @@ impl<M: Metric> std::ops::Sub for AggregationFormula<M> {
     type Output = Result<Self, Error>;
 
     fn sub(self, other: Self) -> Self::Output {
-        if self.metric != other.metric {
-            return Err(Error::invalid_metric(format!(
-                "Cannot subtract formulas with different metrics: {} and {}",
-                self.metric as isize, other.metric as isize
-            )));
-        }
         let new_formula = self.formula - other.formula;
         Ok(FormulaParams::new(new_formula, self.metric, self.instructions_tx).into())
     }

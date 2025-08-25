@@ -79,13 +79,6 @@ where
         let mut params_self: FormulaParams<T, M> = self.into();
         let params_other: FormulaParams<T, M> = other.into();
 
-        if params_self.metric != params_other.metric {
-            return Err(Error::invalid_metric(format!(
-                "Cannot coalesce formulas with different metrics: {} and {}",
-                params_self.metric.as_str_name(),
-                params_other.metric.as_str_name()
-            )));
-        }
         params_self.formula = params_self.formula.coalesce(params_other.formula);
         Ok(params_self.into())
     }
@@ -94,13 +87,6 @@ where
         let mut params_self: FormulaParams<T, M> = self.into();
         let params_other: FormulaParams<T, M> = other.into();
 
-        if params_self.metric != params_other.metric {
-            return Err(Error::invalid_metric(format!(
-                "Cannot take min of formulas with different metrics: {} and {}",
-                params_self.metric.as_str_name(),
-                params_other.metric.as_str_name()
-            )));
-        }
         params_self.formula = params_self.formula.min(params_other.formula);
         Ok(params_self.into())
     }
@@ -109,13 +95,6 @@ where
         let mut params_self: FormulaParams<T, M> = self.into();
         let params_other: FormulaParams<T, M> = other.into();
 
-        if params_self.metric != params_other.metric {
-            return Err(Error::invalid_metric(format!(
-                "Cannot take max of formulas with different metrics: {} and {}",
-                params_self.metric.as_str_name(),
-                params_other.metric.as_str_name()
-            )));
-        }
         params_self.formula = params_self.formula.max(params_other.formula);
         Ok(params_self.into())
     }

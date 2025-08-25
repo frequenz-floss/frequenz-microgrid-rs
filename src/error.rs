@@ -58,7 +58,6 @@ ErrorKind!(
     (ChronoError, chrono_error),
     (DroppedUnusedFormulas, dropped_unused_formulas),
     (FormulaEngineError, formula_engine_error),
-    (InvalidMetric, invalid_metric),
     (Internal, internal)
 );
 
