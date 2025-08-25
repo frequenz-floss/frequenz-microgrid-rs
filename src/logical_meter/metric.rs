@@ -10,11 +10,17 @@ use super::formula;
 pub trait Metric: std::fmt::Display + std::fmt::Debug + Clone + Copy + PartialEq + Eq {
     type FormulaType: formula::Formula + formula::graph_formula_provider::GraphFormulaProvider;
 
+    type QuantityType: crate::quantity::Quantity;
+
     const METRIC: MetricPb;
 }
 
 macro_rules! define_metric {
-    ($({name: $metric_name:ident, formula: $formula:ident}),+ $(,)?) => {
+    ($({
+        name: $metric_name:ident,
+        formula: $formula:ident,
+        quantity: $quantity:ident
+    }),+ $(,)?) => {
         $(
             // Define a metric
             #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +29,7 @@ macro_rules! define_metric {
             // Implement the AcMetric trait for the metric
             impl Metric for $metric_name {
                 type FormulaType = formula::$formula;
+                type QuantityType = crate::quantity::$quantity;
 
                 const METRIC: MetricPb = MetricPb::$metric_name;
             }
@@ -38,20 +45,20 @@ macro_rules! define_metric {
 }
 
 define_metric! {
-    {name: AcPowerActive,   formula: AggregationFormula},
-    {name: AcPowerReactive, formula: AggregationFormula},
-    {name: AcCurrent,       formula: AggregationFormula},
-    {name: AcCurrentPhase1, formula: AggregationFormula},
-    {name: AcCurrentPhase2, formula: AggregationFormula},
-    {name: AcCurrentPhase3, formula: AggregationFormula},
+    { name: AcPowerActive,         formula: AggregationFormula, quantity: Power },
+    { name: AcPowerReactive,       formula: AggregationFormula, quantity: ReactivePower },
+    { name: AcCurrent,             formula: AggregationFormula, quantity: Current },
+    { name: AcCurrentPhase1,       formula: AggregationFormula, quantity: Current },
+    { name: AcCurrentPhase2,       formula: AggregationFormula, quantity: Current },
+    { name: AcCurrentPhase3,       formula: AggregationFormula, quantity: Current },
 
-    {name: AcVoltage,             formula: CoalesceFormula},
-    {name: AcVoltagePhase1N,      formula: CoalesceFormula},
-    {name: AcVoltagePhase2N,      formula: CoalesceFormula},
-    {name: AcVoltagePhase3N,      formula: CoalesceFormula},
-    {name: AcVoltagePhase1Phase2, formula: CoalesceFormula},
-    {name: AcVoltagePhase2Phase3, formula: CoalesceFormula},
-    {name: AcVoltagePhase3Phase1, formula: CoalesceFormula},
+    { name: AcVoltage,             formula: CoalesceFormula,    quantity: Voltage },
+    { name: AcVoltagePhase1N,      formula: CoalesceFormula,    quantity: Voltage },
+    { name: AcVoltagePhase2N,      formula: CoalesceFormula,    quantity: Voltage },
+    { name: AcVoltagePhase3N,      formula: CoalesceFormula,    quantity: Voltage },
+    { name: AcVoltagePhase1Phase2, formula: CoalesceFormula,    quantity: Voltage },
+    { name: AcVoltagePhase2Phase3, formula: CoalesceFormula,    quantity: Voltage },
+    { name: AcVoltagePhase3Phase1, formula: CoalesceFormula,    quantity: Voltage },
 
-    {name: AcFrequency, formula: CoalesceFormula},
+    { name: AcFrequency,           formula: CoalesceFormula,    quantity: Frequency },
 }
