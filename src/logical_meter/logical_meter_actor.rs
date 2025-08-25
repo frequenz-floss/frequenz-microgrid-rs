@@ -342,6 +342,39 @@ impl LogicalMeterActor {
         }
     }
 
+    async fn start_resamplers(
+        &mut self,
+        components: &HashSet<u64>,
+        metric: Metric,
+        resamplers: &mut HashMap<(u64, Metric), ComponentDataResampler>,
+    ) -> Result<(), Error> {
+        for component_id in components {
+            let resampler_key = &(*component_id, metric);
+            if resamplers.contains_key(resampler_key) {
+                continue;
+            }
+            let resampler = ComponentDataResampler {
+                component_id: *component_id,
+                metric,
+                resampler: frequenz_resampling::Resampler::new(
+                    self.config.resampling_interval,
+                    ResamplingFunction::Average,
+                    3,
+                    Utc::now()
+                        .with_nanosecond(0)
+                        .ok_or_else(|| Error::chrono_error("Failed to get current time."))?,
+                    false,
+                ),
+                receiver: self
+                    .client
+                    .receive_electrical_component_telemetry_stream(*component_id)
+                    .await?,
+            };
+            resamplers.insert(*resampler_key, resampler);
+        }
+        Ok(())
+    }
+
     /// Handles SubscribeFormula instructions.
     ///
     /// If the formula already exists, it sends the existing receiver to the
@@ -372,30 +405,8 @@ impl LogicalMeterActor {
             .map_err(|e| Error::formula_engine_error(format!("Failed to parse formula: {e}")))?;
         let (sender, receiver) = broadcast::channel(8);
 
-        for component_id in formula_engine.components() {
-            let resampler_key = (*component_id, metric);
-            if resamplers.contains_key(&resampler_key) {
-                continue;
-            }
-            let resampler = ComponentDataResampler {
-                component_id: *component_id,
-                metric,
-                resampler: frequenz_resampling::Resampler::new(
-                    self.config.resampling_interval,
-                    ResamplingFunction::Average,
-                    3,
-                    Utc::now()
-                        .with_nanosecond(0)
-                        .ok_or_else(|| Error::chrono_error("Failed to get current time."))?,
-                    false,
-                ),
-                receiver: self
-                    .client
-                    .receive_electrical_component_telemetry_stream(*component_id)
-                    .await?,
-            };
-            resamplers.insert(resampler_key, resampler);
-        }
+        self.start_resamplers(formula_engine.components(), metric, resamplers)
+            .await?;
 
         formulas.insert(
             formula_key,
