@@ -14,7 +14,7 @@ use tokio::time::{MissedTickBehavior, interval};
 
 use crate::ErrorKind;
 use crate::proto::common::v1alpha8::metrics::{Metric, metric_value_variant::MetricValueVariant};
-use crate::quantity::Quantity;
+use crate::quantity::{Current, Power, Quantity, ReactivePower, Voltage};
 use crate::{
     Error, MicrogridClientHandle, Sample,
     proto::common::v1alpha8::microgrid::electrical_components::ElectricalComponentTelemetry,
@@ -32,6 +32,54 @@ struct ComponentDataResampler {
     metric: Metric,
     resampler: frequenz_resampling::Resampler<f32, Sample>,
     receiver: broadcast::Receiver<ElectricalComponentTelemetry>,
+}
+
+/// Used to send strongly-typed formula streams from the LogicalMeterActor back
+/// to the Handle.
+pub(crate) enum TypedFormulaResponseSender {
+    Power(oneshot::Sender<broadcast::Receiver<Sample<Power>>>),
+    Voltage(oneshot::Sender<broadcast::Receiver<Sample<Voltage>>>),
+    ReactivePower(oneshot::Sender<broadcast::Receiver<Sample<ReactivePower>>>),
+    Current(oneshot::Sender<broadcast::Receiver<Sample<Current>>>),
+}
+
+impl<Q: Quantity + 'static> TryFrom<oneshot::Sender<broadcast::Receiver<Sample<Q>>>>
+    for TypedFormulaResponseSender
+{
+    type Error = Error;
+
+    fn try_from(
+        sender: oneshot::Sender<broadcast::Receiver<Sample<Q>>>,
+    ) -> Result<Self, Self::Error> {
+        let sender: Box<dyn std::any::Any + Send> = Box::new(sender);
+
+        let sender = match sender.downcast::<oneshot::Sender<broadcast::Receiver<Sample<Power>>>>()
+        {
+            Ok(sender) => return Ok(TypedFormulaResponseSender::Power(*sender)),
+            Err(sender) => sender,
+        };
+
+        let sender =
+            match sender.downcast::<oneshot::Sender<broadcast::Receiver<Sample<Voltage>>>>() {
+                Ok(sender) => return Ok(TypedFormulaResponseSender::Voltage(*sender)),
+                Err(sender) => sender,
+            };
+
+        let sender = match sender
+            .downcast::<oneshot::Sender<broadcast::Receiver<Sample<ReactivePower>>>>()
+        {
+            Ok(sender) => return Ok(TypedFormulaResponseSender::ReactivePower(*sender)),
+            Err(sender) => sender,
+        };
+
+        match sender.downcast::<oneshot::Sender<broadcast::Receiver<Sample<Current>>>>() {
+            Ok(sender) => Ok(TypedFormulaResponseSender::Current(*sender)),
+            _ => Err(Error::internal(format!(
+                "Can't create TypedFormulaResponseSender for `{}`",
+                std::any::type_name::<Q>()
+            ))),
+        }
+    }
 }
 
 pub(crate) enum Instruction {
