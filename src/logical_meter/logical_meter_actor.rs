@@ -521,7 +521,7 @@ impl LogicalMeterActor {
             .iter()
             .find(|s| s.metric == metric as i32)
         else {
-            tracing::warn!(
+            tracing::debug!(
                 "No data for metric {:?} in component {}",
                 metric,
                 resampler.component_id
