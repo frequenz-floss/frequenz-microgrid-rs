@@ -98,6 +98,152 @@ pub(super) struct LogicalMeterActor {
     resampler_timer: tokio::time::Interval,
 }
 
+/// Holds all active formulas, grouped by quantity type.
+#[derive(Default)]
+struct Formulas {
+    power: HashMap<(String, Metric), LogicalMeterFormula<Power>>,
+    voltage: HashMap<(String, Metric), LogicalMeterFormula<Voltage>>,
+    reactive_power: HashMap<(String, Metric), LogicalMeterFormula<ReactivePower>>,
+    current: HashMap<(String, Metric), LogicalMeterFormula<Current>>,
+}
+
+impl Formulas {
+    /// Checks if a formula with the given key exists.
+    fn contains_key(&self, key: &(String, Metric)) -> bool {
+        self.power.contains_key(key)
+            || self.voltage.contains_key(key)
+            || self.reactive_power.contains_key(key)
+            || self.current.contains_key(key)
+    }
+
+    /// Sends an existing subscription receiver for the formula with the given key.
+    fn send_subscription(
+        &self,
+        key: &(String, Metric),
+        receiver_tx: TypedFormulaResponseSender,
+    ) -> Result<(), Error> {
+        match receiver_tx {
+            TypedFormulaResponseSender::Power(sender) => {
+                if self.power.contains_key(key) {
+                    sender
+                        .send(self.power[key].sender.subscribe())
+                        .map_err(|_| {
+                            Error::internal("Failed to send receiver for formula".to_string())
+                        })?;
+                    return Ok(());
+                }
+            }
+            TypedFormulaResponseSender::Voltage(sender) => {
+                if self.voltage.contains_key(key) {
+                    sender
+                        .send(self.voltage[key].sender.subscribe())
+                        .map_err(|_| {
+                            Error::internal("Failed to send receiver for formula".to_string())
+                        })?;
+                    return Ok(());
+                }
+            }
+            TypedFormulaResponseSender::ReactivePower(sender) => {
+                if self.reactive_power.contains_key(key) {
+                    sender
+                        .send(self.reactive_power[key].sender.subscribe())
+                        .map_err(|_| {
+                            Error::internal("Failed to send receiver for formula".to_string())
+                        })?;
+                    return Ok(());
+                }
+            }
+            TypedFormulaResponseSender::Current(sender) => {
+                if self.current.contains_key(key) {
+                    sender
+                        .send(self.current[key].sender.subscribe())
+                        .map_err(|_| {
+                            Error::internal("Failed to send receiver for formula".to_string())
+                        })?;
+                    return Ok(());
+                }
+            }
+        }
+        Err(Error::internal(format!(
+            "Formula exists, but can't find it: {}:({})",
+            key.1.as_str_name(),
+            key.0
+        )))
+    }
+
+    /// Starts a new formula with the given formula string, metric, and sends a receiver
+    /// back to the handle.
+    fn start_formulas(
+        &mut self,
+        formula: String,
+        metric: Metric,
+        response_tx: TypedFormulaResponseSender,
+    ) -> Result<HashSet<u64>, Error> {
+        let formula_key = (formula, metric);
+
+        let formula_engine = FormulaEngine::try_new(&formula_key.0)
+            .map_err(|e| Error::formula_engine_error(format!("Failed to parse formula: {e}")))?;
+        let components = formula_engine.components().clone();
+
+        match response_tx {
+            TypedFormulaResponseSender::Power(receiver_tx) => {
+                let (sender, receiver) = broadcast::channel(100);
+                self.power.insert(
+                    formula_key,
+                    LogicalMeterFormula {
+                        formula: formula_engine,
+                        sender,
+                    },
+                );
+                receiver_tx.send(receiver).map_err(|_| {
+                    Error::internal("Failed to send receiver for formula".to_string())
+                })?;
+            }
+            TypedFormulaResponseSender::Voltage(receiver_tx) => {
+                let (sender, receiver) = broadcast::channel(100);
+                self.voltage.insert(
+                    formula_key,
+                    LogicalMeterFormula {
+                        formula: formula_engine,
+                        sender,
+                    },
+                );
+                receiver_tx.send(receiver).map_err(|_| {
+                    Error::internal("Failed to send receiver for formula".to_string())
+                })?;
+            }
+            TypedFormulaResponseSender::ReactivePower(receiver_tx) => {
+                let (sender, receiver) = broadcast::channel(100);
+                self.reactive_power.insert(
+                    formula_key,
+                    LogicalMeterFormula {
+                        formula: formula_engine,
+                        sender,
+                    },
+                );
+                receiver_tx.send(receiver).map_err(|_| {
+                    Error::internal("Failed to send receiver for formula".to_string())
+                })?;
+            }
+            TypedFormulaResponseSender::Current(receiver_tx) => {
+                let (sender, receiver) = broadcast::channel(100);
+                self.current.insert(
+                    formula_key,
+                    LogicalMeterFormula {
+                        formula: formula_engine,
+                        sender,
+                    },
+                );
+                receiver_tx.send(receiver).map_err(|_| {
+                    Error::internal("Failed to send receiver for formula".to_string())
+                })?;
+            }
+        }
+
+        Ok(components)
+    }
+}
+
 /// Returns the next timestamp aligned to the epoch based on the given interval.
 pub(crate) fn epoch_align(timestamp: DateTime<Utc>, interval: TimeDelta) -> Option<DateTime<Utc>> {
     let millis_since_epoch = timestamp.timestamp_millis();
