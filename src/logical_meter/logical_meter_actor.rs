@@ -86,7 +86,7 @@ pub(crate) enum Instruction {
     SubscribeFormula {
         formula: String,
         metric: Metric,
-        response_tx: oneshot::Sender<broadcast::Receiver<Sample>>,
+        response_tx: TypedFormulaResponseSender,
     },
 }
 
@@ -291,7 +291,7 @@ impl LogicalMeterActor {
 
     pub async fn run(mut self) {
         let mut resamplers: HashMap<(u64, Metric), ComponentDataResampler> = HashMap::new();
-        let mut formulas: HashMap<(String, Metric), LogicalMeterFormula> = HashMap::new();
+        let mut formulas = Formulas::default();
 
         loop {
             tokio::select! {
@@ -305,8 +305,23 @@ impl LogicalMeterActor {
                             continue;
                         }
                     };
-
-                    if let Err(err) = self.evaluate_formulas(&mut resampled, &mut formulas, |x| x) {
+                    if let Some(err) = {
+                        self.evaluate_formulas(
+                            &mut resampled, &mut formulas.power, Power::from_watts
+                        )
+                        .err()
+                        .or(self.evaluate_formulas(
+                            &mut resampled, &mut formulas.voltage, Voltage::from_volts
+                        ).err())
+                        .or(self.evaluate_formulas(
+                            &mut resampled, &mut formulas.current, Current::from_amperes
+                        ).err())
+                        .or(self.evaluate_formulas(
+                            &mut resampled,
+                            &mut formulas.reactive_power,
+                            ReactivePower::from_volt_amperes_reactive
+                        ).err())
+                    } {
                         if err.kind() == ErrorKind::DroppedUnusedFormulas {
                             self.cleanup_resamplers(&formulas, &mut resamplers);
                         } else {
@@ -389,37 +404,17 @@ impl LogicalMeterActor {
         &mut self,
         formula: String,
         metric: Metric,
-        receiver_tx: oneshot::Sender<broadcast::Receiver<Sample>>,
-        formulas: &mut HashMap<(String, Metric), LogicalMeterFormula>,
+        receiver_tx: TypedFormulaResponseSender,
+        all_formulas: &mut Formulas,
         resamplers: &mut HashMap<(u64, Metric), ComponentDataResampler>,
     ) -> Result<(), Error> {
-        let formula_key = (formula, metric);
-        if formulas.contains_key(&formula_key) {
-            receiver_tx
-                .send(formulas[&formula_key].sender.subscribe())
-                .map_err(|_| Error::internal("Failed to send receiver for formula".to_string()))?;
-            return Ok(());
+        let formula_key = (formula.clone(), metric);
+        if all_formulas.contains_key(&formula_key) {
+            all_formulas.send_subscription(&formula_key, receiver_tx)
+        } else {
+            let components = all_formulas.start_formulas(formula, metric, receiver_tx)?;
+            self.start_resamplers(&components, metric, resamplers).await
         }
-
-        let formula_engine = FormulaEngine::try_new(&formula_key.0)
-            .map_err(|e| Error::formula_engine_error(format!("Failed to parse formula: {e}")))?;
-        let (sender, receiver) = broadcast::channel(8);
-
-        self.start_resamplers(formula_engine.components(), metric, resamplers)
-            .await?;
-
-        formulas.insert(
-            formula_key,
-            LogicalMeterFormula {
-                formula: formula_engine,
-                sender,
-            },
-        );
-        receiver_tx
-            .send(receiver)
-            .map_err(|_| Error::internal("Failed to send receiver for formula".to_string()))?;
-
-        Ok(())
     }
 
     /// Resamples component data and evaluates formulas for the next timestamp.
@@ -498,11 +493,20 @@ impl LogicalMeterActor {
     /// Cleans up resamplers that are no longer needed by any formula.
     fn cleanup_resamplers(
         &mut self,
-        formulas: &HashMap<(String, Metric), LogicalMeterFormula>,
+        formulas: &Formulas,
         resamplers: &mut HashMap<(u64, Metric), ComponentDataResampler>,
     ) {
         let mut components = HashSet::<(u64, Metric)>::new();
-        for ((_, metric), formula) in formulas.iter() {
+        for ((_, metric), formula) in formulas.power.iter() {
+            components.extend(formula.formula.components().iter().map(|&id| (id, *metric)));
+        }
+        for ((_, metric), formula) in formulas.voltage.iter() {
+            components.extend(formula.formula.components().iter().map(|&id| (id, *metric)));
+        }
+        for ((_, metric), formula) in formulas.reactive_power.iter() {
+            components.extend(formula.formula.components().iter().map(|&id| (id, *metric)));
+        }
+        for ((_, metric), formula) in formulas.current.iter() {
             components.extend(formula.formula.components().iter().map(|&id| (id, *metric)));
         }
         resamplers.retain(|component_id, _| {

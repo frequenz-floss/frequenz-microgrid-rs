@@ -5,36 +5,40 @@
 
 use super::{FormulaParams, FormulaSubscriber, GraphFormulaProvider};
 use crate::{
-    Error, Sample, logical_meter::logical_meter_actor, proto::common::v1alpha8::metrics::Metric,
+    Error, Sample, logical_meter::logical_meter_actor, metric::Metric, quantity::Quantity,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 #[derive(Clone)]
-pub struct CoalesceFormula {
+pub struct CoalesceFormula<M: Metric> {
     formula: frequenz_microgrid_component_graph::CoalesceFormula,
-    metric: Metric,
+    metric: M,
     instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
 }
 
-impl std::fmt::Display for CoalesceFormula {
+impl<M: Metric> std::fmt::Display for CoalesceFormula<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.formula.fmt(f)
     }
 }
 
-impl GraphFormulaProvider for CoalesceFormula {
+impl<M: Metric> GraphFormulaProvider for CoalesceFormula<M> {
     type GraphFormulaType = frequenz_microgrid_component_graph::CoalesceFormula;
 }
 
-impl FormulaSubscriber for CoalesceFormula {
-    async fn subscribe(&self) -> Result<broadcast::Receiver<Sample>, Error> {
+impl<Q: Quantity + 'static, M: Metric<QuantityType = Q> + Sync> FormulaSubscriber
+    for CoalesceFormula<M>
+{
+    type MetricType = M;
+
+    async fn subscribe(&self) -> Result<broadcast::Receiver<Sample<Q>>, Error> {
         let (tx, rx) = oneshot::channel();
 
         self.instructions_tx
             .send(logical_meter_actor::Instruction::SubscribeFormula {
                 formula: self.formula.to_string(),
-                metric: self.metric,
-                response_tx: tx,
+                metric: M::METRIC,
+                response_tx: tx.try_into()?,
             })
             .await
             .map_err(|e| Error::connection_failure(format!("Could not send instruction: {e}")))?;
@@ -46,8 +50,8 @@ impl FormulaSubscriber for CoalesceFormula {
     }
 }
 
-impl From<FormulaParams<CoalesceFormula>> for CoalesceFormula {
-    fn from(params: FormulaParams<CoalesceFormula>) -> Self {
+impl<M: Metric> From<FormulaParams<CoalesceFormula<M>, M>> for CoalesceFormula<M> {
+    fn from(params: FormulaParams<CoalesceFormula<M>, M>) -> Self {
         Self {
             formula: params.formula,
             metric: params.metric,
@@ -56,8 +60,8 @@ impl From<FormulaParams<CoalesceFormula>> for CoalesceFormula {
     }
 }
 
-impl From<CoalesceFormula> for FormulaParams<CoalesceFormula> {
-    fn from(formula: CoalesceFormula) -> Self {
+impl<M: Metric> From<CoalesceFormula<M>> for FormulaParams<CoalesceFormula<M>, M> {
+    fn from(formula: CoalesceFormula<M>) -> Self {
         FormulaParams {
             formula: formula.formula,
             metric: formula.metric,

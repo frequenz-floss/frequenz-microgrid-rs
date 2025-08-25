@@ -8,7 +8,8 @@ use crate::proto::common::v1alpha8::metrics::Metric as MetricPb;
 use super::formula;
 
 pub trait Metric: std::fmt::Display + std::fmt::Debug + Clone + Copy + PartialEq + Eq {
-    type FormulaType: formula::Formula + formula::graph_formula_provider::GraphFormulaProvider;
+    type FormulaType: formula::Formula<Self::QuantityType>
+        + formula::graph_formula_provider::GraphFormulaProvider<MetricType = Self>;
 
     type QuantityType: crate::quantity::Quantity;
 
@@ -28,7 +29,7 @@ macro_rules! define_metric {
 
             // Implement the AcMetric trait for the metric
             impl Metric for $metric_name {
-                type FormulaType = formula::$formula;
+                type FormulaType = formula::$formula<$metric_name>;
                 type QuantityType = crate::quantity::$quantity;
 
                 const METRIC: MetricPb = MetricPb::$metric_name;
