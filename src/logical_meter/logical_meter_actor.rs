@@ -102,8 +102,16 @@ impl LogicalMeterActor {
                 _ = self.resampler_timer.tick() => {
                     self.resampler_ts += self.config.resampling_interval;
 
-                    if let Err(err) = self.do_next(&mut resamplers, &mut formulas) {
-                        tracing::error!("Error resampling: {}", err);
+                    let mut resampled = match self.resample_metrics(&mut resamplers) {
+                        Ok(resampled) => resampled,
+                        Err(err) => {
+                            tracing::error!("Error resampling metrics: {}", err);
+                            continue;
+                        }
+                    };
+
+                    if let Err(err) = self.do_next(&mut resampled, &mut resamplers, &mut formulas) {
+                        tracing::error!("Error applying formulas: {}", err);
                     };
                 }
                 instruction = self.instructions_rx.recv() => {
@@ -206,28 +214,10 @@ impl LogicalMeterActor {
     /// Resamples component data and evaluates formulas for the next timestamp.
     fn do_next(
         &mut self,
+        resampled_metrics: &mut HashMap<Metric, HashMap<u64, Option<f32>>>,
         resamplers: &mut HashMap<(u64, Metric), ComponentDataResampler>,
         formulas: &mut HashMap<(String, Metric), LogicalMeterFormula>,
     ) -> Result<(), Error> {
-        let mut resampled_metrics: HashMap<Metric, HashMap<u64, Option<f32>>> = HashMap::new();
-
-        for (_, resampler) in resamplers.iter_mut() {
-            while let Ok(data) = resampler.receiver.try_recv() {
-                self.push_to_resampler(resampler, data, resampler.metric);
-            }
-            let resampled = resampler.resampler.resample(self.resampler_ts);
-            if resampled.len() != 1 {
-                return Err(Error::connection_failure(format!(
-                    "Resampling produced {} values",
-                    resampled.len()
-                )));
-            }
-            resampled_metrics
-                .entry(resampler.metric)
-                .or_default()
-                .insert(resampler.component_id, resampled[0].clone().value());
-        }
-
         let mut formulas_to_drop = vec![];
         for (formula_key, formula) in formulas.iter_mut() {
             let result = formula
@@ -277,6 +267,33 @@ impl LogicalMeterActor {
         }
 
         Ok(())
+    }
+
+    /// Resamples component telemetry
+    fn resample_metrics(
+        &mut self,
+        resamplers: &mut HashMap<(u64, Metric), ComponentDataResampler>,
+    ) -> Result<HashMap<Metric, HashMap<u64, Option<f32>>>, Error> {
+        let mut resampled_metrics: HashMap<Metric, HashMap<u64, Option<f32>>> = HashMap::new();
+
+        for (_, resampler) in resamplers.iter_mut() {
+            while let Ok(data) = resampler.receiver.try_recv() {
+                self.push_to_resampler(resampler, data, resampler.metric);
+            }
+            let resampled = resampler.resampler.resample(self.resampler_ts);
+            if resampled.len() != 1 {
+                return Err(Error::connection_failure(format!(
+                    "Resampling produced {} values",
+                    resampled.len()
+                )));
+            }
+            resampled_metrics
+                .entry(resampler.metric)
+                .or_default()
+                .insert(resampler.component_id, resampled[0].clone().value());
+        }
+
+        Ok(resampled_metrics)
     }
 
     /// Extracts the given metric from the given ComponentData and pushes it to
