@@ -11,4 +11,4 @@ pub use logical_meter_handle::LogicalMeterHandle;
 pub mod metric;
 
 pub use config::LogicalMeterConfig;
-pub use formula::{AggregationFormula, Formula};
+pub use formula::{AggregationFormula, FormulaOps};

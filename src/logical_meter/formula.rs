@@ -56,7 +56,7 @@ impl<F: GraphFormulaProvider, M: Metric> FormulaParams<F, M> {
 }
 
 /// A trait that defines generic formula operations.
-pub trait Formula<Q: Quantity>: std::fmt::Display + Sized {
+pub trait FormulaOps<Q: Quantity>: std::fmt::Display + Sized {
     fn coalesce(self, other: Self) -> Result<Self, Error>;
     fn min(self, other: Self) -> Result<Self, Error>;
     fn max(self, other: Self) -> Result<Self, Error>;
@@ -65,7 +65,7 @@ pub trait Formula<Q: Quantity>: std::fmt::Display + Sized {
     ) -> impl Future<Output = Result<broadcast::Receiver<Sample<Q>>, Error>> + Send;
 }
 
-impl<T, Q, M> Formula<Q> for T
+impl<T, Q, M> FormulaOps<Q> for T
 where
     T: FormulaSubscriber<MetricType = M>
         + GraphFormulaProvider
