@@ -3,7 +3,8 @@
 
 use chrono::TimeDelta;
 use frequenz_microgrid::{
-    Error, FormulaOps, LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle, metric,
+    Error, FormulaOps as _, FormulaSubscriber as _, LogicalMeterConfig, LogicalMeterHandle,
+    MicrogridClientHandle, metric,
 };
 use tracing_subscriber::{
     EnvFilter,

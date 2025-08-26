@@ -21,7 +21,7 @@ pub(crate) trait GraphFormulaProvider: std::fmt::Display {
 }
 
 /// Defines a formula that can be subscribed to for receiving samples.
-pub(crate) trait FormulaSubscriber: std::fmt::Display {
+pub trait FormulaSubscriber: std::fmt::Display {
     type MetricType: Metric;
 
     fn subscribe(
@@ -60,9 +60,6 @@ pub trait FormulaOps<Q: Quantity>: std::fmt::Display + Sized {
     fn coalesce(self, other: Self) -> Result<Self, Error>;
     fn min(self, other: Self) -> Result<Self, Error>;
     fn max(self, other: Self) -> Result<Self, Error>;
-    fn subscribe(
-        &self,
-    ) -> impl Future<Output = Result<broadcast::Receiver<Sample<Q>>, Error>> + Send;
 }
 
 impl<T, Q, M> FormulaOps<Q> for T
@@ -97,12 +94,5 @@ where
 
         params_self.formula = params_self.formula.max(params_other.formula);
         Ok(params_self.into())
-    }
-
-    fn subscribe(
-        &self,
-    ) -> impl Future<Output = Result<broadcast::Receiver<Sample<M::QuantityType>>, Error>> + Send
-    {
-        <T as FormulaSubscriber>::subscribe(self)
     }
 }
