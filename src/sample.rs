@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 
 /// Represents a measurement of a microgrid metric, made at a specific time.
 #[derive(Clone, Debug, Default)]
-pub struct Sample<Q: Copy + Clone + std::fmt::Debug + Default = f32> {
+pub struct Sample<Q: Copy + Clone + std::fmt::Debug + Default> {
     timestamp: DateTime<Utc>,
     value: Option<Q>,
 }

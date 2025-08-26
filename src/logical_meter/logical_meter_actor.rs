@@ -30,7 +30,7 @@ struct LogicalMeterFormula<Q: Quantity = f32> {
 struct ComponentDataResampler {
     component_id: u64,
     metric: Metric,
-    resampler: frequenz_resampling::Resampler<f32, Sample>,
+    resampler: frequenz_resampling::Resampler<f32, Sample<f32>>,
     receiver: broadcast::Receiver<ElectricalComponentTelemetry>,
 }
 
