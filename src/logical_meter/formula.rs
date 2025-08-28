@@ -21,17 +21,14 @@ pub(crate) trait GraphFormulaConnector: std::fmt::Display {
 }
 
 /// Defines a formula that can be subscribed to for receiving samples.
-pub trait FormulaSubscriber: std::fmt::Display {
-    type MetricType: Metric;
-
+pub trait FormulaSubscriber<Q: Quantity>: std::fmt::Display {
     fn subscribe(
         &self,
-    ) -> impl Future<
-        Output = Result<
-            broadcast::Receiver<Sample<<Self::MetricType as Metric>::QuantityType>>,
-            Error,
-        >,
-    > + Send;
+    ) -> impl Future<Output = Result<broadcast::Receiver<Sample<Q>>, Error>> + Send;
+}
+
+pub(crate) trait FormulaMetricConnector {
+    type MetricType: Metric;
 }
 
 /// Parameters for creating a logical meter formula.
@@ -64,7 +61,8 @@ pub trait FormulaOps<Q: Quantity>: std::fmt::Display + Sized {
 
 impl<T, Q, M> FormulaOps<Q> for T
 where
-    T: FormulaSubscriber<MetricType = M>
+    T: FormulaSubscriber<Q>
+        + FormulaMetricConnector<MetricType = M>
         + GraphFormulaConnector
         + From<FormulaParams<T, M>>
         + Into<FormulaParams<T, M>>

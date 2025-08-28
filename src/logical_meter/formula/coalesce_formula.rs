@@ -5,7 +5,10 @@
 
 use super::{FormulaParams, FormulaSubscriber, GraphFormulaConnector};
 use crate::{
-    Error, Sample, logical_meter::logical_meter_actor, metric::Metric, quantity::Quantity,
+    Error, Sample,
+    logical_meter::{formula::FormulaMetricConnector, logical_meter_actor},
+    metric::Metric,
+    quantity::Quantity,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -26,11 +29,9 @@ impl<M: Metric> GraphFormulaConnector for CoalesceFormula<M> {
     type GraphFormulaType = frequenz_microgrid_component_graph::CoalesceFormula;
 }
 
-impl<Q: Quantity + 'static, M: Metric<QuantityType = Q> + Sync> FormulaSubscriber
+impl<Q: Quantity + 'static, M: Metric<QuantityType = Q> + Sync> FormulaSubscriber<Q>
     for CoalesceFormula<M>
 {
-    type MetricType = M;
-
     async fn subscribe(&self) -> Result<broadcast::Receiver<Sample<Q>>, Error> {
         let (tx, rx) = oneshot::channel();
 
@@ -48,6 +49,10 @@ impl<Q: Quantity + 'static, M: Metric<QuantityType = Q> + Sync> FormulaSubscribe
 
         Ok(receiver)
     }
+}
+
+impl<M: Metric> FormulaMetricConnector for CoalesceFormula<M> {
+    type MetricType = M;
 }
 
 impl<M: Metric> From<FormulaParams<CoalesceFormula<M>, M>> for CoalesceFormula<M> {
