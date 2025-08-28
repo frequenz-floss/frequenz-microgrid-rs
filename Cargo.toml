@@ -8,6 +8,7 @@ name = "frequenz_microgrid"
 path = "src/lib.rs"
 
 [dependencies]
+async-trait = "0.1.89"
 chrono = "0.4"
 frequenz-microgrid-component-graph = { git = "https://github.com/frequenz-floss/frequenz-microgrid-component-graph-rs.git", rev = "0b28f99" }
 frequenz-microgrid-formula-engine = { git = "https://github.com/frequenz-floss/frequenz-microgrid-formula-engine-rs.git", rev = "463414a" }

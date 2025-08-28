@@ -10,6 +10,7 @@ use crate::{
     metric::Metric,
     quantity::Quantity,
 };
+use async_trait::async_trait;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 #[derive(Clone)]
@@ -29,6 +30,7 @@ impl<M: Metric> GraphFormulaConnector for AggregationFormula<M> {
     type GraphFormulaType = frequenz_microgrid_component_graph::AggregationFormula;
 }
 
+#[async_trait]
 impl<Q: Quantity + 'static, M: Metric<QuantityType = Q> + Sync> FormulaSubscriber<Q>
     for AggregationFormula<M>
 {

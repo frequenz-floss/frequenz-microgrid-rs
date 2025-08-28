@@ -8,6 +8,7 @@ mod aggregation_formula;
 mod coalesce_formula;
 pub(crate) mod graph_formula_provider;
 pub use aggregation_formula::AggregationFormula;
+use async_trait::async_trait;
 pub use coalesce_formula::CoalesceFormula;
 
 use crate::{Error, Sample, metric::Metric, quantity::Quantity};
@@ -20,11 +21,9 @@ pub(crate) trait GraphFormulaConnector: std::fmt::Display {
     type GraphFormulaType: frequenz_microgrid_component_graph::Formula;
 }
 
-/// Defines a formula that can be subscribed to for receiving samples.
-pub trait FormulaSubscriber<Q: Quantity>: std::fmt::Display {
-    fn subscribe(
-        &self,
-    ) -> impl Future<Output = Result<broadcast::Receiver<Sample<Q>>, Error>> + Send;
+#[async_trait]
+pub trait FormulaSubscriber<Q: Quantity>: std::fmt::Display + Sync {
+    async fn subscribe(&self) -> Result<broadcast::Receiver<Sample<Q>>, Error>;
 }
 
 pub(crate) trait FormulaMetricConnector {
