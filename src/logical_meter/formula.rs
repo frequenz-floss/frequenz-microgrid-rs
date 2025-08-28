@@ -16,7 +16,7 @@ use tokio::sync::{broadcast, mpsc};
 use super::logical_meter_actor;
 
 /// Connects logical meter formulas to the component graph formulas.
-pub(crate) trait GraphFormulaProvider: std::fmt::Display {
+pub(crate) trait GraphFormulaConnector: std::fmt::Display {
     type GraphFormulaType: frequenz_microgrid_component_graph::Formula;
 }
 
@@ -35,13 +35,13 @@ pub trait FormulaSubscriber: std::fmt::Display {
 }
 
 /// Parameters for creating a logical meter formula.
-pub(super) struct FormulaParams<F: GraphFormulaProvider, M: Metric> {
+pub(super) struct FormulaParams<F: GraphFormulaConnector, M: Metric> {
     pub(super) formula: F::GraphFormulaType,
     pub(super) metric: M,
     pub(super) instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
 }
 
-impl<F: GraphFormulaProvider, M: Metric> FormulaParams<F, M> {
+impl<F: GraphFormulaConnector, M: Metric> FormulaParams<F, M> {
     pub(super) fn new(
         formula: F::GraphFormulaType,
         metric: M,
@@ -65,7 +65,7 @@ pub trait FormulaOps<Q: Quantity>: std::fmt::Display + Sized {
 impl<T, Q, M> FormulaOps<Q> for T
 where
     T: FormulaSubscriber<MetricType = M>
-        + GraphFormulaProvider
+        + GraphFormulaConnector
         + From<FormulaParams<T, M>>
         + Into<FormulaParams<T, M>>
         + std::fmt::Display,
