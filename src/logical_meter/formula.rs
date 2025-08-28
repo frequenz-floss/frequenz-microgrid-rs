@@ -58,36 +58,36 @@ pub trait FormulaOps<Q: Quantity>: FormulaSubscriber<Q> + std::fmt::Display + Si
     fn max(self, other: Self) -> Result<Self, Error>;
 }
 
-impl<T, Q, M> FormulaOps<Q> for T
+impl<F, Q, M> FormulaOps<Q> for F
 where
-    T: FormulaSubscriber<Q>
+    F: FormulaSubscriber<Q>
         + FormulaMetricConnector<MetricType = M>
         + GraphFormulaConnector
-        + From<FormulaParams<T, M>>
-        + Into<FormulaParams<T, M>>
+        + From<FormulaParams<F, M>>
+        + Into<FormulaParams<F, M>>
         + std::fmt::Display,
     Q: Quantity,
     M: Metric<QuantityType = Q>,
 {
     fn coalesce(self, other: Self) -> Result<Self, Error> {
-        let mut params_self: FormulaParams<T, M> = self.into();
-        let params_other: FormulaParams<T, M> = other.into();
+        let mut params_self: FormulaParams<F, M> = self.into();
+        let params_other: FormulaParams<F, M> = other.into();
 
         params_self.formula = params_self.formula.coalesce(params_other.formula);
         Ok(params_self.into())
     }
 
     fn min(self, other: Self) -> Result<Self, Error> {
-        let mut params_self: FormulaParams<T, M> = self.into();
-        let params_other: FormulaParams<T, M> = other.into();
+        let mut params_self: FormulaParams<F, M> = self.into();
+        let params_other: FormulaParams<F, M> = other.into();
 
         params_self.formula = params_self.formula.min(params_other.formula);
         Ok(params_self.into())
     }
 
     fn max(self, other: Self) -> Result<Self, Error> {
-        let mut params_self: FormulaParams<T, M> = self.into();
-        let params_other: FormulaParams<T, M> = other.into();
+        let mut params_self: FormulaParams<F, M> = self.into();
+        let params_other: FormulaParams<F, M> = other.into();
 
         params_self.formula = params_self.formula.max(params_other.formula);
         Ok(params_self.into())
