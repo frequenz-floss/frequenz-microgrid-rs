@@ -148,7 +148,7 @@ async fn handle_instruction(
                 tx,
                 stream_status_tx,
             )
-            .await?;
+            .await;
 
             response_tx.send(rx).map_err(|_| {
                 tracing::error!("failed to send response");
@@ -220,7 +220,7 @@ async fn handle_retry_timer(
                     tx,
                     stream_status_tx.clone(),
                 )
-                .await?;
+                .await;
             } else {
                 tracing::error!("Component stream not found for retry: {component_id}");
                 return Err(Error::internal(format!(
@@ -239,7 +239,7 @@ async fn start_electrical_component_telemetry_stream(
     electrical_component_id: u64,
     tx: broadcast::Sender<ElectricalComponentTelemetry>,
     stream_status_tx: mpsc::Sender<StreamStatus>,
-) -> Result<(), Error> {
+) {
     let stream = match client
         .receive_electrical_component_telemetry_stream(
             ReceiveElectricalComponentTelemetryStreamRequest {
@@ -251,28 +251,24 @@ async fn start_electrical_component_telemetry_stream(
     {
         Ok(s) => s.into_inner(),
         Err(e) => {
-            stream_status_tx
+            let _ = stream_status_tx
                 .send(StreamStatus::Failed(electrical_component_id))
-                .await
-                .map_err(|e| {
-                    Error::connection_failure(format!(
-                        "receive_component_data_stream failed for {electrical_component_id}: {e}",
-                    ))
-                })?;
-            return Err(Error::connection_failure(format!(
-                "receive_component_data_stream failed for {electrical_component_id}: {e}",
-            )));
+                .await;
+
+            tracing::debug!("Failed to start telemetry stream for {electrical_component_id}: {e}",);
+            return;
         }
     };
 
-    stream_status_tx
+    if let Err(e) = stream_status_tx
         .send(StreamStatus::Connected(electrical_component_id))
         .await
-        .map_err(|e| {
-            Error::connection_failure(format!(
-                "Failed to send stream recovered message for {electrical_component_id}: {e}",
-            ))
-        })?;
+    {
+        tracing::error!(
+            "Failed to send stream connected message for {electrical_component_id}: {e}",
+        );
+        return;
+    }
 
     // create a task to fetch data from the stream in a loop and put into a channel.
     tokio::spawn(
@@ -284,7 +280,6 @@ async fn start_electrical_component_telemetry_stream(
         )
         .in_current_span(),
     );
-    Ok(())
 }
 
 async fn run_electrical_component_telemetry_stream(
