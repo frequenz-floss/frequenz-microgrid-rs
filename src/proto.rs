@@ -5,7 +5,11 @@
 
 mod graph;
 
-#[allow(clippy::doc_lazy_continuation, clippy::doc_overindented_list_items)]
+#[allow(
+    clippy::doc_lazy_continuation,
+    clippy::doc_overindented_list_items,
+    dead_code
+)]
 pub mod common {
     pub mod v1alpha8 {
         pub mod grid {
@@ -40,7 +44,11 @@ pub mod common {
     }
 }
 
-#[allow(clippy::doc_lazy_continuation, clippy::doc_overindented_list_items)]
+#[allow(
+    clippy::doc_lazy_continuation,
+    clippy::doc_overindented_list_items,
+    dead_code
+)]
 pub mod microgrid {
     pub mod v1alpha18 {
         #![allow(clippy::derive_partial_eq_without_eq)]
