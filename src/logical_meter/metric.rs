@@ -3,6 +3,8 @@
 
 //! Metrics supported by the logical meter.
 
+use crate::logical_meter::formula::aggregation_formula::AggregationFormula;
+use crate::logical_meter::formula::coalesce_formula::CoalesceFormula;
 use crate::{FormulaSubscriber, proto::common::v1alpha8::metrics::Metric as MetricPb};
 
 use super::formula;
@@ -32,7 +34,7 @@ macro_rules! define_metric {
 
             // Implement the AcMetric trait for the metric
             impl Metric for $metric_name {
-                type FormulaType = formula::$formula<$metric_name>;
+                type FormulaType = $formula<$metric_name>;
                 type QuantityType = crate::quantity::$quantity;
 
                 const METRIC: MetricPb = MetricPb::$metric_name;

@@ -5,6 +5,8 @@
 
 use crate::Error;
 use crate::logical_meter::formula::FormulaParams;
+use crate::logical_meter::formula::aggregation_formula::AggregationFormula;
+use crate::logical_meter::formula::coalesce_formula::CoalesceFormula;
 use crate::logical_meter::logical_meter_actor;
 use crate::metric::Metric;
 use crate::proto::common::v1alpha8::microgrid::electrical_components::{
@@ -14,8 +16,6 @@ use crate::proto::common::v1alpha8::microgrid::electrical_components::{
 use frequenz_microgrid_component_graph::ComponentGraph;
 use std::collections::BTreeSet;
 use tokio::sync::mpsc;
-
-use super::{AggregationFormula, CoalesceFormula};
 
 macro_rules! graph_formula_provider {
     ($(($fnname:ident $(, ids:$idsparam:ident)? $(, id:$idparam:ident)?)),+ $(,)?) => {$(
