@@ -3,17 +3,19 @@
 
 //! Formula module for the logical meter.
 
-use frequenz_microgrid_component_graph::Formula as _;
+use async_trait::async_trait;
 mod aggregation_formula;
+mod async_formula;
 mod coalesce_formula;
 pub(crate) mod graph_formula_provider;
-mod async_formula;
 pub use aggregation_formula::AggregationFormula;
-use async_trait::async_trait;
-pub use coalesce_formula::CoalesceFormula;
 pub use async_formula::Formula;
+pub use coalesce_formula::CoalesceFormula;
 
-use crate::{Error, Sample, metric::Metric, quantity::Quantity};
+use crate::{
+    Error, Sample, logical_meter::formula::async_formula::FormulaOperand, metric::Metric,
+    quantity::Quantity,
+};
 use tokio::sync::{broadcast, mpsc};
 
 use super::logical_meter_actor;
@@ -59,37 +61,104 @@ pub trait FormulaOps<Q: Quantity>:
     fn max(self, other: Self) -> Result<Self, Error>;
 }
 
-impl<F, Q, M> FormulaOps<Q> for F
+// TODO: extend previous Coalesce instead of creating a new one, etc.
+impl<Q> Formula<Q>
 where
-    F: FormulaSubscriber<QuantityType = Q>
-        + GraphFormulaConnector
-        + From<FormulaParams<F, M>>
-        + Into<FormulaParams<F, M>>
-        + std::fmt::Display,
-    Q: Quantity,
-    M: Metric<QuantityType = Q>,
+    Q: Quantity + 'static,
 {
-    fn coalesce(self, other: Self) -> Result<Self, Error> {
-        let mut params_self: FormulaParams<F, M> = self.into();
-        let params_other: FormulaParams<F, M> = other.into();
-
-        params_self.formula = params_self.formula.coalesce(params_other.formula);
-        Ok(params_self.into())
+    pub fn coalesce(self, other: Formula<Q>) -> Result<Formula<Q>, Error> {
+        match self {
+            Formula::Coalesce(mut items) => {
+                items.push(other.into());
+                Ok(Formula::Coalesce(items))
+            }
+            _ => Ok(Formula::Coalesce(vec![
+                FormulaOperand::Formula(Box::new(Formula::<Q, Q, f32>::Formula(Box::new(self)))),
+                other.into(),
+            ])),
+        }
     }
 
-    fn min(self, other: Self) -> Result<Self, Error> {
-        let mut params_self: FormulaParams<F, M> = self.into();
-        let params_other: FormulaParams<F, M> = other.into();
-
-        params_self.formula = params_self.formula.min(params_other.formula);
-        Ok(params_self.into())
+    pub fn min(self, other: Formula<Q>) -> Result<Formula<Q>, Error> {
+        match self {
+            Formula::Min(mut items) => {
+                items.push(other.into());
+                Ok(Formula::Min(items))
+            }
+            _ => Ok(Formula::Min(vec![
+                FormulaOperand::Formula(Box::new(Formula::<Q, Q, f32>::Formula(Box::new(self)))),
+                other.into(),
+            ])),
+        }
     }
 
-    fn max(self, other: Self) -> Result<Self, Error> {
-        let mut params_self: FormulaParams<F, M> = self.into();
-        let params_other: FormulaParams<F, M> = other.into();
+    pub fn max(self, other: Formula<Q>) -> Result<Formula<Q>, Error> {
+        match self {
+            Formula::Max(mut items) => {
+                items.push(other.into());
+                Ok(Formula::Max(items))
+            }
+            _ => Ok(Formula::Max(vec![
+                FormulaOperand::Formula(Box::new(Formula::<Q, Q, f32>::Formula(Box::new(self)))),
+                other.into(),
+            ])),
+        }
+    }
 
-        params_self.formula = params_self.formula.max(params_other.formula);
-        Ok(params_self.into())
+    pub fn avg(self, others: Vec<Formula<Q>>) -> Result<Formula<Q>, Error> {
+        let mut exprs: Vec<FormulaOperand<Q>> =
+            vec![FormulaOperand::Formula(Box::new(
+                Formula::<Q, Q, f32>::Formula(Box::new(self)),
+            ))];
+        for other in others {
+            exprs.push(other.into());
+        }
+        Ok(Formula::Avg(exprs))
+    }
+}
+
+impl<Q, F> std::ops::Add<F> for Formula<Q>
+where
+    F: Into<FormulaOperand<Q>>,
+    Q: Quantity + 'static,
+{
+    type Output = Formula<Q>;
+
+    fn add(self, other: F) -> Self::Output {
+        Formula::Add(vec![FormulaOperand::Formula(Box::new(self)), other.into()])
+    }
+}
+
+impl<Q, F> std::ops::Sub<F> for Formula<Q>
+where
+    F: Into<FormulaOperand<Q>>,
+    Q: Quantity + 'static,
+{
+    type Output = Formula<Q>;
+
+    fn sub(self, other: F) -> Self::Output {
+        Formula::Subtract(vec![FormulaOperand::Formula(Box::new(self)), other.into()])
+    }
+}
+
+impl<Q> std::ops::Mul<f32> for Formula<Q, Q, f32>
+where
+    Q: Quantity + 'static,
+{
+    type Output = Formula<Q, Q, f32>;
+
+    fn mul(self, other: f32) -> Self::Output {
+        Formula::<Q, Q, f32>::Multiply(FormulaOperand::<Q>::Formula(Box::new(self)), other.into())
+    }
+}
+
+impl<Q> std::ops::Div<f32> for Formula<Q, Q, f32>
+where
+    Q: Quantity + 'static,
+{
+    type Output = Formula<Q, Q, f32>;
+
+    fn div(self, rhs: f32) -> Self::Output {
+        Formula::<Q, Q, f32>::Divide(FormulaOperand::<Q>::Formula(Box::new(self)), rhs.into())
     }
 }
