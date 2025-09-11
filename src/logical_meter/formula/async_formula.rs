@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use tokio::sync::broadcast::{self, error::RecvError};
 
-use crate::{Error, FormulaSubscriber, Sample, quantity::Quantity};
+use crate::{Error, Sample, logical_meter::formula::FormulaSubscriber, quantity::Quantity};
 
 /// A composable Formula.
 pub enum Formula<QOut, QIn1 = QOut, QIn2 = f32>
@@ -742,4 +742,3 @@ where
         }
     }
 }
-

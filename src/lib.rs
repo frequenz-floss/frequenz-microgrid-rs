@@ -17,4 +17,4 @@ mod sample;
 pub use sample::Sample;
 
 mod logical_meter;
-pub use logical_meter::{FormulaSubscriber, LogicalMeterConfig, LogicalMeterHandle, metric};
+pub use logical_meter::{LogicalMeterConfig, LogicalMeterHandle, metric};

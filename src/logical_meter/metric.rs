@@ -5,7 +5,9 @@
 
 use crate::logical_meter::formula::aggregation_formula::AggregationFormula;
 use crate::logical_meter::formula::coalesce_formula::CoalesceFormula;
-use crate::{FormulaSubscriber, proto::common::v1alpha8::metrics::Metric as MetricPb};
+use crate::{
+    logical_meter::formula::FormulaSubscriber, proto::common::v1alpha8::metrics::Metric as MetricPb,
+};
 
 use super::formula;
 

@@ -104,6 +104,10 @@ where
         }
         Ok(Formula::Avg(exprs))
     }
+
+    pub async fn subscribe(&self) -> Result<broadcast::Receiver<Sample<Q>>, Error> {
+        <Self as FormulaSubscriber>::subscribe(self).await
+    }
 }
 
 impl<Q, F> std::ops::Add<F> for Formula<Q>
