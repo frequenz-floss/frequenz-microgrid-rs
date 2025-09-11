@@ -18,6 +18,5 @@ pub use sample::Sample;
 
 mod logical_meter;
 pub use logical_meter::{
-    AggregationFormula, FormulaOps, FormulaSubscriber, LogicalMeterConfig, LogicalMeterHandle,
-    metric,
+    AggregationFormula, FormulaSubscriber, LogicalMeterConfig, LogicalMeterHandle, metric,
 };

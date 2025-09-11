@@ -52,15 +52,6 @@ impl<F: GraphFormulaConnector, M: Metric> FormulaParams<F, M> {
     }
 }
 
-/// A trait that defines generic formula operations.
-pub trait FormulaOps<Q: Quantity>:
-    FormulaSubscriber<QuantityType = Q> + std::fmt::Display + Sized
-{
-    fn coalesce(self, other: Self) -> Result<Self, Error>;
-    fn min(self, other: Self) -> Result<Self, Error>;
-    fn max(self, other: Self) -> Result<Self, Error>;
-}
-
 // TODO: extend previous Coalesce instead of creating a new one, etc.
 impl<Q> Formula<Q>
 where
