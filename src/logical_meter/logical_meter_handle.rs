@@ -64,7 +64,7 @@ impl LogicalMeterHandle {
         &mut self,
         metric: M,
     ) -> Result<Formula<M::QuantityType>, Error> {
-        Ok(Formula::Formula(Box::new(M::FormulaType::grid(
+        Ok(Formula::Subscriber(Box::new(M::FormulaType::grid(
             &self.graph,
             metric,
             self.instructions_tx.clone(),
@@ -80,7 +80,7 @@ impl LogicalMeterHandle {
         component_ids: Option<BTreeSet<u64>>,
         metric: M,
     ) -> Result<Formula<M::QuantityType>, Error> {
-        Ok(Formula::Formula(Box::new(M::FormulaType::battery(
+        Ok(Formula::Subscriber(Box::new(M::FormulaType::battery(
             &self.graph,
             metric,
             self.instructions_tx.clone(),
@@ -97,7 +97,7 @@ impl LogicalMeterHandle {
         component_ids: Option<BTreeSet<u64>>,
         metric: M,
     ) -> Result<Formula<M::QuantityType>, Error> {
-        Ok(Formula::Formula(Box::new(M::FormulaType::chp(
+        Ok(Formula::Subscriber(Box::new(M::FormulaType::chp(
             &self.graph,
             metric,
             self.instructions_tx.clone(),
@@ -114,7 +114,7 @@ impl LogicalMeterHandle {
         component_ids: Option<BTreeSet<u64>>,
         metric: M,
     ) -> Result<Formula<M::QuantityType>, Error> {
-        Ok(Formula::Formula(Box::new(M::FormulaType::pv(
+        Ok(Formula::Subscriber(Box::new(M::FormulaType::pv(
             &self.graph,
             metric,
             self.instructions_tx.clone(),
@@ -132,7 +132,7 @@ impl LogicalMeterHandle {
         component_ids: Option<BTreeSet<u64>>,
         metric: M,
     ) -> Result<Formula<M::QuantityType>, Error> {
-        Ok(Formula::Formula(Box::new(M::FormulaType::ev_charger(
+        Ok(Formula::Subscriber(Box::new(M::FormulaType::ev_charger(
             &self.graph,
             metric,
             self.instructions_tx.clone(),
@@ -146,7 +146,7 @@ impl LogicalMeterHandle {
         &mut self,
         metric: M,
     ) -> Result<Formula<M::QuantityType>, Error> {
-        Ok(Formula::Formula(Box::new(M::FormulaType::consumer(
+        Ok(Formula::Subscriber(Box::new(M::FormulaType::consumer(
             &self.graph,
             metric,
             self.instructions_tx.clone(),
@@ -159,7 +159,7 @@ impl LogicalMeterHandle {
         &mut self,
         metric: M,
     ) -> Result<Formula<M::QuantityType>, Error> {
-        Ok(Formula::Formula(Box::new(M::FormulaType::producer(
+        Ok(Formula::Subscriber(Box::new(M::FormulaType::producer(
             &self.graph,
             metric,
             self.instructions_tx.clone(),
@@ -173,7 +173,7 @@ impl LogicalMeterHandle {
         component_id: u64,
         metric: M,
     ) -> Result<Formula<M::QuantityType>, Error> {
-        Ok(Formula::Formula(Box::new(M::FormulaType::component(
+        Ok(Formula::Subscriber(Box::new(M::FormulaType::component(
             &self.graph,
             metric,
             self.instructions_tx.clone(),

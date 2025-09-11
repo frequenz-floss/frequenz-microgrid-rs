@@ -16,7 +16,7 @@ where
     QIn2: Quantity + 'static,
     QIn1: std::ops::Mul<QIn2, Output = QOut>,
 {
-    Formula(Box<dyn FormulaSubscriber<QuantityType = QOut>>),
+    Subscriber(Box<dyn FormulaSubscriber<QuantityType = QOut>>),
     Coalesce(Vec<FormulaOperand<QOut>>),
     Min(Vec<FormulaOperand<QOut>>),
     Max(Vec<FormulaOperand<QOut>>),
@@ -134,7 +134,7 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Formula::Formula(formula) => formula.fmt(f),
+            Formula::Subscriber(formula) => formula.fmt(f),
             Formula::Coalesce(exprs) => format_exprs(f, exprs, "COALESCE", ", "),
             Formula::Min(exprs) => format_exprs(f, exprs, "MIN", ", "),
             Formula::Max(exprs) => format_exprs(f, exprs, "MAX", ", "),
@@ -505,7 +505,7 @@ fn coalesce_samples<Q: Quantity>(samples: &[FormulaValue<Q>]) -> Option<Sample<Q
             FormulaValue::Sample(sample) => {
                 ts = Some(sample.timestamp());
                 if sample.value().is_some() {
-                    return Some(sample.clone());
+                    return Some(*sample);
                 }
             }
             FormulaValue::Quantity(q) => {
@@ -538,7 +538,7 @@ fn min_samples<Q: Quantity>(samples: &[FormulaValue<Q>]) -> Option<Sample<Q>> {
                             None => v,
                         });
                     }
-                    None => return Some(sample.clone()),
+                    None => return Some(*sample),
                 }
             }
             FormulaValue::Quantity(q) => {
@@ -579,7 +579,7 @@ fn max_samples<Q: Quantity>(samples: &[FormulaValue<Q>]) -> Option<Sample<Q>> {
                             None => v,
                         });
                     }
-                    None => return Some(sample.clone()),
+                    None => return Some(*sample),
                 }
             }
             FormulaValue::Quantity(q) => {
@@ -631,7 +631,7 @@ fn add_samples<Q: Quantity>(samples: &[FormulaValue<Q>]) -> Option<Sample<Q>> {
                 if let Some(v) = sample.value() {
                     sum = sum + v;
                 } else {
-                    return Some(sample.clone());
+                    return Some(*sample);
                 }
             }
             FormulaValue::Quantity(q) => {
@@ -654,7 +654,7 @@ fn subtract_samples<Q: Quantity>(samples: &[FormulaValue<Q>]) -> Option<Sample<Q
             if let Some(v) = sample.value() {
                 v
             } else {
-                return Some(sample.clone());
+                return Some(*sample);
             }
         }
         FormulaValue::Quantity(q) => *q,
@@ -667,7 +667,7 @@ fn subtract_samples<Q: Quantity>(samples: &[FormulaValue<Q>]) -> Option<Sample<Q
                 if let Some(v) = sample.value() {
                     result = result - v;
                 } else {
-                    return Some(sample.clone());
+                    return Some(*sample);
                 }
             }
             FormulaValue::Quantity(q) => {
@@ -693,7 +693,7 @@ where
 
     async fn subscribe(&self) -> Result<broadcast::Receiver<Sample<QOut>>, Error> {
         match &self {
-            Formula::Formula(formula) => (*formula).subscribe().await,
+            Formula::Subscriber(formula) => (*formula).subscribe().await,
             Formula::Coalesce(exprs)
             | Formula::Min(exprs)
             | Formula::Max(exprs)

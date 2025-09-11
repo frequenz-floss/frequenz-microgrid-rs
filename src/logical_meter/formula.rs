@@ -62,7 +62,7 @@ where
                 Ok(Formula::Coalesce(items))
             }
             _ => Ok(Formula::Coalesce(vec![
-                FormulaOperand::Formula(Box::new(Formula::<Q, Q, f32>::Formula(Box::new(self)))),
+                FormulaOperand::Formula(Box::new(Formula::<Q, Q, f32>::Subscriber(Box::new(self)))),
                 other.into(),
             ])),
         }
@@ -75,7 +75,7 @@ where
                 Ok(Formula::Min(items))
             }
             _ => Ok(Formula::Min(vec![
-                FormulaOperand::Formula(Box::new(Formula::<Q, Q, f32>::Formula(Box::new(self)))),
+                FormulaOperand::Formula(Box::new(Formula::<Q, Q, f32>::Subscriber(Box::new(self)))),
                 other.into(),
             ])),
         }
@@ -88,7 +88,7 @@ where
                 Ok(Formula::Max(items))
             }
             _ => Ok(Formula::Max(vec![
-                FormulaOperand::Formula(Box::new(Formula::<Q, Q, f32>::Formula(Box::new(self)))),
+                FormulaOperand::Formula(Box::new(Formula::<Q, Q, f32>::Subscriber(Box::new(self)))),
                 other.into(),
             ])),
         }
@@ -97,7 +97,7 @@ where
     pub fn avg(self, others: Vec<Formula<Q>>) -> Result<Formula<Q>, Error> {
         let mut exprs: Vec<FormulaOperand<Q>> =
             vec![FormulaOperand::Formula(Box::new(
-                Formula::<Q, Q, f32>::Formula(Box::new(self)),
+                Formula::<Q, Q, f32>::Subscriber(Box::new(self)),
             ))];
         for other in others {
             exprs.push(other.into());
