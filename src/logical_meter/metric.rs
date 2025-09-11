@@ -3,13 +3,16 @@
 
 //! Metrics supported by the logical meter.
 
-use crate::proto::common::v1alpha8::metrics::Metric as MetricPb;
+use crate::{FormulaSubscriber, proto::common::v1alpha8::metrics::Metric as MetricPb};
 
 use super::formula;
 
-pub trait Metric: std::fmt::Display + std::fmt::Debug + Clone + Copy + PartialEq + Eq {
-    type FormulaType: formula::FormulaOps<Self::QuantityType>
-        + formula::graph_formula_provider::GraphFormulaProvider<MetricType = Self>;
+pub trait Metric:
+    std::fmt::Display + std::fmt::Debug + Clone + Copy + PartialEq + Eq + Sync + 'static
+{
+    type FormulaType: FormulaSubscriber<QuantityType = Self::QuantityType>
+        + formula::graph_formula_provider::GraphFormulaProvider<MetricType = Self>
+        + 'static;
 
     type QuantityType: crate::quantity::Quantity;
 
