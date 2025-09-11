@@ -22,8 +22,9 @@ pub(crate) trait GraphFormulaConnector: std::fmt::Display {
 }
 
 #[async_trait]
-pub trait FormulaSubscriber<Q: Quantity>: std::fmt::Display + Sync {
-    async fn subscribe(&self) -> Result<broadcast::Receiver<Sample<Q>>, Error>;
+pub trait FormulaSubscriber: std::fmt::Display + Sync + Send {
+    type QuantityType: Quantity;
+    async fn subscribe(&self) -> Result<broadcast::Receiver<Sample<Self::QuantityType>>, Error>;
 }
 
 /// Parameters for creating a logical meter formula.
@@ -48,7 +49,9 @@ impl<F: GraphFormulaConnector, M: Metric> FormulaParams<F, M> {
 }
 
 /// A trait that defines generic formula operations.
-pub trait FormulaOps<Q: Quantity>: FormulaSubscriber<Q> + std::fmt::Display + Sized {
+pub trait FormulaOps<Q: Quantity>:
+    FormulaSubscriber<QuantityType = Q> + std::fmt::Display + Sized
+{
     fn coalesce(self, other: Self) -> Result<Self, Error>;
     fn min(self, other: Self) -> Result<Self, Error>;
     fn max(self, other: Self) -> Result<Self, Error>;
@@ -56,7 +59,7 @@ pub trait FormulaOps<Q: Quantity>: FormulaSubscriber<Q> + std::fmt::Display + Si
 
 impl<F, Q, M> FormulaOps<Q> for F
 where
-    F: FormulaSubscriber<Q>
+    F: FormulaSubscriber<QuantityType = Q>
         + GraphFormulaConnector
         + From<FormulaParams<F, M>>
         + Into<FormulaParams<F, M>>

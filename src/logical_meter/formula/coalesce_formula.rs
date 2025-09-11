@@ -28,9 +28,11 @@ impl<M: Metric> GraphFormulaConnector for CoalesceFormula<M> {
 }
 
 #[async_trait]
-impl<Q: Quantity + 'static, M: Metric<QuantityType = Q> + Sync> FormulaSubscriber<Q>
+impl<Q: Quantity + 'static, M: Metric<QuantityType = Q> + Sync + Send> FormulaSubscriber
     for CoalesceFormula<M>
 {
+    type QuantityType = Q;
+
     async fn subscribe(&self) -> Result<broadcast::Receiver<Sample<Q>>, Error> {
         let (tx, rx) = oneshot::channel();
 
