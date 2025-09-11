@@ -4,10 +4,10 @@
 use chrono::{DateTime, Utc};
 
 /// Represents a measurement of a microgrid metric, made at a specific time.
-#[derive(Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct Sample<Q: Copy + Clone + std::fmt::Debug + Default> {
-    timestamp: DateTime<Utc>,
-    value: Option<Q>,
+    pub(crate) timestamp: DateTime<Utc>,
+    pub(crate) value: Option<Q>,
 }
 
 impl<Q: Copy + Clone + Default + std::fmt::Debug> frequenz_resampling::Sample for Sample<Q> {
