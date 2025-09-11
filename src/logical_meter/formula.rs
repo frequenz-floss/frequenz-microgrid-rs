@@ -26,10 +26,6 @@ pub trait FormulaSubscriber<Q: Quantity>: std::fmt::Display + Sync {
     async fn subscribe(&self) -> Result<broadcast::Receiver<Sample<Q>>, Error>;
 }
 
-pub(crate) trait FormulaMetricConnector {
-    type MetricType: Metric;
-}
-
 /// Parameters for creating a logical meter formula.
 pub(super) struct FormulaParams<F: GraphFormulaConnector, M: Metric> {
     pub(super) formula: F::GraphFormulaType,
@@ -61,7 +57,6 @@ pub trait FormulaOps<Q: Quantity>: FormulaSubscriber<Q> + std::fmt::Display + Si
 impl<F, Q, M> FormulaOps<Q> for F
 where
     F: FormulaSubscriber<Q>
-        + FormulaMetricConnector<MetricType = M>
         + GraphFormulaConnector
         + From<FormulaParams<F, M>>
         + Into<FormulaParams<F, M>>

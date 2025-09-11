@@ -5,10 +5,7 @@
 
 use super::{FormulaParams, FormulaSubscriber, GraphFormulaConnector};
 use crate::{
-    Error, Sample,
-    logical_meter::{formula::FormulaMetricConnector, logical_meter_actor},
-    metric::Metric,
-    quantity::Quantity,
+    Error, Sample, logical_meter::logical_meter_actor, metric::Metric, quantity::Quantity,
 };
 use async_trait::async_trait;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -51,10 +48,6 @@ impl<Q: Quantity + 'static, M: Metric<QuantityType = Q> + Sync> FormulaSubscribe
 
         Ok(receiver)
     }
-}
-
-impl<M: Metric> FormulaMetricConnector for CoalesceFormula<M> {
-    type MetricType = M;
 }
 
 impl<M: Metric> From<FormulaParams<CoalesceFormula<M>, M>> for CoalesceFormula<M> {
