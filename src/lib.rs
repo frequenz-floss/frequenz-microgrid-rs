@@ -9,7 +9,7 @@ pub use client::MicrogridClientHandle;
 mod error;
 pub use error::{Error, ErrorKind};
 
-mod quantity;
+pub mod quantity;
 
 mod proto;
 
