@@ -213,3 +213,18 @@ pub use percentage::Percentage;
 pub use power::Power;
 pub use reactive_power::ReactivePower;
 pub use voltage::Voltage;
+
+#[cfg(test)]
+mod test_utils {
+    /// Asserts that two f32 values are approximately equal within a small epsilon.
+    #[track_caller]
+    pub(crate) fn assert_f32_eq(a: f32, b: f32) {
+        let epsilon: f32 = 10.0_f32.powf(a.log10().min(b.log10())) * 1e-6;
+        if (a - b).abs() > epsilon {
+            panic!(
+                "assertion failed: `(left ~= right)` (epsilon: {})\n left: `{}`,\n right: `{}`",
+                epsilon, a, b
+            );
+        }
+    }
+}
