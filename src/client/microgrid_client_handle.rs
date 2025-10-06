@@ -7,11 +7,15 @@
 //! which owns the connection to the microgrid API service.
 
 use tokio::sync::{broadcast, mpsc, oneshot};
+use tonic::transport::Channel;
 
 use crate::{
     Error,
-    proto::common::v1alpha8::microgrid::electrical_components::{
-        ElectricalComponent, ElectricalComponentConnection, ElectricalComponentTelemetry,
+    proto::{
+        common::v1alpha8::microgrid::electrical_components::{
+            ElectricalComponent, ElectricalComponentConnection, ElectricalComponentTelemetry,
+        },
+        microgrid::v1alpha18::microgrid_client::MicrogridClient,
     },
 };
 
@@ -30,13 +34,23 @@ impl MicrogridClientHandle {
     /// Creates a new `MicrogridClientHandle` that connects to the microgrid API
     /// at the specified URL.
     pub async fn try_new(url: impl Into<String>) -> Result<Self, Error> {
+        let client = match MicrogridClient::<Channel>::connect(url.into()).await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("Could not connect to server: {e}");
+                return Err(Error::connection_failure(format!(
+                    "Could not connect to server: {e}"
+                )));
+            }
+        };
+
+        Ok(Self::new_from_client(client))
+    }
+
+    pub fn new_from_client(client: MicrogridClient<Channel>) -> Self {
         let (instructions_tx, instructions_rx) = mpsc::channel(100);
-        tokio::spawn(
-            MicrogridClientActor::try_new(url.into(), instructions_rx)
-                .await?
-                .run(),
-        );
-        Ok(Self { instructions_tx })
+        tokio::spawn(MicrogridClientActor::new_from_client(client, instructions_rx).run());
+        Self { instructions_tx }
     }
 
     /// Returns a telemetry stream from an electrical component with a given ID.

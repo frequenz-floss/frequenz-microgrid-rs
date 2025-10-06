@@ -45,24 +45,14 @@ pub(super) struct MicrogridClientActor {
 }
 
 impl MicrogridClientActor {
-    pub(super) async fn try_new(
-        url: String,
+    pub(super) fn new_from_client(
+        client: MicrogridClient<Channel>,
         instructions_rx: mpsc::Receiver<Instruction>,
-    ) -> Result<Self, Error> {
-        let client = match MicrogridClient::<Channel>::connect(url).await {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::error!("Could not connect to server: {e}");
-                return Err(Error::connection_failure(format!(
-                    "Could not connect to server: {e}"
-                )));
-            }
-        };
-
-        Ok(Self {
+    ) -> Self {
+        Self {
             client,
             instructions_rx,
-        })
+        }
     }
 
     pub(super) async fn run(mut self) {
