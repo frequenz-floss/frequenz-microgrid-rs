@@ -40,27 +40,32 @@ enum StreamStatus {
 /// It allows there to be multiple `MicrogridClientHandle` instances, all
 /// sharing the same connection to the microgrid API.
 pub(super) struct MicrogridClientActor {
-    url: String,
+    client: MicrogridClient<Channel>,
     instructions_rx: mpsc::Receiver<Instruction>,
 }
 
 impl MicrogridClientActor {
-    pub(super) fn new(url: String, instructions_rx: mpsc::Receiver<Instruction>) -> Self {
-        Self {
-            url,
-            instructions_rx,
-        }
-    }
-
-    pub(super) async fn run(mut self) {
-        let mut client = match MicrogridClient::<Channel>::connect(self.url).await {
+    pub(super) async fn try_new(
+        url: String,
+        instructions_rx: mpsc::Receiver<Instruction>,
+    ) -> Result<Self, Error> {
+        let client = match MicrogridClient::<Channel>::connect(url).await {
             Ok(t) => t,
             Err(e) => {
                 tracing::error!("Could not connect to server: {e}");
-                return;
+                return Err(Error::connection_failure(format!(
+                    "Could not connect to server: {e}"
+                )));
             }
         };
 
+        Ok(Self {
+            client,
+            instructions_rx,
+        })
+    }
+
+    pub(super) async fn run(mut self) {
         let mut component_streams: HashMap<u64, broadcast::Sender<ElectricalComponentTelemetry>> =
             HashMap::new();
 
@@ -73,7 +78,7 @@ impl MicrogridClientActor {
             select! {
                 instruction = self.instructions_rx.recv() => {
                     if let Err(e) = handle_instruction(
-                        &mut client,
+                        &mut self.client,
                         &mut component_streams,
                         instruction,
                         stream_status_tx.clone(),
@@ -102,7 +107,7 @@ impl MicrogridClientActor {
                 }
                 now = retry_timer.tick() => {
                     if let Err(e) = handle_retry_timer(
-                        &mut client,
+                        &mut self.client,
                         &mut component_streams,
                         &mut components_to_retry,
                         stream_status_tx.clone(),
