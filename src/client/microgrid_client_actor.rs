@@ -4,7 +4,7 @@
 //! The microgrid client actor that handles communication with the microgrid API.
 
 use crate::{
-    client::{instruction::Instruction, retry_tracker::RetryTracker},
+    client::{MicrogridApiClient, instruction::Instruction, retry_tracker::RetryTracker},
     proto::microgrid::v1alpha18::{
         ListElectricalComponentConnectionsRequest, ListElectricalComponentsRequest,
         ReceiveElectricalComponentTelemetryStreamRequest,
@@ -17,15 +17,10 @@ use tokio::{
     select,
     sync::{broadcast, mpsc},
 };
-use tonic::transport::Channel;
 use tracing::Instrument as _;
 
 use crate::{
-    Error,
-    proto::{
-        common::v1alpha8::microgrid::electrical_components::ElectricalComponentTelemetry,
-        microgrid::v1alpha18::microgrid_client::MicrogridClient,
-    },
+    Error, proto::common::v1alpha8::microgrid::electrical_components::ElectricalComponentTelemetry,
 };
 
 enum StreamStatus {
@@ -39,16 +34,13 @@ enum StreamStatus {
 ///
 /// It allows there to be multiple `MicrogridClientHandle` instances, all
 /// sharing the same connection to the microgrid API.
-pub(super) struct MicrogridClientActor {
-    client: MicrogridClient<Channel>,
+pub(super) struct MicrogridClientActor<T> {
+    client: T,
     instructions_rx: mpsc::Receiver<Instruction>,
 }
 
-impl MicrogridClientActor {
-    pub(super) fn new_from_client(
-        client: MicrogridClient<Channel>,
-        instructions_rx: mpsc::Receiver<Instruction>,
-    ) -> Self {
+impl<T: MicrogridApiClient> MicrogridClientActor<T> {
+    pub(super) fn new_from_client(client: T, instructions_rx: mpsc::Receiver<Instruction>) -> Self {
         Self {
             client,
             instructions_rx,
@@ -112,8 +104,8 @@ impl MicrogridClientActor {
 }
 
 /// Handles the instructions received from the `MicrogridClientHandle` instances.
-async fn handle_instruction(
-    client: &mut MicrogridClient<Channel>,
+async fn handle_instruction<T: MicrogridApiClient>(
+    client: &mut T,
     component_streams: &mut HashMap<u64, broadcast::Sender<ElectricalComponentTelemetry>>,
     instruction: Option<Instruction>,
     stream_status_tx: mpsc::Sender<StreamStatus>,
@@ -194,8 +186,8 @@ async fn handle_instruction(
 
 /// Handles the retry timer, checking if the data streams for any components
 /// need to be retried and restarting their streaming tasks if necessary.
-async fn handle_retry_timer(
-    client: &mut MicrogridClient<Channel>,
+async fn handle_retry_timer<T: MicrogridApiClient>(
+    client: &mut T,
     component_streams: &mut HashMap<u64, broadcast::Sender<ElectricalComponentTelemetry>>,
     components_to_retry: &mut HashMap<u64, RetryTracker>,
     stream_status_tx: mpsc::Sender<StreamStatus>,
@@ -229,8 +221,8 @@ async fn handle_retry_timer(
 
 /// Creates a new data stream for the given component ID and starts a task to
 /// fetch data from it in a loop.
-async fn start_electrical_component_telemetry_stream(
-    client: &mut MicrogridClient<Channel>,
+async fn start_electrical_component_telemetry_stream<T: MicrogridApiClient>(
+    client: &mut T,
     electrical_component_id: u64,
     tx: broadcast::Sender<ElectricalComponentTelemetry>,
     stream_status_tx: mpsc::Sender<StreamStatus>,

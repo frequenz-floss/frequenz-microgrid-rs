@@ -11,6 +11,7 @@ use tonic::transport::Channel;
 
 use crate::{
     Error,
+    client::MicrogridApiClient,
     proto::{
         common::v1alpha8::microgrid::electrical_components::{
             ElectricalComponent, ElectricalComponentConnection, ElectricalComponentTelemetry,
@@ -47,7 +48,7 @@ impl MicrogridClientHandle {
         Ok(Self::new_from_client(client))
     }
 
-    pub fn new_from_client(client: MicrogridClient<Channel>) -> Self {
+    pub fn new_from_client(client: impl MicrogridApiClient) -> Self {
         let (instructions_tx, instructions_rx) = mpsc::channel(100);
         tokio::spawn(MicrogridClientActor::new_from_client(client, instructions_rx).run());
         Self { instructions_tx }
