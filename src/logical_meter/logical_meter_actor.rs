@@ -5,7 +5,7 @@
 //! component data, evaluating formulas based on that data, and streaming the
 //! data to subscribers.
 
-use chrono::{DateTime, TimeDelta, Timelike as _, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use frequenz_microgrid_formula_engine::FormulaEngine;
 use frequenz_resampling::ResamplingFunction;
 use std::collections::{HashMap, HashSet};
@@ -375,9 +375,7 @@ impl LogicalMeterActor {
                     self.config.resampling_interval,
                     ResamplingFunction::Average,
                     3,
-                    Utc::now()
-                        .with_nanosecond(0)
-                        .ok_or_else(|| Error::chrono_error("Failed to get current time."))?,
+                    self.resampler_ts,
                     false,
                 ),
                 receiver: self
