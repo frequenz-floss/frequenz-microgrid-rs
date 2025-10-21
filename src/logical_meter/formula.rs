@@ -50,7 +50,6 @@ impl<F: GraphFormulaConnector, M: Metric> FormulaParams<F, M> {
     }
 }
 
-// TODO: extend previous Coalesce instead of creating a new one, etc.
 impl<Q> Formula<Q>
 where
     Q: Quantity + 'static,
