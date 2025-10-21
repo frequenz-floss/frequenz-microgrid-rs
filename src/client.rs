@@ -12,3 +12,6 @@ pub use microgrid_api_client::MicrogridApiClient;
 
 mod microgrid_client_handle;
 pub use microgrid_client_handle::MicrogridClientHandle;
+
+#[cfg(test)]
+pub(crate) mod test_utils;
