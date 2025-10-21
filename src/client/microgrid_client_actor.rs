@@ -13,6 +13,7 @@ use crate::{
 };
 use std::collections::HashMap;
 
+use futures::{Stream, StreamExt};
 use tokio::{
     select,
     sync::{broadcast, mpsc},
@@ -270,7 +271,9 @@ async fn start_electrical_component_telemetry_stream<T: MicrogridApiClient>(
 }
 
 async fn run_electrical_component_telemetry_stream(
-    mut stream: tonic::Streaming<ReceiveElectricalComponentTelemetryStreamResponse>,
+    mut stream: impl Stream<
+        Item = Result<ReceiveElectricalComponentTelemetryStreamResponse, tonic::Status>,
+    > + Unpin,
     electrical_component_id: u64,
     tx: broadcast::Sender<ElectricalComponentTelemetry>,
     stream_status_tx: mpsc::Sender<StreamStatus>,
@@ -293,30 +296,30 @@ async fn run_electrical_component_telemetry_stream(
                 });
             return;
         }
-        let message = match stream.message().await {
-            Ok(m) => m,
-            Err(e) => {
+        let message = match stream.next().await {
+            Some(m) => m,
+            None => {
                 tracing::error!(
-                    "get_component_data stream failed for {:?}: {:?}",
+                    "get_component_data stream failed for {}",
                     electrical_component_id,
-                    e
                 );
                 break;
             }
         };
         let data = match message {
-            Some(ReceiveElectricalComponentTelemetryStreamResponse { telemetry: Some(d) }) => d,
-            Some(ReceiveElectricalComponentTelemetryStreamResponse { telemetry: None }) => {
+            Ok(ReceiveElectricalComponentTelemetryStreamResponse { telemetry: Some(d) }) => d,
+            Ok(ReceiveElectricalComponentTelemetryStreamResponse { telemetry: None }) => {
                 tracing::warn!(
                     "get_component_data stream returned empty data for {}",
                     electrical_component_id
                 );
                 continue;
             }
-            None => {
+            Err(e) => {
                 tracing::warn!(
-                    "get_component_data stream ended for {:?}",
-                    electrical_component_id
+                    "get_component_data stream ended for {}: {:?}",
+                    electrical_component_id,
+                    e
                 );
                 break;
             }
