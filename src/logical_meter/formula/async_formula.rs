@@ -4,6 +4,7 @@
 //! A nested formula that can contain other formulas.
 
 mod application_methods;
+mod composition;
 
 use async_trait::async_trait;
 use tokio::sync::broadcast::{self, error::RecvError};
