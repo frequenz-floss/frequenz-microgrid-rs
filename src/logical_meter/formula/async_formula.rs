@@ -451,7 +451,12 @@ where
                         Formula::Avg(_) => application_methods::avg_samples,
                         Formula::Add(_) => application_methods::add_samples,
                         Formula::Subtract(_) => application_methods::subtract_samples,
-                        _ => unreachable!(),
+                        _ => {
+                            // This case is unreachable due to the match above.
+                            return Err(Error::internal(
+                                "unexpected formula type in subscribe.".to_string(),
+                            ));
+                        }
                     },
                 ));
                 Ok(rx)
@@ -468,7 +473,12 @@ where
                     match self {
                         Formula::Multiply(_, _) => application_methods::multiply_samples,
                         Formula::Divide(_, _) => application_methods::divide_samples,
-                        _ => unreachable!(),
+                        _ => {
+                            // This case is unreachable due to the match above.
+                            return Err(Error::internal(
+                                "unexpected formula type in subscribe.".to_string(),
+                            ));
+                        }
                     },
                 ));
 
