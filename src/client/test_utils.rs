@@ -265,3 +265,61 @@ impl MicrogridApiClient for MockMicrogridApiClient {
         Ok(Response::new(stream))
     }
 }
+
+pub mod logging {
+    use std::sync::{Arc, Mutex};
+
+    /// Run the given async test function, capturing the logs emitted during
+    /// its execution.
+    ///
+    /// Returns a tuple of the function's output and a vector of captured log
+    /// messages.
+    pub async fn capture_logs<F, Fut, Out>(test_fn: F) -> (Out, Vec<String>)
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Out>,
+    {
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let logs_clone = logs.clone();
+
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || MockWriter {
+                logs: logs_clone.clone(),
+            })
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .without_time()
+            .finish();
+
+        let out = {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            test_fn().await
+        };
+
+        (
+            out,
+            Arc::try_unwrap(logs)
+                .expect("Failed to unwrap Arc")
+                .into_inner()
+                .expect("Failed to get Mutex content"),
+        )
+    }
+
+    struct MockWriter {
+        logs: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl std::io::Write for MockWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let message = String::from_utf8_lossy(buf).trim().to_string();
+            if !message.is_empty() {
+                self.logs.lock().unwrap().push(message);
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+}
