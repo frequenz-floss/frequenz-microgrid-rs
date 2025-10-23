@@ -59,7 +59,7 @@ impl MockComponent {
             ..Default::default()
         }
     }
-    pub fn meter(component_id: u64, power: Option<Vec<f32>>) -> Self {
+    pub fn meter(component_id: u64) -> Self {
         Self {
             component: ElectricalComponent {
                 id: component_id,
@@ -67,11 +67,10 @@ impl MockComponent {
                 category: ElectricalComponentCategory::Meter as i32,
                 ..Default::default()
             },
-            power,
             ..Default::default()
         }
     }
-    pub fn pv_inverter(component_id: u64, power: Option<Vec<f32>>) -> Self {
+    pub fn pv_inverter(component_id: u64) -> Self {
         Self {
             component: ElectricalComponent {
                 id: component_id,
@@ -84,11 +83,10 @@ impl MockComponent {
                 }),
                 ..Default::default()
             },
-            power,
             ..Default::default()
         }
     }
-    pub fn battery_inverter(component_id: u64, power: Option<Vec<f32>>) -> Self {
+    pub fn battery_inverter(component_id: u64) -> Self {
         Self {
             component: ElectricalComponent {
                 id: component_id,
@@ -101,7 +99,6 @@ impl MockComponent {
                 }),
                 ..Default::default()
             },
-            power,
             ..Default::default()
         }
     }
@@ -145,6 +142,10 @@ impl MockComponent {
             panic!("Cannot add children to a hidden load component");
         }
         self.children.extend(children.into_iter().map(Arc::new));
+        self
+    }
+    pub fn with_power(mut self, power: Vec<f32>) -> Self {
+        self.power = Some(power);
         self
     }
 }

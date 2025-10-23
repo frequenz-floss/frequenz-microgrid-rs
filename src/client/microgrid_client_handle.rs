@@ -172,23 +172,23 @@ mod tests {
             // Grid connection point
             MockComponent::grid(1).with_children(vec![
                 // Main meter
-                MockComponent::meter(2, Some(vec![4.0, 5.0, 6.0, 7.0, 7.0, 7.0])).with_children(
-                    vec![
+                MockComponent::meter(2)
+                    .with_power(vec![4.0, 5.0, 6.0, 7.0, 7.0, 7.0])
+                    .with_children(vec![
                         // PV meter
-                        MockComponent::meter(3, None).with_children(vec![
+                        MockComponent::meter(3).with_children(vec![
                             // PV inverter
-                            MockComponent::pv_inverter(4, None),
+                            MockComponent::pv_inverter(4),
                         ]),
                         // Battery meter
-                        MockComponent::meter(5, None).with_children(vec![
+                        MockComponent::meter(5).with_children(vec![
                             // Battery inverter
-                            MockComponent::battery_inverter(6, None).with_children(vec![
+                            MockComponent::battery_inverter(6).with_children(vec![
                                 // Battery
                                 MockComponent::battery(7),
                             ]),
                         ]),
-                    ],
-                ),
+                    ]),
             ]),
         );
 
