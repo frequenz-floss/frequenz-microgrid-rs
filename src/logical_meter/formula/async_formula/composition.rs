@@ -20,7 +20,7 @@ impl<Q> Formula<Q>
 where
     Q: Quantity + 'static,
 {
-    pub fn coalesce(self, other: Formula<Q>) -> Result<Formula<Q>, Error> {
+    pub fn coalesce(self, other: impl Into<FormulaOperand<Q>>) -> Result<Formula<Q>, Error> {
         match self {
             Formula::Coalesce(mut items) => {
                 items.push(other.into());
@@ -33,7 +33,7 @@ where
         }
     }
 
-    pub fn min(self, other: Formula<Q>) -> Result<Formula<Q>, Error> {
+    pub fn min(self, other: impl Into<FormulaOperand<Q>>) -> Result<Formula<Q>, Error> {
         match self {
             Formula::Min(mut items) => {
                 items.push(other.into());
@@ -46,7 +46,7 @@ where
         }
     }
 
-    pub fn max(self, other: Formula<Q>) -> Result<Formula<Q>, Error> {
+    pub fn max(self, other: impl Into<FormulaOperand<Q>>) -> Result<Formula<Q>, Error> {
         match self {
             Formula::Max(mut items) => {
                 items.push(other.into());
@@ -238,6 +238,15 @@ mod tests {
             collect_values(&composed, Power::as_watts).await,
             vec![Some(1.0), Some(12.0), Some(8.0), Some(20.0)]
         );
+
+        let composed = formula(1, vec![None, Some(12.0), None, Some(20.0)])
+            .coalesce(Power::from_watts(5.0))
+            .unwrap();
+        assert_eq!(composed.to_string(), "COALESCE(#1, 5 W)");
+        assert_eq!(
+            collect_values(&composed, Power::as_watts).await,
+            vec![Some(5.0), Some(12.0), Some(5.0), Some(20.0)]
+        );
     }
 
     #[tokio::test]
@@ -259,6 +268,15 @@ mod tests {
             collect_values(&composed, Power::as_watts).await,
             vec![Some(5.0), Some(1.0), None, Some(18.0)]
         );
+
+        let composed = formula(1, vec![Some(10.0), Some(1.0), None, Some(20.0)])
+            .min(Power::from_watts(15.0))
+            .unwrap();
+        assert_eq!(composed.to_string(), "MIN(#1, 15 W)");
+        assert_eq!(
+            collect_values(&composed, Power::as_watts).await,
+            vec![Some(10.0), Some(1.0), None, Some(15.0)]
+        );
     }
 
     #[tokio::test]
@@ -279,6 +297,15 @@ mod tests {
         assert_eq!(
             collect_values(&composed, Power::as_watts).await,
             vec![Some(10.0), Some(21.0), None, Some(25.0)]
+        );
+
+        let composed = formula(1, vec![Some(10.0), Some(1.0), None, Some(20.0)])
+            .max(Power::from_watts(15.0))
+            .unwrap();
+        assert_eq!(composed.to_string(), "MAX(#1, 15 W)");
+        assert_eq!(
+            collect_values(&composed, Power::as_watts).await,
+            vec![Some(15.0), Some(15.0), None, Some(20.0)]
         );
     }
 
