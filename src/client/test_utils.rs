@@ -8,25 +8,28 @@ use std::{sync::Arc, time::SystemTime};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Response;
 
-use crate::proto::{
-    common::v1alpha8::{
-        metrics::{
-            Metric, MetricSample, MetricValueVariant, SimpleMetricValue, metric_value_variant,
+use crate::{
+    proto::{
+        common::v1alpha8::{
+            metrics::{
+                Metric, MetricSample, MetricValueVariant, SimpleMetricValue, metric_value_variant,
+            },
+            microgrid::electrical_components::{
+                ElectricalComponent, ElectricalComponentCategory,
+                ElectricalComponentCategorySpecificInfo, ElectricalComponentConnection,
+                ElectricalComponentStateCode, ElectricalComponentStateSnapshot,
+                ElectricalComponentTelemetry, Inverter, InverterType,
+                electrical_component_category_specific_info::Kind,
+            },
         },
-        microgrid::electrical_components::{
-            ElectricalComponent, ElectricalComponentCategory,
-            ElectricalComponentCategorySpecificInfo, ElectricalComponentConnection,
-            ElectricalComponentStateCode, ElectricalComponentStateSnapshot,
-            ElectricalComponentTelemetry, Inverter, InverterType,
-            electrical_component_category_specific_info::Kind,
+        microgrid::v1alpha18::{
+            ListElectricalComponentConnectionsRequest, ListElectricalComponentConnectionsResponse,
+            ListElectricalComponentsRequest, ListElectricalComponentsResponse,
+            ReceiveElectricalComponentTelemetryStreamRequest,
+            ReceiveElectricalComponentTelemetryStreamResponse,
         },
     },
-    microgrid::v1alpha18::{
-        ListElectricalComponentConnectionsRequest, ListElectricalComponentConnectionsResponse,
-        ListElectricalComponentsRequest, ListElectricalComponentsResponse,
-        ReceiveElectricalComponentTelemetryStreamRequest,
-        ReceiveElectricalComponentTelemetryStreamResponse,
-    },
+    quantity::{Current, Power, ReactivePower, Voltage},
 };
 
 use super::MicrogridApiClient;
@@ -44,7 +47,12 @@ pub struct MockMicrogridApiClient {
 pub struct MockComponent {
     pub component: ElectricalComponent,
     pub children: Vec<MockComponent>,
-    pub power: Option<Vec<f32>>,
+    pub metrics: Vec<(
+        Option<Power>,
+        Option<ReactivePower>,
+        Option<Voltage>,
+        Option<Current>,
+    )>,
     start_ts: Option<SystemTime>,
     start_instant: Option<tokio::time::Instant>,
 }
@@ -61,6 +69,7 @@ impl MockComponent {
             ..Default::default()
         }
     }
+
     pub fn meter(component_id: u64) -> Self {
         Self {
             component: ElectricalComponent {
@@ -72,6 +81,7 @@ impl MockComponent {
             ..Default::default()
         }
     }
+
     pub fn pv_inverter(component_id: u64) -> Self {
         Self {
             component: ElectricalComponent {
@@ -88,6 +98,7 @@ impl MockComponent {
             ..Default::default()
         }
     }
+
     pub fn battery_inverter(component_id: u64) -> Self {
         Self {
             component: ElectricalComponent {
@@ -104,6 +115,7 @@ impl MockComponent {
             ..Default::default()
         }
     }
+
     pub fn battery(component_id: u64) -> Self {
         Self {
             component: ElectricalComponent {
@@ -115,6 +127,7 @@ impl MockComponent {
             ..Default::default()
         }
     }
+
     #[allow(dead_code)]
     pub fn ev_charger(component_id: u64) -> Self {
         Self {
@@ -127,6 +140,7 @@ impl MockComponent {
             ..Default::default()
         }
     }
+
     #[allow(dead_code)]
     pub fn chp(component_id: u64) -> Self {
         Self {
@@ -139,6 +153,7 @@ impl MockComponent {
             ..Default::default()
         }
     }
+
     pub fn with_children(mut self, children: Vec<MockComponent>) -> Self {
         if self.component.category == ElectricalComponentCategory::Unspecified as i32 {
             panic!("Cannot add children to a hidden load component");
@@ -146,8 +161,61 @@ impl MockComponent {
         self.children.extend(children.into_iter());
         self
     }
+
     pub fn with_power(mut self, power: Vec<f32>) -> Self {
-        self.power = Some(power);
+        let mut metrics = self.metrics;
+        for (i, p) in power.iter().enumerate() {
+            if i >= metrics.len() {
+                metrics.push((Some(Power::from_watts(*p)), None, None, None));
+            } else {
+                metrics[i].0 = Some(Power::from_watts(*p));
+            }
+        }
+        self.metrics = metrics;
+        self
+    }
+
+    pub fn with_reactive_power(mut self, reactive_power: Vec<f32>) -> Self {
+        let mut metrics = self.metrics;
+        for (i, rp) in reactive_power.iter().enumerate() {
+            if i >= metrics.len() {
+                metrics.push((
+                    None,
+                    Some(ReactivePower::from_volt_amperes_reactive(*rp)),
+                    None,
+                    None,
+                ));
+            } else {
+                metrics[i].1 = Some(ReactivePower::from_volt_amperes_reactive(*rp));
+            }
+        }
+        self.metrics = metrics;
+        self
+    }
+
+    pub fn with_voltage(mut self, voltage: Vec<f32>) -> Self {
+        let mut metrics = self.metrics;
+        for (i, v) in voltage.iter().enumerate() {
+            if i >= metrics.len() {
+                metrics.push((None, None, Some(Voltage::from_volts(*v)), None));
+            } else {
+                metrics[i].2 = Some(Voltage::from_volts(*v));
+            }
+        }
+        self.metrics = metrics;
+        self
+    }
+
+    pub fn with_current(mut self, current: Vec<f32>) -> Self {
+        let mut metrics = self.metrics;
+        for (i, c) in current.iter().enumerate() {
+            if i >= metrics.len() {
+                metrics.push((None, None, None, Some(Current::from_amperes(*c))));
+            } else {
+                metrics[i].3 = Some(Current::from_amperes(*c));
+            }
+        }
+        self.metrics = metrics;
         self
     }
 
@@ -253,33 +321,92 @@ impl MicrogridApiClient for MockMicrogridApiClient {
 
         // TODO: use wall time for next ts, if that's the issue.
         if let Some(component) = component {
-            if let Some(power) = component.power.clone() {
+            if !component.metrics.is_empty() {
+                let metrics = component.metrics.clone();
                 tokio::spawn(async move {
                     let dur = std::time::Duration::from_millis(200);
                     let mut interval = tokio::time::interval(dur);
                     let mut next_ts = component.start_ts.unwrap()
                         + (tokio::time::Instant::now() - component.start_instant.unwrap());
 
-                    for p in power {
+                    for metrics in metrics.iter() {
                         interval.tick().await;
                         next_ts += dur;
                         let ts = Some(prost_types::Timestamp::from(next_ts));
+                        let mut metric_samples = vec![];
+                        if let Some(power) = metrics.0 {
+                            metric_samples.push(MetricSample {
+                                sample_time: ts.clone(),
+                                metric: Metric::AcPowerActive as i32,
+                                value: Some(MetricValueVariant {
+                                    metric_value_variant: Some(
+                                        metric_value_variant::MetricValueVariant::SimpleMetric(
+                                            SimpleMetricValue {
+                                                value: power.as_watts(),
+                                            },
+                                        ),
+                                    ),
+                                }),
+                                bounds: vec![],
+                                connection: None,
+                            });
+                        }
+                        if let Some(reactive_power) = metrics.1 {
+                            metric_samples.push(MetricSample {
+                                sample_time: ts.clone(),
+                                metric: Metric::AcPowerReactive as i32,
+                                value: Some(MetricValueVariant {
+                                    metric_value_variant: Some(
+                                        metric_value_variant::MetricValueVariant::SimpleMetric(
+                                            SimpleMetricValue {
+                                                value: reactive_power.as_volt_amperes_reactive(),
+                                            },
+                                        ),
+                                    ),
+                                }),
+                                bounds: vec![],
+                                connection: None,
+                            });
+                        }
+                        if let Some(voltage) = metrics.2 {
+                            metric_samples.push(MetricSample {
+                                sample_time: ts.clone(),
+                                metric: Metric::AcVoltage as i32,
+                                value: Some(MetricValueVariant {
+                                    metric_value_variant: Some(
+                                        metric_value_variant::MetricValueVariant::SimpleMetric(
+                                            SimpleMetricValue {
+                                                value: voltage.as_volts(),
+                                            },
+                                        ),
+                                    ),
+                                }),
+                                bounds: vec![],
+                                connection: None,
+                            });
+                        }
+                        if let Some(current) = metrics.3 {
+                            metric_samples.push(MetricSample {
+                                sample_time: ts.clone(),
+                                metric: Metric::AcCurrent as i32,
+                                value: Some(MetricValueVariant {
+                                    metric_value_variant: Some(
+                                        metric_value_variant::MetricValueVariant::SimpleMetric(
+                                            SimpleMetricValue {
+                                                value: current.as_amperes(),
+                                            },
+                                        ),
+                                    ),
+                                }),
+                                bounds: vec![],
+                                connection: None,
+                            });
+                        }
+
                         let resp = ReceiveElectricalComponentTelemetryStreamResponse {
                             telemetry: Some(ElectricalComponentTelemetry {
                                 electrical_component_id: comp_id,
-                                metric_samples: vec![MetricSample {
-                                    sample_time: ts.clone(),
-                                    metric: Metric::AcPowerActive as i32,
-                                    value: Some(MetricValueVariant {
-                                        metric_value_variant: Some(
-                                            metric_value_variant::MetricValueVariant::SimpleMetric(
-                                                SimpleMetricValue { value: p },
-                                            ),
-                                        ),
-                                    }),
-                                    bounds: vec![],
-                                    connection: None,
-                                }],
+                                metric_samples,
                                 // TODO: support sending errors
                                 state_snapshots: vec![ElectricalComponentStateSnapshot {
                                     origin_time: ts,
