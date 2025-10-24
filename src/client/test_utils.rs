@@ -3,7 +3,7 @@
 
 //! A mock implementation of the MicrogridApiClient for testing.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::SystemTime};
 
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Response;
@@ -43,8 +43,10 @@ pub struct MockMicrogridApiClient {
 #[derive(Default, Debug, Clone)]
 pub struct MockComponent {
     pub component: ElectricalComponent,
-    pub children: Vec<Arc<MockComponent>>,
+    pub children: Vec<MockComponent>,
     pub power: Option<Vec<f32>>,
+    start_ts: Option<SystemTime>,
+    start_instant: Option<tokio::time::Instant>,
 }
 
 impl MockComponent {
@@ -141,11 +143,17 @@ impl MockComponent {
         if self.component.category == ElectricalComponentCategory::Unspecified as i32 {
             panic!("Cannot add children to a hidden load component");
         }
-        self.children.extend(children.into_iter().map(Arc::new));
+        self.children.extend(children.into_iter());
         self
     }
     pub fn with_power(mut self, power: Vec<f32>) -> Self {
         self.power = Some(power);
+        self
+    }
+
+    pub fn with_start_times(mut self, ts: SystemTime, instant: tokio::time::Instant) -> Self {
+        self.start_ts = Some(ts);
+        self.start_instant = Some(instant);
         self
     }
 }
@@ -158,18 +166,42 @@ impl MockMicrogridApiClient {
             connections: vec![],
         };
 
-        fn traverse(node: &Arc<MockComponent>, client: &mut MockMicrogridApiClient) {
-            client.components.push(node.clone());
+        let now = SystemTime::now();
+
+        let since_epoch = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default();
+        let next_sec =
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(since_epoch.as_secs() + 1);
+
+        // Sleep until the start of the next second to align telemetry
+        // timestamps with the resampler's clock, so that we get reproducible
+        // values from the logical meter.
+        std::thread::sleep(next_sec.duration_since(now).unwrap_or_default());
+
+        let now = next_sec;
+        let now_instant = tokio::time::Instant::now();
+
+        fn traverse(
+            node: &MockComponent,
+            client: &mut MockMicrogridApiClient,
+            now: &SystemTime,
+            now_instant: &tokio::time::Instant,
+        ) {
+            client.components.push(Arc::new(
+                node.clone()
+                    .with_start_times(now.clone(), now_instant.clone()),
+            ));
             for child in &node.children {
                 client.connections.push(ElectricalComponentConnection {
                     source_electrical_component_id: node.component.id,
                     destination_electrical_component_id: child.component.id,
                     operational_lifetime: None,
                 });
-                traverse(child, client);
+                traverse(child, client, &now, &now_instant);
             }
         }
-        traverse(&Arc::new(graph), &mut this_client);
+        traverse(&Arc::new(graph), &mut this_client, &now, &now_instant);
 
         this_client
     }
@@ -219,12 +251,15 @@ impl MicrogridApiClient for MockMicrogridApiClient {
             .find(|c| c.component.id == comp_id)
             .cloned();
 
+        // TODO: use wall time for next ts, if that's the issue.
         if let Some(component) = component {
             if let Some(power) = component.power.clone() {
                 tokio::spawn(async move {
                     let dur = std::time::Duration::from_millis(200);
                     let mut interval = tokio::time::interval(dur);
-                    let mut next_ts = std::time::SystemTime::now();
+                    let mut next_ts = component.start_ts.unwrap()
+                        + (tokio::time::Instant::now() - component.start_instant.unwrap());
+
                     for p in power {
                         interval.tick().await;
                         next_ts += dur;
