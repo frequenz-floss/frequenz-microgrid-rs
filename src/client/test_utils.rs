@@ -128,7 +128,6 @@ impl MockComponent {
         }
     }
 
-    #[allow(dead_code)]
     pub fn ev_charger(component_id: u64) -> Self {
         Self {
             component: ElectricalComponent {
@@ -141,7 +140,6 @@ impl MockComponent {
         }
     }
 
-    #[allow(dead_code)]
     pub fn chp(component_id: u64) -> Self {
         Self {
             component: ElectricalComponent {

@@ -222,10 +222,28 @@ mod tests {
                                     // Battery
                                     MockComponent::battery(7),
                                 ]),
+                            // Battery inverter
+                            MockComponent::battery_inverter(8)
+                                .with_voltage(vec![400.0, 400.0, 398.0, 396.0, 396.0, 396.0])
+                                .with_children(vec![
+                                    // Battery
+                                    MockComponent::battery(9),
+                                ]),
                         ]),
                         // Consumer meter
-                        MockComponent::meter(8)
+                        MockComponent::meter(10)
                             .with_current(vec![14.5, 15.0, 16.0, 15.5, 14.0, 13.5]),
+                        // Chp meter
+                        MockComponent::meter(11).with_children(vec![
+                            // Chp
+                            MockComponent::chp(12),
+                        ]),
+                        // Ev charger meter
+                        MockComponent::meter(13).with_children(vec![
+                            // Ev chargers
+                            MockComponent::ev_charger(14),
+                            MockComponent::ev_charger(15),
+                        ]),
                     ]),
             ]),
         );
@@ -238,6 +256,87 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_formula_display() {
+        let mut lm = new_logical_meter_handle().await;
+
+        let formula = lm.grid(crate::metric::AcPowerActive).unwrap();
+        assert_eq!(formula.to_string(), "METRIC_AC_POWER_ACTIVE::(#2)");
+
+        let formula = lm.battery(None, crate::metric::AcPowerReactive).unwrap();
+        assert_eq!(
+            formula.to_string(),
+            "METRIC_AC_POWER_REACTIVE::(COALESCE(#8 + #6, #5, COALESCE(#8, 0.0) + COALESCE(#6, 0.0)))"
+        );
+
+        let formula = lm
+            .battery(Some([9].into()), crate::metric::AcPowerActive)
+            .unwrap();
+        assert_eq!(
+            formula.to_string(),
+            "METRIC_AC_POWER_ACTIVE::(COALESCE(#8, 0.0))"
+        );
+
+        let formula = lm
+            .battery(Some([7].into()), crate::metric::AcVoltage)
+            .unwrap();
+        assert_eq!(formula.to_string(), "METRIC_AC_VOLTAGE::(COALESCE(#5, #6))");
+
+        let formula = lm.battery(None, crate::metric::AcFrequency).unwrap();
+        assert_eq!(
+            formula.to_string(),
+            "METRIC_AC_FREQUENCY::(COALESCE(#5, #6, #8))"
+        );
+
+        let formula = lm.pv(None, crate::metric::AcPowerReactive).unwrap();
+        assert_eq!(
+            formula.to_string(),
+            "METRIC_AC_POWER_REACTIVE::(COALESCE(#4, #3, 0.0))"
+        );
+
+        let formula = lm.chp(None, crate::metric::AcPowerActive).unwrap();
+        assert_eq!(
+            formula.to_string(),
+            "METRIC_AC_POWER_ACTIVE::(COALESCE(#12, #11, 0.0))"
+        );
+
+        let formula = lm.ev_charger(None, crate::metric::AcCurrent).unwrap();
+        assert_eq!(
+            formula.to_string(),
+            "METRIC_AC_CURRENT::(COALESCE(#15 + #14, #13, COALESCE(#15, 0.0) + COALESCE(#14, 0.0)))"
+        );
+
+        let formula = lm.consumer(crate::metric::AcCurrent).unwrap();
+        assert_eq!(
+            formula.to_string(),
+            concat!(
+                "METRIC_AC_CURRENT::(MAX(",
+                "#2 - COALESCE(#3, #4, 0.0) - COALESCE(#5, COALESCE(#8, 0.0) + COALESCE(#6, 0.0)) ",
+                "- #10 - COALESCE(#11, #12, 0.0)",
+                " - COALESCE(#13, COALESCE(#15, 0.0) + COALESCE(#14, 0.0)),",
+                " 0.0)",
+                " + COALESCE(MAX(#3 - #4, 0.0), 0.0) + COALESCE(MAX(#5 - #6 - #8, 0.0), 0.0)",
+                " + MAX(#10, 0.0) + COALESCE(MAX(#11 - #12, 0.0), 0.0)",
+                " + COALESCE(MAX(#13 - #14 - #15, 0.0), 0.0)",
+                ")"
+            )
+        );
+
+        let formula = lm.producer(crate::metric::AcPowerActive).unwrap();
+        assert_eq!(
+            formula.to_string(),
+            concat!(
+                "METRIC_AC_POWER_ACTIVE::(",
+                "MIN(COALESCE(#4, #3, 0.0), 0.0)",
+                " + MIN(COALESCE(#12, #11, 0.0), 0.0)",
+                ")"
+            )
+        );
+
+        let formula = lm.component(10, crate::metric::AcCurrent).unwrap();
+        assert_eq!(formula.to_string(), "METRIC_AC_CURRENT::(#10)");
     }
 
     #[tokio::test(start_paused = true)]
