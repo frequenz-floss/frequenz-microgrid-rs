@@ -24,7 +24,7 @@ tracing-subscriber = { version = "0.3" }
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["std", "env-filter"] }
 tokio = { version = "1.45", features = ["test-util"] }
-tokio-stream = "0.1.17"
+tokio-stream = { version = "0.1.17", features = ["sync"] }
 
 
 [build-dependencies]
