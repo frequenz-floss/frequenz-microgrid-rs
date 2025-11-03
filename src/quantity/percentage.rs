@@ -38,6 +38,15 @@ mod tests {
         assert_f32_eq(perc_2 / perc_1, 1.6);
 
         assert_f32_eq(Percentage::zero().as_percentage(), 0.0);
+
+        let perc_3 = Percentage::from_percentage(150.0);
+        assert_f32_eq(perc_3.as_fraction(), 1.5);
+        let perc_4 = Percentage::from_fraction(-0.1);
+        assert_f32_eq(perc_4.as_percentage(), -10.0);
+
+        assert!(perc_3 > Percentage::from_percentage(100.0));
+        assert!(perc_4 < Percentage::from_percentage(0.0));
+        assert!(perc_4 > Percentage::from_percentage(-20.0));
     }
 
     #[test]
@@ -50,5 +59,8 @@ mod tests {
         assert_eq!(p(12.3456, 4), "12.3456 %");
         assert_eq!(p(12.3456, 5), "12.3456 %");
         assert_eq!(s(100.0), "100 %");
+        assert_eq!(s(-5.5), "-5.5 %");
+        assert_eq!(s(1234.5678), "1234.568 %");
+        assert_eq!(p(-1234.5678, 1), "-1234.6 %");
     }
 }
