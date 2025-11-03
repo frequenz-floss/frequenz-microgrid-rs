@@ -6,6 +6,7 @@
 use crate::Error;
 use crate::logical_meter::formula::FormulaParams;
 use crate::logical_meter::logical_meter_actor;
+use crate::metric::Metric;
 use crate::proto::common::v1alpha8::microgrid::electrical_components::{
     ElectricalComponent, ElectricalComponentConnection,
 };
@@ -19,9 +20,9 @@ use super::{AggregationFormula, CoalesceFormula};
 macro_rules! graph_formula_provider {
     ($(($fnname:ident $(, ids:$idsparam:ident)? $(, id:$idparam:ident)?)),+ $(,)?) => {$(
 
-        fn $fnname<M: crate::metric::Metric>(
+        fn $fnname(
             _graph: &ComponentGraph<ElectricalComponent, ElectricalComponentConnection>,
-            _metric: M,
+            _metric: Self::MetricType,
             _instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
             $($idsparam: Option<BTreeSet<u64>>,)?
             $($idparam: u64,)?
@@ -45,6 +46,8 @@ macro_rules! graph_formula_provider {
 /// `CoalesceFormula`s for each of these metrics.  This trait provides a
 /// way to generalize them.
 pub trait GraphFormulaProvider: Sized {
+    type MetricType: Metric;
+
     graph_formula_provider!(
         (grid),
         (consumer),
@@ -65,9 +68,9 @@ macro_rules! impl_graph_formula_provider {
         $(, id:$idparam:ident)?
     )),+ $(,)?) => {$(
 
-        fn $fnname<M: crate::metric::Metric>(
+        fn $fnname(
             graph: &ComponentGraph<ElectricalComponent, ElectricalComponentConnection>,
-            _metric: M,
+            _metric: Self::MetricType,
             instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
             $($idsparam: Option<BTreeSet<u64>>,)?
             $($idparam: u64,)?
@@ -77,13 +80,15 @@ macro_rules! impl_graph_formula_provider {
                     format!("Could not get {} formula: {e}", stringify!($fnname))
                 )
             })?;
-            Ok(FormulaParams::new(formula, M::METRIC, instructions_tx).into())
+            Ok(FormulaParams::new(formula, _metric, instructions_tx).into())
         }
 
     )+};
 }
 
-impl GraphFormulaProvider for AggregationFormula {
+impl<M: Metric> GraphFormulaProvider for AggregationFormula<M> {
+    type MetricType = M;
+
     impl_graph_formula_provider!(
         (grid, grid_formula),
         (consumer, consumer_formula),
@@ -96,7 +101,9 @@ impl GraphFormulaProvider for AggregationFormula {
     );
 }
 
-impl GraphFormulaProvider for CoalesceFormula {
+impl<M: Metric> GraphFormulaProvider for CoalesceFormula<M> {
+    type MetricType = M;
+
     impl_graph_formula_provider!(
         (grid, grid_coalesce_formula),
         (battery, battery_ac_coalesce_formula, ids: battery_ids),

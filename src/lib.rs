@@ -9,6 +9,8 @@ pub use client::MicrogridClientHandle;
 mod error;
 pub use error::{Error, ErrorKind};
 
+mod quantity;
+
 mod proto;
 
 mod sample;

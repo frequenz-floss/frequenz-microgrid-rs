@@ -5,13 +5,13 @@ use chrono::{DateTime, Utc};
 
 /// Represents a measurement of a microgrid metric, made at a specific time.
 #[derive(Clone, Debug, Default)]
-pub struct Sample {
+pub struct Sample<Q: Copy + Clone + std::fmt::Debug + Default> {
     timestamp: DateTime<Utc>,
-    value: Option<f32>,
+    value: Option<Q>,
 }
 
-impl frequenz_resampling::Sample for Sample {
-    type Value = f32;
+impl<Q: Copy + Clone + Default + std::fmt::Debug> frequenz_resampling::Sample for Sample<Q> {
+    type Value = Q;
 
     fn new(timestamp: DateTime<Utc>, value: Option<Self::Value>) -> Self {
         Self { timestamp, value }
@@ -26,9 +26,9 @@ impl frequenz_resampling::Sample for Sample {
     }
 }
 
-impl Sample {
+impl<Q: Copy + Clone + Default + std::fmt::Debug> Sample<Q> {
     /// Creates a new `Sample` with the given timestamp and value.
-    pub fn new(timestamp: DateTime<Utc>, value: Option<f32>) -> Self {
+    pub fn new(timestamp: DateTime<Utc>, value: Option<Q>) -> Self {
         Self { timestamp, value }
     }
 
@@ -38,7 +38,7 @@ impl Sample {
     }
 
     /// Returns the value of the sample.
-    pub fn value(&self) -> Option<f32> {
+    pub fn value(&self) -> Option<Q> {
         self.value
     }
 }
