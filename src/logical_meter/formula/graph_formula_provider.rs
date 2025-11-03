@@ -22,7 +22,7 @@ macro_rules! graph_formula_provider {
 
         fn $fnname(
             _graph: &ComponentGraph<ElectricalComponent, ElectricalComponentConnection>,
-            _metric: Self::MetricType,
+            metric: Self::MetricType,
             _instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
             $($idsparam: Option<BTreeSet<u64>>,)?
             $($idparam: u64,)?
@@ -31,7 +31,7 @@ macro_rules! graph_formula_provider {
                 format!(
                     "The component graph does not support {} formula generation for {}.",
                     stringify!($fnname),
-                    _metric.to_string()
+                    metric.to_string()
                 )
             ));
         }
@@ -70,7 +70,7 @@ macro_rules! impl_graph_formula_provider {
 
         fn $fnname(
             graph: &ComponentGraph<ElectricalComponent, ElectricalComponentConnection>,
-            _metric: Self::MetricType,
+            metric: Self::MetricType,
             instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
             $($idsparam: Option<BTreeSet<u64>>,)?
             $($idparam: u64,)?
@@ -80,7 +80,7 @@ macro_rules! impl_graph_formula_provider {
                     format!("Could not get {} formula: {e}", stringify!($fnname))
                 )
             })?;
-            Ok(FormulaParams::new(formula, _metric, instructions_tx).into())
+            Ok(FormulaParams::new(formula, metric, instructions_tx).into())
         }
 
     )+};
