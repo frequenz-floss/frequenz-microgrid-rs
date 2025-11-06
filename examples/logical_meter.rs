@@ -27,11 +27,11 @@ async fn main() -> Result<(), Error> {
     )
     .await?;
 
-    // Create a formula that calculates `grid_power - battery_power`.
     let formula_grid = logical_meter.grid(metric::AcPowerActive)?;
     let formula_pv = logical_meter.pv(None, metric::AcPowerActive)?;
     let formula_consumer = logical_meter.consumer(metric::AcPowerActive)?;
 
+    // Create a formula that calculates `grid_power - pv_power + consumer_power + 100kW`.
     let formula = logical_meter.grid(metric::AcPowerActive)?
         - logical_meter.pv(None, metric::AcPowerActive)?
         + logical_meter.consumer(metric::AcPowerActive)?
@@ -68,6 +68,8 @@ async fn main() -> Result<(), Error> {
         );
     }
 
+    // Create a formula that calculates the grid voltage as:
+    // COALESCE(grid_voltage, AVG(grid_voltage_p1, grid_voltage_p2, grid_voltage_p3) * SQRT(3))
     let formula_grid_voltage = logical_meter.grid(metric::AcVoltage)?.coalesce(
         logical_meter.grid(metric::AcVoltagePhase1N)?.avg(vec![
             logical_meter.grid(metric::AcVoltagePhase2N)?,
