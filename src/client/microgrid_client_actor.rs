@@ -5,7 +5,7 @@
 
 use crate::{
     client::{MicrogridApiClient, instruction::Instruction, retry_tracker::RetryTracker},
-    proto::microgrid::v1alpha18::{
+    proto::microgrid::{
         ListElectricalComponentConnectionsRequest, ListElectricalComponentsRequest,
         ReceiveElectricalComponentTelemetryStreamRequest,
         ReceiveElectricalComponentTelemetryStreamResponse,
@@ -20,9 +20,7 @@ use tokio::{
 };
 use tracing::Instrument as _;
 
-use crate::{
-    Error, proto::common::v1alpha8::microgrid::electrical_components::ElectricalComponentTelemetry,
-};
+use crate::{Error, proto::common::microgrid::electrical_components::ElectricalComponentTelemetry};
 
 enum StreamStatus {
     Failed(u64),

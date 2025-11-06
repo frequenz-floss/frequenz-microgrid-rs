@@ -10,7 +10,7 @@ use tonic::Response;
 
 use crate::{
     proto::{
-        common::v1alpha8::{
+        common::{
             metrics::{
                 Metric, MetricSample, MetricValueVariant, SimpleMetricValue, metric_value_variant,
             },
@@ -22,7 +22,8 @@ use crate::{
                 electrical_component_category_specific_info::Kind,
             },
         },
-        microgrid::v1alpha18::{
+        google::protobuf,
+        microgrid::{
             ListElectricalComponentConnectionsRequest, ListElectricalComponentConnectionsResponse,
             ListElectricalComponentsRequest, ListElectricalComponentsResponse,
             ReceiveElectricalComponentTelemetryStreamRequest,
@@ -330,7 +331,12 @@ impl MicrogridApiClient for MockMicrogridApiClient {
                     for metrics in metrics.iter() {
                         interval.tick().await;
                         next_ts += dur;
-                        let ts = Some(prost_types::Timestamp::from(next_ts));
+                        let duration_since_epoch =
+                            next_ts.duration_since(SystemTime::UNIX_EPOCH).unwrap();
+                        let ts = Some(protobuf::Timestamp {
+                            seconds: duration_since_epoch.as_secs() as i64,
+                            nanos: duration_since_epoch.subsec_nanos() as i32,
+                        });
                         let mut metric_samples = vec![];
                         if let Some(power) = metrics.0 {
                             metric_samples.push(MetricSample {

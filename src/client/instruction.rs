@@ -7,7 +7,7 @@ use tokio::sync::{broadcast, oneshot};
 
 use crate::{
     Error,
-    proto::common::v1alpha8::microgrid::electrical_components::{
+    proto::common::microgrid::electrical_components::{
         ElectricalComponent, ElectricalComponentConnection, ElectricalComponentTelemetry,
     },
 };

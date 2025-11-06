@@ -13,10 +13,10 @@ use crate::{
     Error,
     client::MicrogridApiClient,
     proto::{
-        common::v1alpha8::microgrid::electrical_components::{
+        common::microgrid::electrical_components::{
             ElectricalComponent, ElectricalComponentConnection, ElectricalComponentTelemetry,
         },
-        microgrid::v1alpha18::microgrid_client::MicrogridClient,
+        microgrid::microgrid_client::MicrogridClient,
     },
 };
 
@@ -164,7 +164,7 @@ mod tests {
     use crate::{
         MicrogridClientHandle,
         client::test_utils::{MockComponent, MockMicrogridApiClient},
-        proto::common::v1alpha8::metrics::{SimpleMetricValue, metric_value_variant},
+        proto::common::metrics::{SimpleMetricValue, metric_value_variant},
     };
 
     fn new_client_handle() -> MicrogridClientHandle {
