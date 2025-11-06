@@ -2,11 +2,11 @@
 // Copyright © 2025 Frequenz Energy-as-a-Service GmbH
 
 fn main() -> Result<(), std::io::Error> {
-    let config = tonic_build::Config::new();
-
-    tonic_build::configure()
-        .compile_protos_with_config(
-            config,
+    tonic_prost_build::configure()
+        .disable_comments(["."])
+        .include_file("proto_v1_alpha18.rs")
+        .compile_well_known_types(true)
+        .compile_protos(
             &["submodules/frequenz-api-microgrid/proto/frequenz/api/microgrid/v1alpha18/microgrid.proto"],
             &[
                 "submodules/frequenz-api-microgrid/proto",

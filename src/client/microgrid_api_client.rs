@@ -6,7 +6,7 @@
 
 use tonic::transport::Channel;
 
-use crate::proto::microgrid::v1alpha18::{
+use crate::proto::microgrid::{
     ListElectricalComponentConnectionsRequest, ListElectricalComponentConnectionsResponse,
     ListElectricalComponentsRequest, ListElectricalComponentsResponse,
     ReceiveElectricalComponentTelemetryStreamRequest,
@@ -50,9 +50,7 @@ pub trait MicrogridApiClient: Send + Sync + 'static {
 ///
 /// Forwards calls to the underlying gRPC client methods, without any additional logic.
 #[async_trait::async_trait]
-impl MicrogridApiClient
-    for crate::proto::microgrid::v1alpha18::microgrid_client::MicrogridClient<Channel>
-{
+impl MicrogridApiClient for crate::proto::microgrid::microgrid_client::MicrogridClient<Channel> {
     async fn list_electrical_components(
         &mut self,
         request: impl tonic::IntoRequest<ListElectricalComponentsRequest> + Send,

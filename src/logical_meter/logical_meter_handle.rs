@@ -6,7 +6,7 @@ use crate::logical_meter::formula::graph_formula_provider::GraphFormulaProvider;
 use crate::{
     client::MicrogridClientHandle,
     error::Error,
-    proto::common::v1alpha8::microgrid::electrical_components::{
+    proto::common::microgrid::electrical_components::{
         ElectricalComponent, ElectricalComponentConnection,
     },
 };

@@ -6,14 +6,14 @@
 use tracing::{error, warn};
 
 impl frequenz_microgrid_component_graph::Node
-    for super::common::v1alpha8::microgrid::electrical_components::ElectricalComponent
+    for super::common::microgrid::electrical_components::ElectricalComponent
 {
     fn component_id(&self) -> u64 {
         self.id
     }
 
     fn category(&self) -> frequenz_microgrid_component_graph::ComponentCategory {
-        use super::common::v1alpha8::microgrid::electrical_components as pb;
+        use super::common::microgrid::electrical_components as pb;
         use frequenz_microgrid_component_graph as gr;
 
         let category =
@@ -126,7 +126,7 @@ impl frequenz_microgrid_component_graph::Node
 }
 
 impl frequenz_microgrid_component_graph::Edge
-    for super::common::v1alpha8::microgrid::electrical_components::ElectricalComponentConnection
+    for super::common::microgrid::electrical_components::ElectricalComponentConnection
 {
     fn source(&self) -> u64 {
         self.source_electrical_component_id
