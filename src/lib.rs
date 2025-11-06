@@ -9,7 +9,7 @@ pub use client::MicrogridClientHandle;
 mod error;
 pub use error::{Error, ErrorKind};
 
-mod quantity;
+pub mod quantity;
 
 mod proto;
 
@@ -18,5 +18,5 @@ pub use sample::Sample;
 
 mod logical_meter;
 pub use logical_meter::{
-    AggregationFormula, Formula, LogicalMeterConfig, LogicalMeterHandle, metric,
+    Formula, FormulaSubscriber, LogicalMeterConfig, LogicalMeterHandle, metric,
 };

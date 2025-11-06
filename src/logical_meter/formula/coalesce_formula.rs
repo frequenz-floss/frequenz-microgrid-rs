@@ -3,10 +3,11 @@
 
 //! An coalesce formula.
 
-use super::{FormulaParams, FormulaSubscriber, GraphFormulaProvider};
+use super::{FormulaParams, FormulaSubscriber, GraphFormulaConnector};
 use crate::{
     Error, Sample, logical_meter::logical_meter_actor, metric::Metric, quantity::Quantity,
 };
+use async_trait::async_trait;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 #[derive(Clone)]
@@ -18,18 +19,19 @@ pub struct CoalesceFormula<M: Metric> {
 
 impl<M: Metric> std::fmt::Display for CoalesceFormula<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.formula.fmt(f)
+        write!(f, "{}::{}", self.formula, M::METRIC.as_str_name())
     }
 }
 
-impl<M: Metric> GraphFormulaProvider for CoalesceFormula<M> {
+impl<M: Metric> GraphFormulaConnector for CoalesceFormula<M> {
     type GraphFormulaType = frequenz_microgrid_component_graph::CoalesceFormula;
 }
 
-impl<Q: Quantity + 'static, M: Metric<QuantityType = Q> + Sync> FormulaSubscriber
+#[async_trait]
+impl<Q: Quantity + 'static, M: Metric<QuantityType = Q> + Sync + Send> FormulaSubscriber
     for CoalesceFormula<M>
 {
-    type MetricType = M;
+    type QuantityType = Q;
 
     async fn subscribe(&self) -> Result<broadcast::Receiver<Sample<Q>>, Error> {
         let (tx, rx) = oneshot::channel();

@@ -3,45 +3,40 @@
 
 //! Formula module for the logical meter.
 
-use frequenz_microgrid_component_graph::Formula as _;
-mod aggregation_formula;
-mod coalesce_formula;
+use async_trait::async_trait;
+pub(crate) mod aggregation_formula;
+mod async_formula;
+pub(crate) mod coalesce_formula;
 pub(crate) mod graph_formula_provider;
-pub use aggregation_formula::AggregationFormula;
-pub use coalesce_formula::CoalesceFormula;
+pub use async_formula::Formula;
 
-use crate::{Error, Sample, metric::Metric, quantity::Quantity};
+use crate::{
+    Error, Sample, logical_meter::formula::async_formula::FormulaOperand, metric::Metric,
+    quantity::Quantity,
+};
 use tokio::sync::{broadcast, mpsc};
 
 use super::logical_meter_actor;
 
 /// Connects logical meter formulas to the component graph formulas.
-pub(crate) trait GraphFormulaProvider: std::fmt::Display {
+pub(crate) trait GraphFormulaConnector: std::fmt::Display {
     type GraphFormulaType: frequenz_microgrid_component_graph::Formula;
 }
 
-/// Defines a formula that can be subscribed to for receiving samples.
-pub(crate) trait FormulaSubscriber: std::fmt::Display {
-    type MetricType: Metric;
-
-    fn subscribe(
-        &self,
-    ) -> impl Future<
-        Output = Result<
-            broadcast::Receiver<Sample<<Self::MetricType as Metric>::QuantityType>>,
-            Error,
-        >,
-    > + Send;
+#[async_trait]
+pub trait FormulaSubscriber: std::fmt::Display + Sync + Send {
+    type QuantityType: Quantity;
+    async fn subscribe(&self) -> Result<broadcast::Receiver<Sample<Self::QuantityType>>, Error>;
 }
 
 /// Parameters for creating a logical meter formula.
-pub(super) struct FormulaParams<F: GraphFormulaProvider, M: Metric> {
+pub(super) struct FormulaParams<F: GraphFormulaConnector, M: Metric> {
     pub(super) formula: F::GraphFormulaType,
     pub(super) metric: M,
     pub(super) instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
 }
 
-impl<F: GraphFormulaProvider, M: Metric> FormulaParams<F, M> {
+impl<F: GraphFormulaConnector, M: Metric> FormulaParams<F, M> {
     pub(super) fn new(
         formula: F::GraphFormulaType,
         metric: M,
@@ -55,54 +50,108 @@ impl<F: GraphFormulaProvider, M: Metric> FormulaParams<F, M> {
     }
 }
 
-/// A trait that defines generic formula operations.
-pub trait Formula<Q: Quantity>: std::fmt::Display + Sized {
-    fn coalesce(self, other: Self) -> Result<Self, Error>;
-    fn min(self, other: Self) -> Result<Self, Error>;
-    fn max(self, other: Self) -> Result<Self, Error>;
-    fn subscribe(
-        &self,
-    ) -> impl Future<Output = Result<broadcast::Receiver<Sample<Q>>, Error>> + Send;
+// TODO: extend previous Coalesce instead of creating a new one, etc.
+impl<Q> Formula<Q>
+where
+    Q: Quantity + 'static,
+{
+    pub fn coalesce(self, other: Formula<Q>) -> Result<Formula<Q>, Error> {
+        match self {
+            Formula::Coalesce(mut items) => {
+                items.push(other.into());
+                Ok(Formula::Coalesce(items))
+            }
+            _ => Ok(Formula::Coalesce(vec![
+                FormulaOperand::Formula(Box::new(Formula::<Q, Q, f32>::Subscriber(Box::new(self)))),
+                other.into(),
+            ])),
+        }
+    }
+
+    pub fn min(self, other: Formula<Q>) -> Result<Formula<Q>, Error> {
+        match self {
+            Formula::Min(mut items) => {
+                items.push(other.into());
+                Ok(Formula::Min(items))
+            }
+            _ => Ok(Formula::Min(vec![
+                FormulaOperand::Formula(Box::new(Formula::<Q, Q, f32>::Subscriber(Box::new(self)))),
+                other.into(),
+            ])),
+        }
+    }
+
+    pub fn max(self, other: Formula<Q>) -> Result<Formula<Q>, Error> {
+        match self {
+            Formula::Max(mut items) => {
+                items.push(other.into());
+                Ok(Formula::Max(items))
+            }
+            _ => Ok(Formula::Max(vec![
+                FormulaOperand::Formula(Box::new(Formula::<Q, Q, f32>::Subscriber(Box::new(self)))),
+                other.into(),
+            ])),
+        }
+    }
+
+    pub fn avg(self, others: Vec<Formula<Q>>) -> Result<Formula<Q>, Error> {
+        let mut exprs: Vec<FormulaOperand<Q>> =
+            vec![FormulaOperand::Formula(Box::new(
+                Formula::<Q, Q, f32>::Subscriber(Box::new(self)),
+            ))];
+        for other in others {
+            exprs.push(other.into());
+        }
+        Ok(Formula::Avg(exprs))
+    }
+
+    pub async fn subscribe(&self) -> Result<broadcast::Receiver<Sample<Q>>, Error> {
+        <Self as FormulaSubscriber>::subscribe(self).await
+    }
 }
 
-impl<T, Q, M> Formula<Q> for T
+impl<Q, F> std::ops::Add<F> for Formula<Q>
 where
-    T: FormulaSubscriber<MetricType = M>
-        + GraphFormulaProvider
-        + From<FormulaParams<T, M>>
-        + Into<FormulaParams<T, M>>
-        + std::fmt::Display,
-    Q: Quantity,
-    M: Metric<QuantityType = Q>,
+    F: Into<FormulaOperand<Q>>,
+    Q: Quantity + 'static,
 {
-    fn coalesce(self, other: Self) -> Result<Self, Error> {
-        let mut params_self: FormulaParams<T, M> = self.into();
-        let params_other: FormulaParams<T, M> = other.into();
+    type Output = Formula<Q>;
 
-        params_self.formula = params_self.formula.coalesce(params_other.formula);
-        Ok(params_self.into())
+    fn add(self, other: F) -> Self::Output {
+        Formula::Add(vec![FormulaOperand::Formula(Box::new(self)), other.into()])
     }
+}
 
-    fn min(self, other: Self) -> Result<Self, Error> {
-        let mut params_self: FormulaParams<T, M> = self.into();
-        let params_other: FormulaParams<T, M> = other.into();
+impl<Q, F> std::ops::Sub<F> for Formula<Q>
+where
+    F: Into<FormulaOperand<Q>>,
+    Q: Quantity + 'static,
+{
+    type Output = Formula<Q>;
 
-        params_self.formula = params_self.formula.min(params_other.formula);
-        Ok(params_self.into())
+    fn sub(self, other: F) -> Self::Output {
+        Formula::Subtract(vec![FormulaOperand::Formula(Box::new(self)), other.into()])
     }
+}
 
-    fn max(self, other: Self) -> Result<Self, Error> {
-        let mut params_self: FormulaParams<T, M> = self.into();
-        let params_other: FormulaParams<T, M> = other.into();
+impl<Q> std::ops::Mul<f32> for Formula<Q, Q, f32>
+where
+    Q: Quantity + 'static,
+{
+    type Output = Formula<Q, Q, f32>;
 
-        params_self.formula = params_self.formula.max(params_other.formula);
-        Ok(params_self.into())
+    fn mul(self, other: f32) -> Self::Output {
+        Formula::<Q, Q, f32>::Multiply(FormulaOperand::<Q>::Formula(Box::new(self)), other.into())
     }
+}
 
-    fn subscribe(
-        &self,
-    ) -> impl Future<Output = Result<broadcast::Receiver<Sample<M::QuantityType>>, Error>> + Send
-    {
-        <T as FormulaSubscriber>::subscribe(self)
+impl<Q> std::ops::Div<f32> for Formula<Q, Q, f32>
+where
+    Q: Quantity + 'static,
+{
+    type Output = Formula<Q, Q, f32>;
+
+    fn div(self, rhs: f32) -> Self::Output {
+        Formula::<Q, Q, f32>::Divide(FormulaOperand::<Q>::Formula(Box::new(self)), rhs.into())
     }
 }

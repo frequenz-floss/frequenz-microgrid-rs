@@ -189,6 +189,50 @@ macro_rules! qty_ctor {
 
         impl $typename {
             qty_ctor!(@impl $($rest)*);
+
+            pub fn abs(&self) -> Self {
+                Self {
+                    value: self.value.abs(),
+                }
+            }
+
+            pub fn floor(&self) -> Self {
+                Self {
+                    value: self.value.floor(),
+                }
+            }
+
+            pub fn ceil(&self) -> Self {
+                Self {
+                    value: self.value.ceil(),
+                }
+            }
+
+            pub fn round(&self) -> Self {
+                Self {
+                    value: self.value.round(),
+                }
+            }
+
+            pub fn trunc(&self) -> Self {
+                Self {
+                    value: self.value.trunc(),
+                }
+            }
+
+            pub fn fract(&self) -> Self {
+                Self {
+                    value: self.value.fract(),
+                }
+            }
+
+            pub fn is_nan(&self) -> bool {
+                self.value.is_nan()
+            }
+
+            pub fn is_infinite(&self) -> bool {
+                self.value.is_infinite()
+            }
         }
 
         qty_ctor!{@impl_arith_ops $typename}

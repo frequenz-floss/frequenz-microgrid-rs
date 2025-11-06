@@ -1,6 +1,7 @@
 // License: MIT
 // Copyright © 2025 Frequenz Energy-as-a-Service GmbH
 
+use crate::logical_meter::formula::Formula;
 use crate::logical_meter::formula::graph_formula_provider::GraphFormulaProvider;
 use crate::{
     client::MicrogridClientHandle,
@@ -59,8 +60,15 @@ impl LogicalMeterHandle {
 
     /// Returns a receiver that streams samples for the given `metric` at the grid
     /// connection point.
-    pub fn grid<M: super::metric::Metric>(&mut self, metric: M) -> Result<M::FormulaType, Error> {
-        M::FormulaType::grid(&self.graph, metric, self.instructions_tx.clone())
+    pub fn grid<M: super::metric::Metric>(
+        &mut self,
+        metric: M,
+    ) -> Result<Formula<M::QuantityType>, Error> {
+        Ok(Formula::Subscriber(Box::new(M::FormulaType::grid(
+            &self.graph,
+            metric,
+            self.instructions_tx.clone(),
+        )?)))
     }
 
     /// Returns a receiver that streams samples for the given `metric` for the
@@ -71,13 +79,13 @@ impl LogicalMeterHandle {
         &mut self,
         component_ids: Option<BTreeSet<u64>>,
         metric: M,
-    ) -> Result<M::FormulaType, Error> {
-        M::FormulaType::battery(
+    ) -> Result<Formula<M::QuantityType>, Error> {
+        Ok(Formula::Subscriber(Box::new(M::FormulaType::battery(
             &self.graph,
             metric,
             self.instructions_tx.clone(),
             component_ids,
-        )
+        )?)))
     }
 
     /// Returns a receiver that streams samples for the given `metric` for the
@@ -88,13 +96,13 @@ impl LogicalMeterHandle {
         &mut self,
         component_ids: Option<BTreeSet<u64>>,
         metric: M,
-    ) -> Result<M::FormulaType, Error> {
-        M::FormulaType::chp(
+    ) -> Result<Formula<M::QuantityType>, Error> {
+        Ok(Formula::Subscriber(Box::new(M::FormulaType::chp(
             &self.graph,
             metric,
             self.instructions_tx.clone(),
             component_ids,
-        )
+        )?)))
     }
 
     /// Returns a receiver that streams samples for the given `metric` for the
@@ -105,13 +113,13 @@ impl LogicalMeterHandle {
         &mut self,
         component_ids: Option<BTreeSet<u64>>,
         metric: M,
-    ) -> Result<M::FormulaType, Error> {
-        M::FormulaType::pv(
+    ) -> Result<Formula<M::QuantityType>, Error> {
+        Ok(Formula::Subscriber(Box::new(M::FormulaType::pv(
             &self.graph,
             metric,
             self.instructions_tx.clone(),
             component_ids,
-        )
+        )?)))
     }
 
     /// Returns a receiver that streams samples for the given `metric` for the
@@ -123,13 +131,13 @@ impl LogicalMeterHandle {
         &mut self,
         component_ids: Option<BTreeSet<u64>>,
         metric: M,
-    ) -> Result<M::FormulaType, Error> {
-        M::FormulaType::ev_charger(
+    ) -> Result<Formula<M::QuantityType>, Error> {
+        Ok(Formula::Subscriber(Box::new(M::FormulaType::ev_charger(
             &self.graph,
             metric,
             self.instructions_tx.clone(),
             component_ids,
-        )
+        )?)))
     }
 
     /// Returns a receiver that streams samples for the given `metric` for the
@@ -137,8 +145,12 @@ impl LogicalMeterHandle {
     pub fn consumer<M: super::metric::Metric>(
         &mut self,
         metric: M,
-    ) -> Result<M::FormulaType, Error> {
-        M::FormulaType::consumer(&self.graph, metric, self.instructions_tx.clone())
+    ) -> Result<Formula<M::QuantityType>, Error> {
+        Ok(Formula::Subscriber(Box::new(M::FormulaType::consumer(
+            &self.graph,
+            metric,
+            self.instructions_tx.clone(),
+        )?)))
     }
 
     /// Returns a receiver that streams samples for the given `metric` for the
@@ -146,8 +158,12 @@ impl LogicalMeterHandle {
     pub fn producer<M: super::metric::Metric>(
         &mut self,
         metric: M,
-    ) -> Result<M::FormulaType, Error> {
-        M::FormulaType::producer(&self.graph, metric, self.instructions_tx.clone())
+    ) -> Result<Formula<M::QuantityType>, Error> {
+        Ok(Formula::Subscriber(Box::new(M::FormulaType::producer(
+            &self.graph,
+            metric,
+            self.instructions_tx.clone(),
+        )?)))
     }
 
     /// Returns a receiver that streams samples for the given `metric` for the
@@ -156,12 +172,12 @@ impl LogicalMeterHandle {
         &mut self,
         component_id: u64,
         metric: M,
-    ) -> Result<M::FormulaType, Error> {
-        M::FormulaType::component(
+    ) -> Result<Formula<M::QuantityType>, Error> {
+        Ok(Formula::Subscriber(Box::new(M::FormulaType::component(
             &self.graph,
             metric,
             self.instructions_tx.clone(),
             component_id,
-        )
+        )?)))
     }
 }

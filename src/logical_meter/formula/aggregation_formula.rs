@@ -3,10 +3,11 @@
 
 //! An formula that supports aggregation operations.
 
-use super::{FormulaParams, FormulaSubscriber, GraphFormulaProvider};
+use super::{FormulaParams, FormulaSubscriber, GraphFormulaConnector};
 use crate::{
     Error, Sample, logical_meter::logical_meter_actor, metric::Metric, quantity::Quantity,
 };
+use async_trait::async_trait;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 #[derive(Clone)]
@@ -18,18 +19,19 @@ pub struct AggregationFormula<M: Metric> {
 
 impl<M: Metric> std::fmt::Display for AggregationFormula<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.formula.fmt(f)
+        write!(f, "{}::{}", self.formula, M::METRIC.as_str_name())
     }
 }
 
-impl<M: Metric> GraphFormulaProvider for AggregationFormula<M> {
+impl<M: Metric> GraphFormulaConnector for AggregationFormula<M> {
     type GraphFormulaType = frequenz_microgrid_component_graph::AggregationFormula;
 }
 
-impl<Q: Quantity + 'static, M: Metric<QuantityType = Q> + Sync> FormulaSubscriber
+#[async_trait]
+impl<Q: Quantity + 'static, M: Metric<QuantityType = Q> + Sync + Send> FormulaSubscriber
     for AggregationFormula<M>
 {
-    type MetricType = M;
+    type QuantityType = Q;
 
     async fn subscribe(&self) -> Result<broadcast::Receiver<Sample<Q>>, Error> {
         let (tx, rx) = oneshot::channel();
@@ -66,68 +68,6 @@ impl<M: Metric> From<AggregationFormula<M>> for FormulaParams<AggregationFormula
             formula: formula.formula,
             metric: formula.metric,
             instructions_tx: formula.instructions_tx,
-        }
-    }
-}
-
-impl<M: Metric> std::ops::Add for AggregationFormula<M> {
-    type Output = Result<Self, Error>;
-
-    fn add(self, other: Self) -> Self::Output {
-        let new_formula = self.formula + other.formula;
-        Ok(FormulaParams::new(new_formula, self.metric, self.instructions_tx).into())
-    }
-}
-
-impl<M: Metric> std::ops::Sub for AggregationFormula<M> {
-    type Output = Result<Self, Error>;
-
-    fn sub(self, other: Self) -> Self::Output {
-        let new_formula = self.formula - other.formula;
-        Ok(FormulaParams::new(new_formula, self.metric, self.instructions_tx).into())
-    }
-}
-
-impl<M: Metric> std::ops::Add<AggregationFormula<M>> for Result<AggregationFormula<M>, Error> {
-    type Output = Result<AggregationFormula<M>, Error>;
-
-    fn add(self, other: AggregationFormula<M>) -> Self::Output {
-        match self {
-            Ok(left) => left + other,
-            Err(e) => Err(e),
-        }
-    }
-}
-
-impl<M: Metric> std::ops::Sub<AggregationFormula<M>> for Result<AggregationFormula<M>, Error> {
-    type Output = Result<AggregationFormula<M>, Error>;
-
-    fn sub(self, other: AggregationFormula<M>) -> Self::Output {
-        match self {
-            Ok(left) => left - other,
-            Err(e) => Err(e),
-        }
-    }
-}
-
-impl<M: Metric> std::ops::Add<Result<AggregationFormula<M>, Error>> for AggregationFormula<M> {
-    type Output = Result<AggregationFormula<M>, Error>;
-
-    fn add(self, other: Result<AggregationFormula<M>, Error>) -> Self::Output {
-        match other {
-            Ok(right) => self + right,
-            Err(e) => Err(e),
-        }
-    }
-}
-
-impl<M: Metric> std::ops::Sub<Result<AggregationFormula<M>, Error>> for AggregationFormula<M> {
-    type Output = Result<AggregationFormula<M>, Error>;
-
-    fn sub(self, other: Result<AggregationFormula<M>, Error>) -> Self::Output {
-        match other {
-            Ok(right) => self - right,
-            Err(e) => Err(e),
         }
     }
 }
