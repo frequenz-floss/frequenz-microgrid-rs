@@ -7,11 +7,16 @@
 //! which owns the connection to the microgrid API service.
 
 use tokio::sync::{broadcast, mpsc, oneshot};
+use tonic::transport::Channel;
 
 use crate::{
     Error,
-    proto::common::v1alpha8::microgrid::electrical_components::{
-        ElectricalComponent, ElectricalComponentConnection, ElectricalComponentTelemetry,
+    client::MicrogridApiClient,
+    proto::{
+        common::v1alpha8::microgrid::electrical_components::{
+            ElectricalComponent, ElectricalComponentConnection, ElectricalComponentTelemetry,
+        },
+        microgrid::v1alpha18::microgrid_client::MicrogridClient,
     },
 };
 
@@ -29,9 +34,23 @@ pub struct MicrogridClientHandle {
 impl MicrogridClientHandle {
     /// Creates a new `MicrogridClientHandle` that connects to the microgrid API
     /// at the specified URL.
-    pub fn new(url: impl Into<String>) -> Self {
+    pub async fn try_new(url: impl Into<String>) -> Result<Self, Error> {
+        let client = match MicrogridClient::<Channel>::connect(url.into()).await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("Could not connect to server: {e}");
+                return Err(Error::connection_failure(format!(
+                    "Could not connect to server: {e}"
+                )));
+            }
+        };
+
+        Ok(Self::new_from_client(client))
+    }
+
+    pub fn new_from_client(client: impl MicrogridApiClient) -> Self {
         let (instructions_tx, instructions_rx) = mpsc::channel(100);
-        tokio::spawn(MicrogridClientActor::new(url.into(), instructions_rx).run());
+        tokio::spawn(MicrogridClientActor::new_from_client(client, instructions_rx).run());
         Self { instructions_tx }
     }
 
@@ -134,5 +153,137 @@ impl MicrogridClientHandle {
         response_rx
             .await
             .map_err(|e| Error::internal(format!("failed to receive response: {e}")))?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use tokio::time::Instant;
+
+    use crate::{
+        MicrogridClientHandle,
+        client::test_utils::{MockComponent, MockMicrogridApiClient},
+        proto::common::v1alpha8::metrics::{SimpleMetricValue, metric_value_variant},
+    };
+
+    fn new_client_handle() -> MicrogridClientHandle {
+        let api_client = MockMicrogridApiClient::new(
+            // Grid connection point
+            MockComponent::grid(1).with_children(vec![
+                // Main meter
+                MockComponent::meter(2)
+                    .with_power(vec![4.0, 5.0, 6.0, 7.0, 7.0, 7.0])
+                    .with_children(vec![
+                        // PV meter
+                        MockComponent::meter(3).with_children(vec![
+                            // PV inverter
+                            MockComponent::pv_inverter(4),
+                        ]),
+                        // Battery meter
+                        MockComponent::meter(5).with_children(vec![
+                            // Battery inverter
+                            MockComponent::battery_inverter(6).with_children(vec![
+                                // Battery
+                                MockComponent::battery(7),
+                            ]),
+                        ]),
+                    ]),
+            ]),
+        );
+
+        MicrogridClientHandle::new_from_client(api_client)
+    }
+
+    #[tokio::test]
+    async fn test_list_electrical_components() {
+        let handle = new_client_handle();
+
+        let components = handle
+            .list_electrical_components(vec![], vec![])
+            .await
+            .unwrap();
+        let component_ids: Vec<u64> = components.iter().map(|c| c.id).collect();
+        assert_eq!(component_ids, vec![1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[tokio::test]
+    async fn test_list_electrical_component_connections() {
+        let handle = new_client_handle();
+
+        let connections = handle
+            .list_electrical_component_connections(vec![], vec![])
+            .await
+            .unwrap();
+
+        let connection_tuples: Vec<(u64, u64)> = connections
+            .iter()
+            .map(|c| {
+                (
+                    c.source_electrical_component_id,
+                    c.destination_electrical_component_id,
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            connection_tuples,
+            vec![(1, 2), (2, 3), (3, 4), (2, 5), (5, 6), (6, 7)]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_receive_component_telemetry_stream() {
+        let handle = new_client_handle();
+
+        let start = Instant::now();
+        let mut telemetry_rx = handle
+            .receive_electrical_component_telemetry_stream(2)
+            .await
+            .unwrap();
+
+        let mut values = vec![];
+        let mut elapsed_millis = vec![];
+        for _ in 0..10 {
+            let telemetry = telemetry_rx.recv().await.unwrap();
+            values.push(
+                if let metric_value_variant::MetricValueVariant::SimpleMetric(SimpleMetricValue {
+                    value,
+                }) = telemetry.metric_samples[0]
+                    .value
+                    .as_ref()
+                    .unwrap()
+                    .metric_value_variant
+                    .as_ref()
+                    .unwrap()
+                    .clone()
+                {
+                    value
+                } else {
+                    panic!("Unexpected metric value variant for live data");
+                },
+            );
+            elapsed_millis.push(start.elapsed().as_millis());
+        }
+
+        // Check that received values are as expected
+        assert_eq!(
+            values,
+            vec![
+                4.0, 5.0, 6.0, 7.0, 7.0, 7.0,
+                // repeats because the client stream closes and the actor reconnects
+                4.0, 5.0, 6.0, 7.0
+            ]
+        );
+
+        // Check that reconnect delays are as expected
+        assert_eq!(
+            elapsed_millis,
+            vec![
+                0, 200, 400, 600, 800, 1000,
+                // reconnect delay of 3000 ms, before receiving more samples
+                4000, 4200, 4400, 4600,
+            ]
+        );
     }
 }

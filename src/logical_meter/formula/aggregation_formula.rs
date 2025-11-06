@@ -19,7 +19,7 @@ pub struct AggregationFormula<M: Metric> {
 
 impl<M: Metric> std::fmt::Display for AggregationFormula<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}::{}", self.formula, M::METRIC.as_str_name())
+        write!(f, "{}::({})", M::METRIC.as_str_name(), self.formula)
     }
 }
 

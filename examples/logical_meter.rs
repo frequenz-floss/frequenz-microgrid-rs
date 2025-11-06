@@ -18,7 +18,7 @@ async fn main() -> Result<(), Error> {
         .with(fmt::layer().with_file(true).with_line_number(true))
         .init();
 
-    let client = MicrogridClientHandle::new("http://[::1]:8800");
+    let client = MicrogridClientHandle::try_new("http://[::1]:8800").await?;
     let mut logical_meter = LogicalMeterHandle::try_new(
         client,
         LogicalMeterConfig {

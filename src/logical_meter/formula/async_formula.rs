@@ -3,6 +3,9 @@
 
 //! A nested formula that can contain other formulas.
 
+mod application_methods;
+mod composition;
+
 use async_trait::async_trait;
 use tokio::sync::broadcast::{self, error::RecvError};
 
@@ -410,274 +413,6 @@ async fn run_two_item_formula<QOut, QIn1, QIn2>(
     }
 }
 
-fn multiply_samples<QOut, QIn1, QIn2>(
-    value1: &FormulaValue<QIn1>,
-    value2: &FormulaValue<QIn2>,
-) -> Option<Sample<QOut>>
-where
-    QOut: Quantity,
-    QIn1: Quantity,
-    QIn2: Quantity,
-    QIn1: std::ops::Mul<QIn2, Output = QOut>,
-{
-    let mut ts = None;
-
-    let v1 = match value1 {
-        FormulaValue::Sample(sample) => {
-            ts = Some(sample.timestamp());
-            if let Some(value) = sample.value() {
-                value
-            } else {
-                return Some(Sample::new(sample.timestamp(), None));
-            }
-        }
-        FormulaValue::Quantity(q) => *q,
-    };
-
-    let v2 = match value2 {
-        FormulaValue::Sample(sample) => {
-            ts = Some(sample.timestamp());
-            if let Some(value) = sample.value() {
-                value
-            } else {
-                return Some(Sample::new(sample.timestamp(), None));
-            }
-        }
-        FormulaValue::Quantity(q) => *q,
-    };
-
-    ts.map(|ts| Sample::new(ts, Some(v1 * v2)))
-}
-
-fn divide_samples<QOut, QDiv1, QDiv2>(
-    value1: &FormulaValue<QDiv1>,
-    value2: &FormulaValue<QDiv2>,
-) -> Option<Sample<QOut>>
-where
-    QOut: Quantity,
-    QDiv1: Quantity,
-    QDiv2: Quantity,
-    QDiv1: std::ops::Div<QDiv2, Output = QOut>,
-{
-    let mut ts = None;
-
-    let v1 = match value1 {
-        FormulaValue::Sample(sample) => {
-            ts = Some(sample.timestamp());
-            if let Some(value) = sample.value() {
-                value
-            } else {
-                return Some(Sample::new(sample.timestamp(), None));
-            }
-        }
-        FormulaValue::Quantity(q) => *q,
-    };
-
-    let v2 = match value2 {
-        FormulaValue::Sample(sample) => {
-            ts = Some(sample.timestamp());
-            if let Some(value) = sample.value() {
-                value
-            } else {
-                return Some(Sample::new(sample.timestamp(), None));
-            }
-        }
-        FormulaValue::Quantity(q) => *q,
-    };
-
-    ts.map(|ts| {
-        Sample::new(
-            ts,
-            if v2 != QDiv2::zero() {
-                Some(v1 / v2)
-            } else {
-                None
-            },
-        )
-    })
-}
-
-// TODO: handle None values more strictly.
-fn coalesce_samples<Q: Quantity>(samples: &[FormulaValue<Q>]) -> Option<Sample<Q>> {
-    let mut ts = None;
-    for value in samples {
-        match value {
-            FormulaValue::Sample(sample) => {
-                ts = Some(sample.timestamp());
-                if sample.value().is_some() {
-                    return Some(*sample);
-                }
-            }
-            FormulaValue::Quantity(q) => {
-                return ts.map(|ts| Sample::new(ts, Some(*q)));
-            }
-        }
-    }
-
-    ts.map(|ts| Sample::new(ts, None))
-}
-
-fn min_samples<Q: Quantity>(samples: &[FormulaValue<Q>]) -> Option<Sample<Q>> {
-    let mut min: Option<Q> = None;
-    let mut ts = None;
-    for value in samples {
-        match value {
-            FormulaValue::Sample(sample) => {
-                ts = Some(sample.timestamp());
-
-                match sample.value() {
-                    Some(v) => {
-                        min = Some(match min {
-                            Some(current_min) => {
-                                if v < current_min {
-                                    v
-                                } else {
-                                    current_min
-                                }
-                            }
-                            None => v,
-                        });
-                    }
-                    None => return Some(*sample),
-                }
-            }
-            FormulaValue::Quantity(q) => {
-                min = Some(match min {
-                    Some(current_min) => {
-                        if *q < current_min {
-                            *q
-                        } else {
-                            current_min
-                        }
-                    }
-                    None => *q,
-                });
-            }
-        }
-    }
-    ts.map(|ts| Sample::new(ts, min))
-}
-
-fn max_samples<Q: Quantity>(samples: &[FormulaValue<Q>]) -> Option<Sample<Q>> {
-    let mut min: Option<Q> = None;
-    let mut ts = None;
-    for value in samples {
-        match value {
-            FormulaValue::Sample(sample) => {
-                ts = Some(sample.timestamp());
-
-                match sample.value() {
-                    Some(v) => {
-                        min = Some(match min {
-                            Some(current_min) => {
-                                if v > current_min {
-                                    v
-                                } else {
-                                    current_min
-                                }
-                            }
-                            None => v,
-                        });
-                    }
-                    None => return Some(*sample),
-                }
-            }
-            FormulaValue::Quantity(q) => {
-                min = Some(match min {
-                    Some(current_min) => {
-                        if *q > current_min {
-                            *q
-                        } else {
-                            current_min
-                        }
-                    }
-                    None => *q,
-                });
-            }
-        }
-    }
-    ts.map(|ts| Sample::new(ts, min))
-}
-
-fn avg_samples<Q: Quantity>(samples: &[FormulaValue<Q>]) -> Option<Sample<Q>> {
-    let mut sum = Q::default();
-    let mut count = 0;
-    let mut ts = None;
-    for value in samples {
-        match value {
-            FormulaValue::Sample(sample) => {
-                ts = Some(sample.timestamp());
-                if let Some(v) = sample.value() {
-                    sum = sum + v;
-                    count += 1;
-                }
-            }
-            FormulaValue::Quantity(q) => {
-                sum = sum + *q;
-                count += 1;
-            }
-        }
-    }
-    ts.map(|ts| Sample::new(ts, (count > 0).then(|| sum / count as f32)))
-}
-
-fn add_samples<Q: Quantity>(samples: &[FormulaValue<Q>]) -> Option<Sample<Q>> {
-    let mut sum = Q::default();
-    let mut ts = None;
-    for value in samples {
-        match value {
-            FormulaValue::Sample(sample) => {
-                ts = Some(sample.timestamp());
-                if let Some(v) = sample.value() {
-                    sum = sum + v;
-                } else {
-                    return Some(*sample);
-                }
-            }
-            FormulaValue::Quantity(q) => {
-                sum = sum + *q;
-            }
-        }
-    }
-    ts.map(|ts| Sample::new(ts, Some(sum)))
-}
-
-fn subtract_samples<Q: Quantity>(samples: &[FormulaValue<Q>]) -> Option<Sample<Q>> {
-    let mut ts = None;
-
-    let mut iter = samples.iter();
-    let first = iter.next()?;
-
-    let mut result = match first {
-        FormulaValue::Sample(sample) => {
-            ts = Some(sample.timestamp());
-            if let Some(v) = sample.value() {
-                v
-            } else {
-                return Some(*sample);
-            }
-        }
-        FormulaValue::Quantity(q) => *q,
-    };
-
-    for value in iter {
-        match value {
-            FormulaValue::Sample(sample) => {
-                ts = Some(sample.timestamp());
-                if let Some(v) = sample.value() {
-                    result = result - v;
-                } else {
-                    return Some(*sample);
-                }
-            }
-            FormulaValue::Quantity(q) => {
-                result = result - *q;
-            }
-        }
-    }
-    ts.map(|ts| Sample::new(ts, Some(result)))
-}
-
 #[async_trait]
 impl<QOut, QIn1, QIn2> FormulaSubscriber for Formula<QOut, QIn1, QIn2>
 where
@@ -710,13 +445,18 @@ where
                     formula_items,
                     tx,
                     match self {
-                        Formula::Coalesce(_) => coalesce_samples,
-                        Formula::Min(_) => min_samples,
-                        Formula::Max(_) => max_samples,
-                        Formula::Avg(_) => avg_samples,
-                        Formula::Add(_) => add_samples,
-                        Formula::Subtract(_) => subtract_samples,
-                        _ => unreachable!(),
+                        Formula::Coalesce(_) => application_methods::coalesce_samples,
+                        Formula::Min(_) => application_methods::min_samples,
+                        Formula::Max(_) => application_methods::max_samples,
+                        Formula::Avg(_) => application_methods::avg_samples,
+                        Formula::Add(_) => application_methods::add_samples,
+                        Formula::Subtract(_) => application_methods::subtract_samples,
+                        _ => {
+                            // This case is unreachable due to the match above.
+                            return Err(Error::internal(
+                                "unexpected formula type in subscribe.".to_string(),
+                            ));
+                        }
                     },
                 ));
                 Ok(rx)
@@ -731,9 +471,14 @@ where
                     rhs,
                     tx,
                     match self {
-                        Formula::Multiply(_, _) => multiply_samples,
-                        Formula::Divide(_, _) => divide_samples,
-                        _ => unreachable!(),
+                        Formula::Multiply(_, _) => application_methods::multiply_samples,
+                        Formula::Divide(_, _) => application_methods::divide_samples,
+                        _ => {
+                            // This case is unreachable due to the match above.
+                            return Err(Error::internal(
+                                "unexpected formula type in subscribe.".to_string(),
+                            ));
+                        }
                     },
                 ));
 
