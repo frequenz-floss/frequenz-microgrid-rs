@@ -4,7 +4,12 @@
 //! Generated protobuf modules for the Frequenz API.
 
 // Including the generated protobuf code.
-#![allow(clippy::doc_lazy_continuation, clippy::module_inception, dead_code)]
+#![allow(
+    clippy::doc_lazy_continuation,
+    clippy::module_inception,
+    dead_code,
+    clippy::enum_variant_names
+)]
 mod pb {
     tonic::include_proto!("proto_v1_alpha18");
 }
