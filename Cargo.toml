@@ -1,7 +1,10 @@
 [package]
-name = "frequenz-microgrid-rs"
+name = "frequenz-microgrid"
 version = "0.1.0"
 edition = "2024"
+description = "A high-level interface to the Frequenz Microgrid API."
+repository = "https://github.com/frequenz-floss/frequenz-microgrid-rs"
+license = "MIT"
 
 [lib]
 name = "frequenz_microgrid"
@@ -11,8 +14,8 @@ path = "src/lib.rs"
 async-trait = "0.1.89"
 chrono = "0.4"
 frequenz-microgrid-component-graph = "0.2.0"
-frequenz-microgrid-formula-engine = { git = "https://github.com/frequenz-floss/frequenz-microgrid-formula-engine-rs.git", rev = "463414a" }
-frequenz-resampling = { git = "https://github.com/frequenz-floss/frequenz-resampling-rs.git", rev = "ce84d66" }
+frequenz-microgrid-formula-engine = "0.1.0"
+frequenz-resampling = "0.1.0"
 futures = "0.3.31"
 prost = "0.14"
 tokio = { version = "1.48", features = ["rt", "rt-multi-thread"] }

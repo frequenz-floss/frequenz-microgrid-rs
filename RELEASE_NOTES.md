@@ -1,5 +1,5 @@
-# frequenz-microgrid-rs Release Notes
+# Frequenz Microgrid Release Notes
 
 ## Summary
 
-This is the first release of `frequenz-microgrid-rs`.
+This is the first release of Frequenz Microgrid.

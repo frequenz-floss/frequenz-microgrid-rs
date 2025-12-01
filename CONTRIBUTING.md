@@ -31,7 +31,7 @@ These are the steps to create a new release:
    a [GitHub
    Release](https://github.com/frequenz-floss/frequenz-microgrid-rs/releases),
    and upload a new package to
-   [crates.io](https://crates.io/crates/frequenz-microgrid-rs)
+   [crates.io](https://crates.io/crates/frequenz-microgrid)
    automatically.
 
 6. Once this is done, reset the `RELEASE_NOTES.md` with the template:

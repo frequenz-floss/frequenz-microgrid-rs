@@ -1,4 +1,4 @@
-# frequenz-microgrid-rs Release Notes
+# Frequenz Microgrid Release Notes
 
 ## Summary
 
