@@ -198,7 +198,7 @@ mod tests {
         quantity::Quantity,
     };
 
-    async fn new_logical_meter_handle() -> LogicalMeterHandle {
+    async fn new_logical_meter_handle(config: Option<LogicalMeterConfig>) -> LogicalMeterHandle {
         let api_client = MockMicrogridApiClient::new(
             // Grid connection point
             MockComponent::grid(1).with_children(vec![
@@ -251,7 +251,7 @@ mod tests {
 
         LogicalMeterHandle::try_new(
             MicrogridClientHandle::new_from_client(api_client),
-            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap()),
+            config.unwrap_or_else(|| LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap())),
         )
         .await
         .unwrap()
@@ -259,7 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_formula_display() {
-        let mut lm = new_logical_meter_handle().await;
+        let mut lm = new_logical_meter_handle(None).await;
 
         let formula = lm.grid(crate::metric::AcPowerActive).unwrap();
         assert_eq!(formula.to_string(), "METRIC_AC_POWER_ACTIVE::(#2)");
@@ -340,7 +340,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_grid_power_formula() {
-        let formula = new_logical_meter_handle()
+        let formula = new_logical_meter_handle(None)
             .await
             .grid(crate::metric::AcPowerActive)
             .unwrap();
@@ -367,7 +367,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_pv_reactive_power_formula() {
-        let formula = new_logical_meter_handle()
+        let formula = new_logical_meter_handle(None)
             .await
             .pv(None, crate::metric::AcPowerReactive)
             .unwrap();
@@ -394,7 +394,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_battery_voltage_formula() {
-        let formula = new_logical_meter_handle()
+        let formula = new_logical_meter_handle(None)
             .await
             .battery(None, crate::metric::AcVoltage)
             .unwrap();
@@ -420,7 +420,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_consumer_current_formula() {
-        let formula = new_logical_meter_handle()
+        let formula = new_logical_meter_handle(None)
             .await
             .consumer(crate::metric::AcCurrent)
             .unwrap();
