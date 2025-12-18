@@ -251,9 +251,7 @@ mod tests {
 
         LogicalMeterHandle::try_new(
             MicrogridClientHandle::new_from_client(api_client),
-            LogicalMeterConfig {
-                resampling_interval: TimeDelta::try_seconds(1).unwrap(),
-            },
+            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap()),
         )
         .await
         .unwrap()
