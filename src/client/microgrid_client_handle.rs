@@ -14,7 +14,8 @@ use crate::{
     client::MicrogridApiClient,
     proto::{
         common::microgrid::electrical_components::{
-            ElectricalComponent, ElectricalComponentConnection, ElectricalComponentTelemetry,
+            ElectricalComponent, ElectricalComponentCategory, ElectricalComponentConnection,
+            ElectricalComponentTelemetry,
         },
         microgrid::microgrid_client::MicrogridClient,
     },
@@ -99,7 +100,7 @@ impl MicrogridClientHandle {
     pub async fn list_electrical_components(
         &self,
         electrical_component_ids: Vec<u64>,
-        electrical_component_categories: Vec<i32>,
+        electrical_component_categories: Vec<ElectricalComponentCategory>,
     ) -> Result<Vec<ElectricalComponent>, Error> {
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -164,7 +165,10 @@ mod tests {
     use crate::{
         MicrogridClientHandle,
         client::test_utils::{MockComponent, MockMicrogridApiClient},
-        proto::common::metrics::{SimpleMetricValue, metric_value_variant},
+        proto::common::{
+            metrics::{SimpleMetricValue, metric_value_variant},
+            microgrid::electrical_components::ElectricalComponentCategory,
+        },
     };
 
     fn new_client_handle() -> MicrogridClientHandle {
@@ -205,6 +209,44 @@ mod tests {
             .unwrap();
         let component_ids: Vec<u64> = components.iter().map(|c| c.id).collect();
         assert_eq!(component_ids, vec![1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[tokio::test]
+    async fn test_list_electrical_components_with_filters() {
+        let handle = new_client_handle();
+
+        let components = handle
+            .list_electrical_components(vec![1, 2], vec![])
+            .await
+            .unwrap();
+        let component_ids: Vec<u64> = components.iter().map(|c| c.id).collect();
+        assert_eq!(component_ids, vec![1, 2]);
+
+        let components = handle
+            .list_electrical_components(
+                vec![],
+                vec![
+                    ElectricalComponentCategory::Meter,
+                    ElectricalComponentCategory::Battery,
+                ],
+            )
+            .await
+            .unwrap();
+        let component_ids: Vec<u64> = components.iter().map(|c| c.id).collect();
+        assert_eq!(component_ids, vec![2, 3, 5, 7]);
+
+        let components = handle
+            .list_electrical_components(
+                vec![2, 3, 4],
+                vec![
+                    ElectricalComponentCategory::Meter,
+                    ElectricalComponentCategory::Battery,
+                ],
+            )
+            .await
+            .unwrap();
+        let component_ids: Vec<u64> = components.iter().map(|c| c.id).collect();
+        assert_eq!(component_ids, vec![2, 3]);
     }
 
     #[tokio::test]

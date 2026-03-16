@@ -8,7 +8,8 @@ use tokio::sync::{broadcast, oneshot};
 use crate::{
     Error,
     proto::common::microgrid::electrical_components::{
-        ElectricalComponent, ElectricalComponentConnection, ElectricalComponentTelemetry,
+        ElectricalComponent, ElectricalComponentCategory, ElectricalComponentConnection,
+        ElectricalComponentTelemetry,
     },
 };
 
@@ -21,7 +22,7 @@ pub(super) enum Instruction {
     },
     ListElectricalComponents {
         electrical_component_ids: Vec<u64>,
-        electrical_component_categories: Vec<i32>,
+        electrical_component_categories: Vec<ElectricalComponentCategory>,
         response_tx: oneshot::Sender<Result<Vec<ElectricalComponent>, Error>>,
     },
     ListElectricalComponentConnections {

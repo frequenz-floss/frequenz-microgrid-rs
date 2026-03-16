@@ -280,10 +280,20 @@ impl MicrogridApiClient for MockMicrogridApiClient {
         &mut self,
         _request: impl tonic::IntoRequest<ListElectricalComponentsRequest> + Send,
     ) -> std::result::Result<tonic::Response<ListElectricalComponentsResponse>, tonic::Status> {
+        let ListElectricalComponentsRequest {
+            electrical_component_ids,
+            electrical_component_categories,
+        } = _request.into_request().into_inner();
         Ok(Response::new(ListElectricalComponentsResponse {
             electrical_components: self
                 .components
                 .iter()
+                .filter(|c| {
+                    (electrical_component_ids.is_empty()
+                        || electrical_component_ids.contains(&c.component.id))
+                        && (electrical_component_categories.is_empty()
+                            || electrical_component_categories.contains(&c.component.category))
+                })
                 .map(|c| c.component.clone())
                 .collect(),
         }))

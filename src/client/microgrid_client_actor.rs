@@ -149,7 +149,10 @@ async fn handle_instruction<T: MicrogridApiClient>(
             let components = client
                 .list_electrical_components(ListElectricalComponentsRequest {
                     electrical_component_ids,
-                    electrical_component_categories,
+                    electrical_component_categories: electrical_component_categories
+                        .into_iter()
+                        .map(|c| c as i32)
+                        .collect(),
                 })
                 .await
                 .map_err(|e| Error::connection_failure(format!("list_components failed: {e}")))
