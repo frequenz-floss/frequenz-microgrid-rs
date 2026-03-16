@@ -350,6 +350,7 @@ mod tests {
         check_samples(
             samples,
             |q| q.as_watts(),
+            TimeDelta::try_seconds(1).unwrap(),
             vec![
                 Some(5.8),
                 Some(6.0),
@@ -377,6 +378,7 @@ mod tests {
         check_samples(
             samples,
             |q| q.as_volt_amperes_reactive(),
+            TimeDelta::try_seconds(1).unwrap(),
             vec![
                 Some(-1.4),
                 Some(-0.5),
@@ -403,6 +405,7 @@ mod tests {
         check_samples(
             samples,
             |q| q.as_volts(),
+            TimeDelta::try_seconds(1).unwrap(),
             vec![
                 Some(398.0),
                 Some(397.67),
@@ -429,6 +432,7 @@ mod tests {
         check_samples(
             samples,
             |q| q.as_amperes(),
+            TimeDelta::try_seconds(1).unwrap(),
             vec![
                 Some(15.0),
                 Some(14.75),
@@ -458,6 +462,7 @@ mod tests {
     fn check_samples<Q: Quantity>(
         samples: Vec<Sample<Q>>,
         extractor: impl Fn(Q) -> f32,
+        expected_interval: TimeDelta,
         expected_values: Vec<Option<f32>>,
     ) {
         let values = samples
@@ -465,10 +470,12 @@ mod tests {
             .map(|res| res.value().map(|v| extractor(v)))
             .collect::<Vec<_>>();
 
-        let one_second = TimeDelta::try_seconds(1).unwrap();
-
         samples.as_slice().windows(2).for_each(|w| {
-            assert_eq!(w[1].timestamp() - w[0].timestamp(), one_second);
+            assert_eq!(
+                w[1].timestamp() - w[0].timestamp(),
+                expected_interval,
+                "Samples are not spaced at the expected interval"
+            );
         });
 
         for (v, ev) in values.iter().zip(expected_values.iter()) {
