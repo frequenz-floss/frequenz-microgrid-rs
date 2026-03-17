@@ -6,10 +6,9 @@
 use crate::logical_meter::formula::aggregation_formula::AggregationFormula;
 use crate::logical_meter::formula::coalesce_formula::CoalesceFormula;
 use crate::{
-    logical_meter::formula::FormulaSubscriber, proto::common::metrics::Metric as MetricPb,
+    logical_meter::formula, logical_meter::formula::FormulaSubscriber,
+    proto::common::metrics::Metric as MetricPb,
 };
-
-use super::formula;
 
 pub trait Metric:
     std::fmt::Display + std::fmt::Debug + Clone + Copy + PartialEq + Eq + Sync + 'static
