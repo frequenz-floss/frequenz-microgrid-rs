@@ -3,6 +3,9 @@
 
 //! High-level interface for the Microgrid API.
 
+mod bounds;
+pub use bounds::Bounds;
+
 mod client;
 pub use client::MicrogridClientHandle;
 
