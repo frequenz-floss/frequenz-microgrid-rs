@@ -233,6 +233,18 @@ macro_rules! qty_ctor {
             pub const fn is_infinite(&self) -> bool {
                 self.value.is_infinite()
             }
+
+            pub const fn min(self, other: Self) -> Self {
+                Self {
+                    value: self.value.min(other.value),
+                }
+            }
+
+            pub const fn max(self, other: Self) -> Self {
+                Self {
+                    value: self.value.max(other.value),
+                }
+            }
         }
 
         qty_ctor!{@impl_arith_ops $typename}
