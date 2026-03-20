@@ -14,7 +14,9 @@ mod microgrid_client_handle;
 pub use microgrid_client_handle::MicrogridClientHandle;
 
 pub(crate) mod proto;
-pub use proto::common::microgrid::electrical_components::ElectricalComponentCategory;
+pub use proto::common::microgrid::electrical_components::{
+    ElectricalComponent, ElectricalComponentCategory,
+};
 
 #[cfg(test)]
 pub(crate) mod test_utils;

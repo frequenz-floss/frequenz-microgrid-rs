@@ -20,4 +20,5 @@ pub use pb::frequenz::api::microgrid::v1alpha18 as microgrid;
 #[cfg(test)]
 pub use pb::google;
 
+mod electrical_component;
 mod graph;
