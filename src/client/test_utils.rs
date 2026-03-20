@@ -24,6 +24,7 @@ use crate::{
         },
         google::protobuf,
         microgrid::{
+            AugmentElectricalComponentBoundsRequest, AugmentElectricalComponentBoundsResponse,
             ListElectricalComponentConnectionsRequest, ListElectricalComponentConnectionsResponse,
             ListElectricalComponentsRequest, ListElectricalComponentsResponse,
             ReceiveElectricalComponentTelemetryStreamRequest,
@@ -440,6 +441,14 @@ impl MicrogridApiClient for MockMicrogridApiClient {
 
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
         Ok(Response::new(stream))
+    }
+
+    async fn augment_electrical_component_bounds(
+        &mut self,
+        _request: impl tonic::IntoRequest<AugmentElectricalComponentBoundsRequest> + Send,
+    ) -> std::result::Result<tonic::Response<AugmentElectricalComponentBoundsResponse>, tonic::Status>
+    {
+        unimplemented!()
     }
 }
 

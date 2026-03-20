@@ -11,9 +11,9 @@ use crate::{
         ReceiveElectricalComponentTelemetryStreamResponse,
     },
 };
-use std::collections::HashMap;
-
+use chrono::DateTime;
 use futures::{Stream, StreamExt};
+use std::collections::HashMap;
 use tokio::{
     select,
     sync::{broadcast, mpsc},
@@ -178,6 +178,53 @@ async fn handle_instruction<T: MicrogridApiClient>(
 
             response_tx
                 .send(connections)
+                .map_err(|_| Error::internal("failed to send response"))?;
+        }
+        Some(Instruction::AugmentElectricalComponentBounds {
+            electrical_component_id,
+            target_metric,
+            bounds,
+            request_lifetime,
+            response_tx,
+        }) => {
+            let response = client
+                .augment_electrical_component_bounds(
+                    crate::proto::microgrid::AugmentElectricalComponentBoundsRequest {
+                        electrical_component_id,
+                        target_metric: target_metric as i32,
+                        bounds,
+                        request_lifetime: request_lifetime.and_then(|d| {
+                            let secs = d.num_seconds();
+                            u64::try_from(secs).ok()
+                        }),
+                    },
+                )
+                .await
+                .map_err(|e| {
+                    Error::api_server_error(format!(
+                        "augment_electrical_component_bounds failed: {e}"
+                    ))
+                })
+                .map(|r| {
+                    r.into_inner().valid_until_time.and_then(|t| {
+                        match DateTime::from_timestamp(t.seconds, t.nanos as u32) {
+                            dt @ Some(_) => dt,
+                            None => {
+                                tracing::error!(
+                                    concat!(
+                                        "Received invalid valid_until_time in ",
+                                        "AugmentElectricalComponentBoundsResponse: {:?}"
+                                    ),
+                                    t
+                                );
+                                None
+                            }
+                        }
+                    })
+                });
+
+            response_tx
+                .send(response)
                 .map_err(|_| Error::internal("failed to send response"))?;
         }
         None => {}

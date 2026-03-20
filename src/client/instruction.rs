@@ -3,13 +3,17 @@
 
 //! Instructions that can be sent to the client actor from client handles.
 
+use chrono::TimeDelta;
 use tokio::sync::{broadcast, oneshot};
 
 use crate::{
     Error,
-    proto::common::microgrid::electrical_components::{
-        ElectricalComponent, ElectricalComponentCategory, ElectricalComponentConnection,
-        ElectricalComponentTelemetry,
+    proto::common::{
+        metrics::{Bounds, Metric},
+        microgrid::electrical_components::{
+            ElectricalComponent, ElectricalComponentCategory, ElectricalComponentConnection,
+            ElectricalComponentTelemetry,
+        },
     },
 };
 
@@ -29,5 +33,12 @@ pub(super) enum Instruction {
         source_electrical_component_ids: Vec<u64>,
         destination_electrical_component_ids: Vec<u64>,
         response_tx: oneshot::Sender<Result<Vec<ElectricalComponentConnection>, Error>>,
+    },
+    AugmentElectricalComponentBounds {
+        electrical_component_id: u64,
+        target_metric: Metric,
+        bounds: Vec<Bounds>,
+        request_lifetime: Option<TimeDelta>,
+        response_tx: oneshot::Sender<Result<Option<chrono::DateTime<chrono::Utc>>, Error>>,
     },
 }

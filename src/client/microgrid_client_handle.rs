@@ -6,13 +6,16 @@
 //! Instructions received by this handle are sent to the microgrid client actor,
 //! which owns the connection to the microgrid API service.
 
+use chrono::TimeDelta;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tonic::transport::Channel;
 
 use crate::{
-    Error,
+    Bounds, Error,
     client::MicrogridApiClient,
+    metric::Metric,
     proto::{
+        common::metrics::Bounds as PbBounds,
         common::microgrid::electrical_components::{
             ElectricalComponent, ElectricalComponentCategory, ElectricalComponentConnection,
             ElectricalComponentTelemetry,
@@ -147,6 +150,75 @@ impl MicrogridClientHandle {
                 response_tx,
                 source_electrical_component_ids,
                 destination_electrical_component_ids,
+            })
+            .await
+            .map_err(|_| Error::internal("failed to send instruction"))?;
+
+        response_rx
+            .await
+            .map_err(|e| Error::internal(format!("failed to receive response: {e}")))?
+    }
+
+    /// Augments the overall bounds for a given metric of a given electrical
+    /// component with the provided bounds.
+    /// Returns the UTC time at which the provided bounds will expire and its
+    /// effects will no longer be visible in the overall bounds for the
+    /// given metric.
+    ///
+    /// The request parameters allows users to select a duration until
+    /// which the bounds will stay in effect. If no duration is provided, then the
+    /// bounds will be removed after a default duration of 5 seconds.
+    ///
+    /// Inclusion bounds give the range that the system will try to keep the
+    /// metric within. If the metric goes outside of these bounds, the system will
+    /// try to bring it back within the bounds.
+    /// If the bounds for a metric are [\`lower_1`, `upper_1`],
+    /// [`lower_2`, `upper_2`](<`lower_1`, `upper_1`],
+    /// [`lower_2`, `upper_2`>), then this metric's `value` needs to comply with
+    /// the constraints
+    /// `lower_1 <= value <= upper_1` OR `lower_2 <= value <= upper_2`.
+    ///
+    /// If multiple inclusion bounds have been provided for a metric, then the
+    /// overlapping bounds are merged into a single bound, and non-overlapping
+    /// bounds are kept separate.
+    /// E.g. if the bounds are [0, 10], [5, 15], [20, 30](<0, 10], [5, 15], [20, 30>), then the resulting
+    /// bounds will be [0, 15], [20, 30](<0, 15], [20, 30>).
+    ///
+    /// The following diagram illustrates how bounds are applied:
+    ///
+    /// ```text,
+    ///  lower_1  upper_1
+    /// <----|========|--------|========|-------->
+    ///                    lower_2  upper_2
+    /// ```
+    ///
+    /// The bounds in this example are `[[lower_1, upper_1], [lower_2, upper_2]]`.
+    /// ---- values here are considered out of range.
+    /// ==== values here are considered within range.
+    ///
+    /// Note that for power metrics, regardless of the bounds, 0W is always
+    /// allowed.
+    pub async fn augment_electrical_component_bounds<M, I>(
+        &self,
+        electrical_component_id: u64,
+        #[allow(unused_variables)] target_metric: M,
+        bounds: Vec<I>,
+        request_lifetime: Option<TimeDelta>,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>, Error>
+    where
+        M: Metric,
+        Bounds<M::QuantityType>: Into<PbBounds>,
+        I: Into<Bounds<M::QuantityType>>,
+    {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.instructions_tx
+            .send(Instruction::AugmentElectricalComponentBounds {
+                response_tx,
+                electrical_component_id,
+                target_metric: M::METRIC,
+                bounds: bounds.into_iter().map(|x| x.into().into()).collect(),
+                request_lifetime,
             })
             .await
             .map_err(|_| Error::internal("failed to send instruction"))?;

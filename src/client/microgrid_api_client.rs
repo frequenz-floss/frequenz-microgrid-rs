@@ -7,6 +7,7 @@
 use tonic::transport::Channel;
 
 use crate::proto::microgrid::{
+    AugmentElectricalComponentBoundsRequest, AugmentElectricalComponentBoundsResponse,
     ListElectricalComponentConnectionsRequest, ListElectricalComponentConnectionsResponse,
     ListElectricalComponentsRequest, ListElectricalComponentsResponse,
     ReceiveElectricalComponentTelemetryStreamRequest,
@@ -44,6 +45,11 @@ pub trait MicrogridApiClient: Send + Sync + 'static {
         &mut self,
         request: impl tonic::IntoRequest<ReceiveElectricalComponentTelemetryStreamRequest> + Send,
     ) -> std::result::Result<tonic::Response<Self::TelemetryStream>, tonic::Status>;
+
+    async fn augment_electrical_component_bounds(
+        &mut self,
+        request: impl tonic::IntoRequest<AugmentElectricalComponentBoundsRequest> + Send,
+    ) -> std::result::Result<tonic::Response<AugmentElectricalComponentBoundsResponse>, tonic::Status>;
 }
 
 /// Implement the MicrogridApiClient trait for the generated gRPC client.
@@ -77,5 +83,13 @@ impl MicrogridApiClient for crate::proto::microgrid::microgrid_client::Microgrid
     ) -> std::result::Result<tonic::Response<Self::TelemetryStream>, tonic::Status> {
         self.receive_electrical_component_telemetry_stream(request)
             .await
+    }
+
+    async fn augment_electrical_component_bounds(
+        &mut self,
+        request: impl tonic::IntoRequest<AugmentElectricalComponentBoundsRequest> + Send,
+    ) -> std::result::Result<tonic::Response<AugmentElectricalComponentBoundsResponse>, tonic::Status>
+    {
+        self.augment_electrical_component_bounds(request).await
     }
 }
