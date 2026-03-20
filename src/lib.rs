@@ -6,15 +6,14 @@
 mod bounds;
 pub use bounds::Bounds;
 
-mod client;
+pub mod client;
 pub use client::MicrogridClientHandle;
+pub(crate) use client::proto;
 
 mod error;
 pub use error::{Error, ErrorKind};
 
 pub mod quantity;
-
-mod proto;
 
 mod sample;
 pub use sample::Sample;
