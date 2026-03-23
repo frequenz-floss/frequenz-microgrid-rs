@@ -3,20 +3,22 @@
 
 //! High-level interface for the Microgrid API.
 
-mod client;
+mod bounds;
+pub use bounds::Bounds;
+
+pub mod client;
 pub use client::MicrogridClientHandle;
+pub(crate) use client::proto;
 
 mod error;
 pub use error::{Error, ErrorKind};
 
 pub mod quantity;
 
-mod proto;
-
 mod sample;
 pub use sample::Sample;
 
 mod logical_meter;
-pub use logical_meter::{
-    Formula, FormulaSubscriber, LogicalMeterConfig, LogicalMeterHandle, metric,
-};
+pub use logical_meter::{Formula, FormulaSubscriber, LogicalMeterConfig, LogicalMeterHandle};
+
+pub mod metric;

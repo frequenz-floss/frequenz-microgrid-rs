@@ -58,7 +58,8 @@ ErrorKind!(
     (ChronoError, chrono_error),
     (DroppedUnusedFormulas, dropped_unused_formulas),
     (FormulaEngineError, formula_engine_error),
-    (Internal, internal)
+    (Internal, internal),
+    (APIServerError, api_server_error),
 );
 
 /// An error that can occur during the creation or traversal of a

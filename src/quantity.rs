@@ -103,10 +103,10 @@ macro_rules! qty_format {
 
 macro_rules! qty_ctor {
     (@impl ($ctor:ident, $getter:ident, $unit:tt, $exp:literal) $(,)?) => {
-        pub fn $ctor(value: f32) -> Self {
+        pub const fn $ctor(value: f32) -> Self {
             Self { value: value * $exp }
         }
-        pub fn $getter(&self) -> f32 {
+        pub const fn $getter(&self) -> f32 {
             self.value / $exp
         }
     };
@@ -190,48 +190,60 @@ macro_rules! qty_ctor {
         impl $typename {
             qty_ctor!(@impl $($rest)*);
 
-            pub fn abs(&self) -> Self {
+            pub const fn abs(&self) -> Self {
                 Self {
                     value: self.value.abs(),
                 }
             }
 
-            pub fn floor(&self) -> Self {
+            pub const fn floor(&self) -> Self {
                 Self {
                     value: self.value.floor(),
                 }
             }
 
-            pub fn ceil(&self) -> Self {
+            pub const fn ceil(&self) -> Self {
                 Self {
                     value: self.value.ceil(),
                 }
             }
 
-            pub fn round(&self) -> Self {
+            pub const fn round(&self) -> Self {
                 Self {
                     value: self.value.round(),
                 }
             }
 
-            pub fn trunc(&self) -> Self {
+            pub const fn trunc(&self) -> Self {
                 Self {
                     value: self.value.trunc(),
                 }
             }
 
-            pub fn fract(&self) -> Self {
+            pub const fn fract(&self) -> Self {
                 Self {
                     value: self.value.fract(),
                 }
             }
 
-            pub fn is_nan(&self) -> bool {
+            pub const fn is_nan(&self) -> bool {
                 self.value.is_nan()
             }
 
-            pub fn is_infinite(&self) -> bool {
+            pub const fn is_infinite(&self) -> bool {
                 self.value.is_infinite()
+            }
+
+            pub const fn min(self, other: Self) -> Self {
+                Self {
+                    value: self.value.min(other.value),
+                }
+            }
+
+            pub const fn max(self, other: Self) -> Self {
+                Self {
+                    value: self.value.max(other.value),
+                }
             }
         }
 
