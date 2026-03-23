@@ -17,6 +17,9 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Run tests
         uses: frequenz-floss/gh-action-cargo-test@v1.0.0
 
