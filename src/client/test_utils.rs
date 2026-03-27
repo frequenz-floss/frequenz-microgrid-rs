@@ -16,7 +16,7 @@ use crate::{
     client::proto::{
         common::{
             metrics::{
-                Metric, MetricSample, MetricValueVariant, SimpleMetricValue, metric_value_variant,
+                Bounds, Metric, MetricSample, MetricValueVariant, SimpleMetricValue, metric_value_variant,
             },
             microgrid::electrical_components::{
                 ElectricalComponent, ElectricalComponentCategory,
@@ -24,6 +24,7 @@ use crate::{
                 ElectricalComponentStateCode, ElectricalComponentStateSnapshot,
                 ElectricalComponentTelemetry, Inverter, InverterType,
                 electrical_component_category_specific_info::Kind,
+                MetricConfigBounds,
             },
         },
         google::protobuf,
@@ -37,7 +38,6 @@ use crate::{
     },
     quantity::{Current, Power, ReactivePower, Voltage},
 };
-
 use super::MicrogridApiClient;
 
 /// A mock implementation of the `MicrogridApiClient` trait for testing purposes.
@@ -179,6 +179,16 @@ impl MockComponent {
             panic!("Cannot add children to a hidden load component");
         }
         self.children.extend(children);
+        self
+    }
+
+    pub fn add_component_bounds(mut self, metric: i32, lower: Option<f32>, upper: Option<f32>) -> Self {
+        self.component.metric_config_bounds.push(
+            MetricConfigBounds {
+                metric,
+                config_bounds: Some(Bounds {lower, upper}),
+            }
+        );
         self
     }
 
