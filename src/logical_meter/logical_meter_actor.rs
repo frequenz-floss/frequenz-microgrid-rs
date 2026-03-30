@@ -383,7 +383,9 @@ impl LogicalMeterActor {
                         // Finally, default to average if no default is
                         // configured
                         .unwrap_or(ResamplingFunction::Average),
-                    3,
+                    // The resampler expects max age to be i32, so we need to
+                    // cap it if the user provided a higher value.
+                    self.config.max_age_in_intervals.min(i32::MAX as u32) as i32,
                     self.resampler_ts,
                     false,
                 ),

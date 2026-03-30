@@ -474,6 +474,61 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn test_max_age_in_intervals() {
+        let lm_config = Some(
+            LogicalMeterConfig::new(TimeDelta::try_milliseconds(200).unwrap())
+                .with_max_age_in_intervals(1)
+                .with_default_resampling_function(ResamplingFunction::Count),
+        );
+        let mut lm = new_logical_meter_handle(lm_config).await;
+        let formula = lm.consumer(crate::metric::AcPowerActive).unwrap();
+
+        let samples = fetch_samples(formula, 8).await;
+        check_samples(
+            samples,
+            |q| q.as_watts(),
+            TimeDelta::try_milliseconds(200).unwrap(),
+            vec![
+                Some(1.0),
+                Some(1.0),
+                Some(1.0),
+                Some(1.0),
+                Some(1.0),
+                Some(1.0),
+                Some(0.0),
+                Some(0.0),
+            ],
+        );
+
+        let lm_config = Some(
+            LogicalMeterConfig::new(TimeDelta::try_milliseconds(200).unwrap())
+                .with_max_age_in_intervals(3)
+                .with_default_resampling_function(ResamplingFunction::Count),
+        );
+        let mut lm = new_logical_meter_handle(lm_config).await;
+        let formula = lm.consumer(crate::metric::AcPowerActive).unwrap();
+
+        let samples = fetch_samples(formula, 10).await;
+        check_samples(
+            samples,
+            |q| q.as_watts(),
+            TimeDelta::try_milliseconds(200).unwrap(),
+            vec![
+                Some(1.0),
+                Some(2.0),
+                Some(3.0),
+                Some(3.0),
+                Some(3.0),
+                Some(3.0),
+                Some(2.0),
+                Some(1.0),
+                Some(0.0),
+                Some(0.0),
+            ],
+        )
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn test_consumer_current_formula() {
         let formula = new_logical_meter_handle(None)
             .await
