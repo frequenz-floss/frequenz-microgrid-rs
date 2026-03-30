@@ -12,6 +12,8 @@
 
 - It is now possible to change the default resampling function, and to override the resampling function for specific metrics.
 
+- The resampler's `max_age_in_intervals` has also become configurable, through `LogicalMeterConfig`.
+
 ## Bug Fixes
 
 <!-- Here goes notable bug fixes that are worth a special mention or explanation -->
