@@ -2,16 +2,16 @@
 
 ## Summary
 
-This release makes incremental improvements to the client and the quantity types.
+<!-- Here goes a general summary of what this release is about -->
 
 ## Upgrading
 
-- The `MicrogridClientHandle::list_electrical_components` method now expects `ElectricalComponentCategory` enum values instead of `i32`, to filter by component category.
+- `LogicalMeterConfig` instances can't be created directly anymore, and need to be created using the `LogicalMeterConfig::new` method.  This helps avoid future breaking changes, as we add more config parameters.
 
 ## New Features
 
-- The new `MicrogridClientHandle::augment_electrical_component_bounds` method can be used to augment the bounds for specific metrics of electrical components.
+- It is now possible to change the default resampling function, and to override the resampling function for specific metrics.
 
-- All methods on `Quantity` types are now `const`.
+## Bug Fixes
 
-- `Quantity` types have two new methods `min` and `max`, similar to the `min` and `max` methods on fundamental numerical types.
+<!-- Here goes notable bug fixes that are worth a special mention or explanation -->

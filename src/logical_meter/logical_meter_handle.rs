@@ -186,6 +186,7 @@ impl LogicalMeterHandle {
 #[cfg(test)]
 mod tests {
     use chrono::TimeDelta;
+    use frequenz_resampling::ResamplingFunction;
     use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 
     use crate::{
@@ -198,7 +199,7 @@ mod tests {
         quantity::Quantity,
     };
 
-    async fn new_logical_meter_handle() -> LogicalMeterHandle {
+    async fn new_logical_meter_handle(config: Option<LogicalMeterConfig>) -> LogicalMeterHandle {
         let api_client = MockMicrogridApiClient::new(
             // Grid connection point
             MockComponent::grid(1).with_children(vec![
@@ -251,9 +252,7 @@ mod tests {
 
         LogicalMeterHandle::try_new(
             MicrogridClientHandle::new_from_client(api_client),
-            LogicalMeterConfig {
-                resampling_interval: TimeDelta::try_seconds(1).unwrap(),
-            },
+            config.unwrap_or_else(|| LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap())),
         )
         .await
         .unwrap()
@@ -261,7 +260,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_formula_display() {
-        let mut lm = new_logical_meter_handle().await;
+        let mut lm = new_logical_meter_handle(None).await;
 
         let formula = lm.grid(crate::metric::AcPowerActive).unwrap();
         assert_eq!(formula.to_string(), "METRIC_AC_POWER_ACTIVE::(#2)");
@@ -342,7 +341,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_grid_power_formula() {
-        let formula = new_logical_meter_handle()
+        let formula = new_logical_meter_handle(None)
             .await
             .grid(crate::metric::AcPowerActive)
             .unwrap();
@@ -352,6 +351,7 @@ mod tests {
         check_samples(
             samples,
             |q| q.as_watts(),
+            TimeDelta::try_seconds(1).unwrap(),
             vec![
                 Some(5.8),
                 Some(6.0),
@@ -369,7 +369,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_pv_reactive_power_formula() {
-        let formula = new_logical_meter_handle()
+        let formula = new_logical_meter_handle(None)
             .await
             .pv(None, crate::metric::AcPowerReactive)
             .unwrap();
@@ -379,6 +379,7 @@ mod tests {
         check_samples(
             samples,
             |q| q.as_volt_amperes_reactive(),
+            TimeDelta::try_seconds(1).unwrap(),
             vec![
                 Some(-1.4),
                 Some(-0.5),
@@ -396,7 +397,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_battery_voltage_formula() {
-        let formula = new_logical_meter_handle()
+        let formula = new_logical_meter_handle(None)
             .await
             .battery(None, crate::metric::AcVoltage)
             .unwrap();
@@ -405,6 +406,7 @@ mod tests {
         check_samples(
             samples,
             |q| q.as_volts(),
+            TimeDelta::try_seconds(1).unwrap(),
             vec![
                 Some(398.0),
                 Some(397.67),
@@ -421,8 +423,59 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn test_resampling_functions() {
+        let lm_config = Some(
+            LogicalMeterConfig::new(TimeDelta::try_milliseconds(200).unwrap())
+                .with_default_resampling_function(ResamplingFunction::Count)
+                .override_resampling_function::<crate::metric::AcVoltage>(ResamplingFunction::Last),
+        );
+        let mut lm = new_logical_meter_handle(lm_config).await;
+        let bat_volt_formula = lm.battery(None, crate::metric::AcVoltage).unwrap();
+
+        let samples = fetch_samples(bat_volt_formula, 10).await;
+        check_samples(
+            samples,
+            |q| q.as_volts(),
+            TimeDelta::try_milliseconds(200).unwrap(),
+            vec![
+                Some(400.0),
+                Some(400.0),
+                Some(398.0),
+                Some(396.0),
+                Some(396.0),
+                Some(396.0),
+                Some(396.0),
+                Some(396.0),
+                None,
+                None,
+            ],
+        );
+
+        let cons_pow_formula = lm.consumer(crate::metric::AcPowerActive).unwrap();
+
+        let samples = fetch_samples(cons_pow_formula, 10).await;
+        check_samples(
+            samples,
+            |q| q.as_watts(),
+            TimeDelta::try_milliseconds(200).unwrap(),
+            vec![
+                Some(1.0),
+                Some(2.0),
+                Some(3.0),
+                Some(3.0),
+                Some(3.0),
+                Some(3.0),
+                Some(2.0),
+                Some(1.0),
+                Some(0.0),
+                Some(0.0),
+            ],
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn test_consumer_current_formula() {
-        let formula = new_logical_meter_handle()
+        let formula = new_logical_meter_handle(None)
             .await
             .consumer(crate::metric::AcCurrent)
             .unwrap();
@@ -431,6 +484,7 @@ mod tests {
         check_samples(
             samples,
             |q| q.as_amperes(),
+            TimeDelta::try_seconds(1).unwrap(),
             vec![
                 Some(15.0),
                 Some(14.75),
@@ -460,6 +514,7 @@ mod tests {
     fn check_samples<Q: Quantity>(
         samples: Vec<Sample<Q>>,
         extractor: impl Fn(Q) -> f32,
+        expected_interval: TimeDelta,
         expected_values: Vec<Option<f32>>,
     ) {
         let values = samples
@@ -467,20 +522,22 @@ mod tests {
             .map(|res| res.value().map(|v| extractor(v)))
             .collect::<Vec<_>>();
 
-        let one_second = TimeDelta::try_seconds(1).unwrap();
-
         samples.as_slice().windows(2).for_each(|w| {
-            assert_eq!(w[1].timestamp() - w[0].timestamp(), one_second);
+            assert_eq!(
+                w[1].timestamp() - w[0].timestamp(),
+                expected_interval,
+                "Samples are not spaced at the expected interval"
+            );
         });
 
-        for (v, ev) in values.iter().zip(expected_values.iter()) {
+        for (id, (v, ev)) in values.iter().zip(expected_values.iter()).enumerate() {
             match (v, ev) {
                 (Some(v), Some(ev)) => assert!(
                     (v - ev).abs() < 0.01,
-                    "expected value {ev:?}, got value {v:?}"
+                    "Item {id} - expected value {ev:?}, got value {v:?}"
                 ),
                 (None, None) => {}
-                _ => panic!("expected value {ev:?}, got value {v:?}"),
+                _ => panic!("Item {id} - expected value {ev:?}, got value {v:?}"),
             }
         }
     }
