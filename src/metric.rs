@@ -20,6 +20,8 @@ pub trait Metric:
     type QuantityType: crate::quantity::Quantity;
 
     const METRIC: MetricPb;
+
+    fn str_name(&self) -> &'static str;
 }
 
 macro_rules! define_metric {
@@ -39,6 +41,10 @@ macro_rules! define_metric {
                 type QuantityType = crate::quantity::$quantity;
 
                 const METRIC: MetricPb = MetricPb::$metric_name;
+
+                fn str_name(&self) -> &'static str {
+                    stringify!($metric_name)
+                }
             }
 
             impl std::fmt::Display for $metric_name {
@@ -46,7 +52,6 @@ macro_rules! define_metric {
                     write!(f, "{}", stringify!($metric_name))
                 }
             }
-
         )+
     };
 }

@@ -31,7 +31,7 @@ macro_rules! graph_formula_provider {
                 format!(
                     "The component graph does not support {} formula generation for {}.",
                     stringify!($fnname),
-                    metric.to_string()
+                    metric.str_name()
                 )
             ));
         }
