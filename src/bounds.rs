@@ -3,7 +3,7 @@
 
 //! A representation of Bounds for any metric.
 
-use crate::proto::common::metrics::Bounds as PbBounds;
+use crate::client::proto::common::metrics::Bounds as PbBounds;
 use crate::quantity::{Current, Power, Quantity, ReactivePower};
 
 /// A set of lower and upper bounds for any metric.

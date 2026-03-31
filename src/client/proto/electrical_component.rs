@@ -3,8 +3,8 @@
 
 //! Extensions to the generated protobuf code for electrical components.
 
-use crate::{
-    client::{ElectricalComponent, ElectricalComponentCategory},
+use crate::client::{
+    ElectricalComponent, ElectricalComponentCategory,
     proto::common::microgrid::electrical_components::{
         InverterType, electrical_component_category_specific_info::Kind,
     },

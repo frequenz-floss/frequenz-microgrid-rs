@@ -9,7 +9,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::Response;
 
 use crate::{
-    proto::{
+    client::proto::{
         common::{
             metrics::{
                 Metric, MetricSample, MetricValueVariant, SimpleMetricValue, metric_value_variant,

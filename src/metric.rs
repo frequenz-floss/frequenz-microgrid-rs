@@ -6,8 +6,8 @@
 use crate::logical_meter::formula::aggregation_formula::AggregationFormula;
 use crate::logical_meter::formula::coalesce_formula::CoalesceFormula;
 use crate::{
-    logical_meter::formula, logical_meter::formula::FormulaSubscriber,
-    proto::common::metrics::Metric as MetricPb,
+    client::proto::common::metrics::Metric as MetricPb, logical_meter::formula,
+    logical_meter::formula::FormulaSubscriber,
 };
 
 pub trait Metric:

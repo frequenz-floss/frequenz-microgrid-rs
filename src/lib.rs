@@ -8,7 +8,6 @@ pub use bounds::Bounds;
 
 pub mod client;
 pub use client::MicrogridClientHandle;
-pub(crate) use client::proto;
 
 mod error;
 pub use error::{Error, ErrorKind};

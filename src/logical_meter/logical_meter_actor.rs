@@ -13,11 +13,11 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::{MissedTickBehavior, interval};
 
 use crate::ErrorKind;
-use crate::proto::common::metrics::{Metric, metric_value_variant::MetricValueVariant};
+use crate::client::proto::common::metrics::{Metric, metric_value_variant::MetricValueVariant};
 use crate::quantity::{Current, Power, Quantity, ReactivePower, Voltage};
 use crate::{
     Error, MicrogridClientHandle, Sample,
-    proto::common::microgrid::electrical_components::ElectricalComponentTelemetry,
+    client::proto::common::microgrid::electrical_components::ElectricalComponentTelemetry,
 };
 
 use super::config::LogicalMeterConfig;
