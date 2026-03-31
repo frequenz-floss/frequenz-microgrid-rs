@@ -24,4 +24,4 @@ pub use logical_meter::{Formula, FormulaSubscriber, LogicalMeterConfig, LogicalM
 pub mod metric;
 
 mod microgrid;
-pub use microgrid::Microgrid;
+pub use microgrid::{BatteryPool, Microgrid};

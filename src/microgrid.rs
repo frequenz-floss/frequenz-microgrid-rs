@@ -3,6 +3,9 @@
 
 //! High-level interface for the Microgrid API.
 
+mod battery_pool;
+pub use battery_pool::BatteryPool;
+
 use crate::{Error, LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle};
 
 /// A high-level interface for the Microgrid API.
@@ -50,5 +53,13 @@ impl Microgrid {
     /// Returns a handle to the logical meter.
     pub fn logical_meter(&self) -> LogicalMeterHandle {
         self.logical_meter.clone()
+    }
+
+    pub fn battery_pool(&self, component_ids: Option<Vec<u64>>) -> BatteryPool {
+        BatteryPool::new(
+            component_ids.map(|ids| ids.into_iter().collect()),
+            self.client.clone(),
+            self.logical_meter.clone(),
+        )
     }
 }
