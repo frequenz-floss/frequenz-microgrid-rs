@@ -22,3 +22,6 @@ mod logical_meter;
 pub use logical_meter::{Formula, FormulaSubscriber, LogicalMeterConfig, LogicalMeterHandle};
 
 pub mod metric;
+
+mod microgrid;
+pub use microgrid::Microgrid;
