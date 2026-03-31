@@ -21,7 +21,7 @@ pub trait Metric:
 
     const METRIC: MetricPb;
 
-    fn str_name(&self) -> &'static str;
+    fn str_name() -> &'static str;
 }
 
 macro_rules! define_metric {
@@ -42,7 +42,7 @@ macro_rules! define_metric {
 
                 const METRIC: MetricPb = MetricPb::$metric_name;
 
-                fn str_name(&self) -> &'static str {
+                fn str_name() -> &'static str {
                     stringify!($metric_name)
                 }
             }

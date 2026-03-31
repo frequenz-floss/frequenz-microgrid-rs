@@ -3,6 +3,8 @@
 
 //! An formula that supports aggregation operations.
 
+use std::marker::PhantomData;
+
 use super::{FormulaParams, FormulaSubscriber, GraphFormulaConnector};
 use crate::{
     Error, Sample, logical_meter::logical_meter_actor, metric::Metric, quantity::Quantity,
@@ -13,8 +15,8 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 #[derive(Clone)]
 pub struct AggregationFormula<M: Metric> {
     formula: frequenz_microgrid_component_graph::AggregationFormula,
-    metric: M,
     instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
+    phantom: PhantomData<M>,
 }
 
 impl<M: Metric> std::fmt::Display for AggregationFormula<M> {
@@ -56,8 +58,8 @@ impl<M: Metric> From<FormulaParams<AggregationFormula<M>, M>> for AggregationFor
     fn from(params: FormulaParams<AggregationFormula<M>, M>) -> Self {
         Self {
             formula: params.formula,
-            metric: params.metric,
             instructions_tx: params.instructions_tx,
+            phantom: PhantomData,
         }
     }
 }
@@ -66,8 +68,8 @@ impl<M: Metric> From<AggregationFormula<M>> for FormulaParams<AggregationFormula
     fn from(formula: AggregationFormula<M>) -> Self {
         FormulaParams {
             formula: formula.formula,
-            metric: formula.metric,
             instructions_tx: formula.instructions_tx,
+            phantom: PhantomData,
         }
     }
 }
