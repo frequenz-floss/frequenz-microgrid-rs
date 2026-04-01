@@ -61,7 +61,7 @@ impl LogicalMeterHandle {
 
     /// Returns a receiver that streams samples for the given `metric` at the grid
     /// connection point.
-    pub fn grid<M: metric::Metric>(&mut self) -> Result<Formula<M::QuantityType>, Error> {
+    pub fn grid<M: metric::Metric>(&self) -> Result<Formula<M::QuantityType>, Error> {
         Ok(Formula::Subscriber(Box::new(M::FormulaType::grid(
             &self.graph,
             self.instructions_tx.clone(),
@@ -73,7 +73,7 @@ impl LogicalMeterHandle {
     ///
     /// When `component_ids` is `None`, all batteries in the microgrid are used.
     pub fn battery<M: metric::Metric>(
-        &mut self,
+        &self,
         component_ids: Option<BTreeSet<u64>>,
     ) -> Result<Formula<M::QuantityType>, Error> {
         Ok(Formula::Subscriber(Box::new(M::FormulaType::battery(
@@ -88,7 +88,7 @@ impl LogicalMeterHandle {
     ///
     /// When `component_ids` is `None`, all CHPs in the microgrid are used.
     pub fn chp<M: metric::Metric>(
-        &mut self,
+        &self,
         component_ids: Option<BTreeSet<u64>>,
     ) -> Result<Formula<M::QuantityType>, Error> {
         Ok(Formula::Subscriber(Box::new(M::FormulaType::chp(
@@ -103,7 +103,7 @@ impl LogicalMeterHandle {
     ///
     /// When `component_ids` is `None`, all PVs in the microgrid are used.
     pub fn pv<M: metric::Metric>(
-        &mut self,
+        &self,
         component_ids: Option<BTreeSet<u64>>,
     ) -> Result<Formula<M::QuantityType>, Error> {
         Ok(Formula::Subscriber(Box::new(M::FormulaType::pv(
@@ -119,7 +119,7 @@ impl LogicalMeterHandle {
     /// When `component_ids` is `None`, all EV chargers in the microgrid are
     /// used.
     pub fn ev_charger<M: metric::Metric>(
-        &mut self,
+        &self,
         component_ids: Option<BTreeSet<u64>>,
     ) -> Result<Formula<M::QuantityType>, Error> {
         Ok(Formula::Subscriber(Box::new(M::FormulaType::ev_charger(
@@ -131,7 +131,7 @@ impl LogicalMeterHandle {
 
     /// Returns a receiver that streams samples for the given `metric` for the
     /// logical `consumer` in the microgrid.
-    pub fn consumer<M: metric::Metric>(&mut self) -> Result<Formula<M::QuantityType>, Error> {
+    pub fn consumer<M: metric::Metric>(&self) -> Result<Formula<M::QuantityType>, Error> {
         Ok(Formula::Subscriber(Box::new(M::FormulaType::consumer(
             &self.graph,
             self.instructions_tx.clone(),
@@ -140,7 +140,7 @@ impl LogicalMeterHandle {
 
     /// Returns a receiver that streams samples for the given `metric` for the
     /// logical `producer` in the microgrid.
-    pub fn producer<M: metric::Metric>(&mut self) -> Result<Formula<M::QuantityType>, Error> {
+    pub fn producer<M: metric::Metric>(&self) -> Result<Formula<M::QuantityType>, Error> {
         Ok(Formula::Subscriber(Box::new(M::FormulaType::producer(
             &self.graph,
             self.instructions_tx.clone(),
@@ -150,7 +150,7 @@ impl LogicalMeterHandle {
     /// Returns a receiver that streams samples for the given `metric` for the
     /// given component ID.
     pub fn component<M: metric::Metric>(
-        &mut self,
+        &self,
         component_id: u64,
     ) -> Result<Formula<M::QuantityType>, Error> {
         Ok(Formula::Subscriber(Box::new(M::FormulaType::component(
@@ -238,7 +238,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_formula_display() {
-        let mut lm = new_logical_meter_handle(None).await;
+        let lm = new_logical_meter_handle(None).await;
 
         let formula = lm.grid::<crate::metric::AcPowerActive>().unwrap();
         assert_eq!(formula.to_string(), "METRIC_AC_POWER_ACTIVE::(#2)");
@@ -407,7 +407,7 @@ mod tests {
                 .with_default_resampling_function(ResamplingFunction::Count)
                 .override_resampling_function::<crate::metric::AcVoltage>(ResamplingFunction::Last),
         );
-        let mut lm = new_logical_meter_handle(lm_config).await;
+        let lm = new_logical_meter_handle(lm_config).await;
         let bat_volt_formula = lm.battery::<crate::metric::AcVoltage>(None).unwrap();
 
         let samples = fetch_samples(bat_volt_formula, 10).await;
@@ -458,7 +458,7 @@ mod tests {
                 .with_max_age_in_intervals(1)
                 .with_default_resampling_function(ResamplingFunction::Count),
         );
-        let mut lm = new_logical_meter_handle(lm_config).await;
+        let lm = new_logical_meter_handle(lm_config).await;
         let formula = lm.consumer::<crate::metric::AcPowerActive>().unwrap();
 
         let samples = fetch_samples(formula, 8).await;
@@ -483,7 +483,7 @@ mod tests {
                 .with_max_age_in_intervals(3)
                 .with_default_resampling_function(ResamplingFunction::Count),
         );
-        let mut lm = new_logical_meter_handle(lm_config).await;
+        let lm = new_logical_meter_handle(lm_config).await;
         let formula = lm.consumer::<crate::metric::AcPowerActive>().unwrap();
 
         let samples = fetch_samples(formula, 10).await;

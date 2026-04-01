@@ -19,7 +19,7 @@ async fn main() -> Result<(), Error> {
         .init();
 
     let client = MicrogridClientHandle::try_new("http://[::1]:8800").await?;
-    let mut logical_meter = LogicalMeterHandle::try_new(
+    let logical_meter = LogicalMeterHandle::try_new(
         client,
         LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap()),
     )
