@@ -24,6 +24,17 @@ pub trait Quantity:
     fn zero() -> Self {
         Self::default()
     }
+
+    fn abs(self) -> Self;
+    fn floor(self) -> Self;
+    fn ceil(self) -> Self;
+    fn round(self) -> Self;
+    fn trunc(self) -> Self;
+    fn fract(self) -> Self;
+    fn is_nan(self) -> bool;
+    fn is_infinite(self) -> bool;
+    fn min(self, other: Self) -> Self;
+    fn max(self, other: Self) -> Self;
 }
 
 impl std::ops::Mul<Percentage> for f32 {
@@ -34,7 +45,47 @@ impl std::ops::Mul<Percentage> for f32 {
     }
 }
 
-impl Quantity for f32 {}
+impl Quantity for f32 {
+    fn abs(self) -> Self {
+        self.abs()
+    }
+
+    fn floor(self) -> Self {
+        self.floor()
+    }
+
+    fn ceil(self) -> Self {
+        self.ceil()
+    }
+
+    fn round(self) -> Self {
+        self.round()
+    }
+
+    fn trunc(self) -> Self {
+        self.trunc()
+    }
+
+    fn fract(self) -> Self {
+        self.fract()
+    }
+
+    fn is_nan(self) -> bool {
+        self.is_nan()
+    }
+
+    fn is_infinite(self) -> bool {
+        self.is_infinite()
+    }
+
+    fn min(self, other: Self) -> Self {
+        self.min(other)
+    }
+
+    fn max(self, other: Self) -> Self {
+        self.max(other)
+    }
+}
 
 /// Formats an f32 with a given precision and removes trailing zeros
 fn format_float(value: f32, precision: usize) -> String {
@@ -190,47 +241,47 @@ macro_rules! qty_ctor {
         impl $typename {
             qty_ctor!(@impl $($rest)*);
 
-            pub const fn abs(&self) -> Self {
+            pub const fn abs(self) -> Self {
                 Self {
                     value: self.value.abs(),
                 }
             }
 
-            pub const fn floor(&self) -> Self {
+            pub const fn floor(self) -> Self {
                 Self {
                     value: self.value.floor(),
                 }
             }
 
-            pub const fn ceil(&self) -> Self {
+            pub const fn ceil(self) -> Self {
                 Self {
                     value: self.value.ceil(),
                 }
             }
 
-            pub const fn round(&self) -> Self {
+            pub const fn round(self) -> Self {
                 Self {
                     value: self.value.round(),
                 }
             }
 
-            pub const fn trunc(&self) -> Self {
+            pub const fn trunc(self) -> Self {
                 Self {
                     value: self.value.trunc(),
                 }
             }
 
-            pub const fn fract(&self) -> Self {
+            pub const fn fract(self) -> Self {
                 Self {
                     value: self.value.fract(),
                 }
             }
 
-            pub const fn is_nan(&self) -> bool {
+            pub const fn is_nan(self) -> bool {
                 self.value.is_nan()
             }
 
-            pub const fn is_infinite(&self) -> bool {
+            pub const fn is_infinite(self) -> bool {
                 self.value.is_infinite()
             }
 
@@ -250,7 +301,47 @@ macro_rules! qty_ctor {
         qty_ctor!{@impl_arith_ops $typename}
         qty_format!{$typename => {$($rest)*}}
 
-        impl super::Quantity for $typename {}
+        impl super::Quantity for $typename {
+            fn abs(self) -> Self {
+                self.abs()
+            }
+
+            fn floor(self) -> Self {
+                self.floor()
+            }
+
+            fn ceil(self) -> Self {
+                self.ceil()
+            }
+
+            fn round(self) -> Self {
+                self.round()
+            }
+
+            fn trunc(self) -> Self {
+                self.trunc()
+            }
+
+            fn fract(self) -> Self {
+                self.fract()
+            }
+
+            fn is_nan(self) -> bool {
+                self.is_nan()
+            }
+
+            fn is_infinite(self) -> bool {
+                self.is_infinite()
+            }
+
+            fn min(self, other: Self) -> Self {
+                self.min(other)
+            }
+
+            fn max(self, other: Self) -> Self {
+                self.max(other)
+            }
+        }
     };
 }
 
