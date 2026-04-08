@@ -65,3 +65,34 @@ impl From<Bounds<ReactivePower>> for PbBounds {
         }
     }
 }
+
+impl From<PbBounds> for Bounds<Power> {
+    fn from(pb_bounds: PbBounds) -> Self {
+        Self::new(
+            pb_bounds.lower.map(Power::from_watts),
+            pb_bounds.upper.map(Power::from_watts),
+        )
+    }
+}
+
+impl From<PbBounds> for Bounds<Current> {
+    fn from(pb_bounds: PbBounds) -> Self {
+        Self::new(
+            pb_bounds.lower.map(Current::from_amperes),
+            pb_bounds.upper.map(Current::from_amperes),
+        )
+    }
+}
+
+impl From<PbBounds> for Bounds<ReactivePower> {
+    fn from(pb_bounds: PbBounds) -> Self {
+        Self::new(
+            pb_bounds
+                .lower
+                .map(ReactivePower::from_volt_amperes_reactive),
+            pb_bounds
+                .upper
+                .map(ReactivePower::from_volt_amperes_reactive),
+        )
+    }
+}
