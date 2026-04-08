@@ -54,6 +54,7 @@ macro_rules! ErrorKind {
 
 ErrorKind!(
     (ComponentGraphError, component_graph_error),
+    (ComponentDataError, component_data_error),
     (ConnectionFailure, connection_failure),
     (ChronoError, chrono_error),
     (DroppedUnusedFormulas, dropped_unused_formulas),
