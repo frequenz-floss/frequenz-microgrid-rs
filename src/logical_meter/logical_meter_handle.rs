@@ -159,6 +159,11 @@ impl LogicalMeterHandle {
             component_id,
         )?)))
     }
+
+    /// Returns a reference to the component graph.
+    pub fn graph(&self) -> &ComponentGraph<ElectricalComponent, ElectricalComponentConnection> {
+        &self.graph
+    }
 }
 
 #[cfg(test)]
