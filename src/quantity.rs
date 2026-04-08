@@ -21,6 +21,9 @@ pub trait Quantity:
     + Send
     + Sync
 {
+    const MIN: Self;
+    const MAX: Self;
+
     fn zero() -> Self {
         Self::default()
     }
@@ -46,6 +49,9 @@ impl std::ops::Mul<Percentage> for f32 {
 }
 
 impl Quantity for f32 {
+    const MIN: Self = f32::MIN;
+    const MAX: Self = f32::MAX;
+
     fn abs(self) -> Self {
         self.abs()
     }
@@ -302,6 +308,9 @@ macro_rules! qty_ctor {
         qty_format!{$typename => {$($rest)*}}
 
         impl super::Quantity for $typename {
+            const MIN: Self = Self { value: f32::MIN };
+            const MAX: Self = Self { value: f32::MAX };
+
             fn abs(self) -> Self {
                 self.abs()
             }
