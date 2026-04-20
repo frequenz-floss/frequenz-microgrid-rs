@@ -58,6 +58,7 @@ macro_rules! define_metric {
 }
 
 define_metric! {
+    { name: DcPower,               formula: AggregationFormula, quantity: Power },
     { name: AcPowerActive,         formula: AggregationFormula, quantity: Power },
     { name: AcPowerReactive,       formula: AggregationFormula, quantity: ReactivePower },
     { name: AcCurrent,             formula: AggregationFormula, quantity: Current },
