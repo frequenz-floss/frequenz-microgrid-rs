@@ -15,8 +15,11 @@ use crate::{
         proto::common::microgrid::electrical_components::ElectricalComponentStateCode,
     },
     metric,
-    microgrid::telemetry_tracker::battery_pool_telemetry_tracker::{
-        BatteryPoolSnapshot, BatteryPoolTelemetryTracker,
+    microgrid::{
+        battery_bounds_tracker::BatteryPoolBoundsTracker,
+        telemetry_tracker::battery_pool_telemetry_tracker::{
+            BatteryPoolSnapshot, BatteryPoolTelemetryTracker,
+        },
     },
     quantity::Power,
 };
@@ -27,6 +30,7 @@ pub struct BatteryPool {
     client: MicrogridClientHandle,
     logical_meter: LogicalMeterHandle,
     snapshot_tx: Option<broadcast::WeakSender<BatteryPoolSnapshot>>,
+    bounds_tx: Option<broadcast::WeakSender<Vec<Bounds<Power>>>>,
 }
 
 impl BatteryPool {
@@ -63,6 +67,32 @@ impl BatteryPool {
     pub fn power(&mut self) -> Result<Formula<Power>, Error> {
         self.logical_meter
             .battery::<metric::AcPowerActive>(self.component_ids.clone())
+    }
+
+    /// Returns a receiver for the aggregated active-power bounds of the pool,
+    /// updated on each snapshot.
+    ///
+    /// Reuses the running bounds tracker if one exists and still has active
+    /// receivers; otherwise starts a new one (which also starts or reuses the
+    /// underlying telemetry tracker).
+    pub fn power_bounds(&mut self) -> broadcast::Receiver<Vec<Bounds<Power>>> {
+        if let Some(tx) = self
+            .bounds_tx
+            .as_ref()
+            .and_then(broadcast::WeakSender::upgrade)
+            && tx.receiver_count() > 0
+        {
+            return tx.subscribe();
+        }
+        let snapshot_rx = self.telemetry_snapshots();
+        let (tx, rx) = broadcast::channel(100);
+        self.bounds_tx = Some(tx.downgrade());
+        let tracker = BatteryPoolBoundsTracker::<metric::AcPowerActive, metric::DcPower>::new(
+            snapshot_rx,
+            tx,
+        );
+        tokio::spawn(tracker.run());
+        rx
     }
 
     /// Returns a receiver for a stream of [`BatteryPoolSnapshot`] values,
