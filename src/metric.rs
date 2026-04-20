@@ -13,6 +13,7 @@ use crate::{
 pub trait Metric:
     std::fmt::Display + std::fmt::Debug + Clone + Copy + PartialEq + Eq + Sync + 'static
 {
+    #[expect(private_bounds)]
     type FormulaType: FormulaSubscriber<QuantityType = Self::QuantityType>
         + formula::graph_formula_provider::GraphFormulaProvider<MetricType = Self>
         + 'static;

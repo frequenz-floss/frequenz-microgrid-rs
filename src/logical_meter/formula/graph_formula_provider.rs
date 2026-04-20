@@ -44,7 +44,7 @@ macro_rules! graph_formula_provider {
 /// The component graph exposes methods to retrieve `AggregationFormula`s and
 /// `CoalesceFormula`s for each of these metrics.  This trait provides a
 /// way to generalize them.
-pub trait GraphFormulaProvider: Sized {
+pub(crate) trait GraphFormulaProvider: Sized {
     type MetricType: Metric;
 
     graph_formula_provider!(
