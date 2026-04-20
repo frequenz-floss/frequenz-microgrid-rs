@@ -3,15 +3,30 @@
 
 //! Representation of a pool of batteries in the microgrid.
 
-use std::collections::BTreeSet;
+use tokio::sync::broadcast;
 
-use crate::{Error, Formula, LogicalMeterHandle, MicrogridClientHandle, metric, quantity::Power};
+use std::collections::{BTreeSet, HashSet};
+use std::time::Duration;
+
+use crate::{
+    Bounds, Error, Formula, LogicalMeterHandle, MicrogridClientHandle,
+    client::{
+        ElectricalComponentCategory,
+        proto::common::microgrid::electrical_components::ElectricalComponentStateCode,
+    },
+    metric,
+    microgrid::telemetry_tracker::battery_pool_telemetry_tracker::{
+        BatteryPoolSnapshot, BatteryPoolTelemetryTracker,
+    },
+    quantity::Power,
+};
 
 /// An interface for abstracting over a pool of batteries in the microgrid.
 pub struct BatteryPool {
     component_ids: Option<BTreeSet<u64>>,
     client: MicrogridClientHandle,
     logical_meter: LogicalMeterHandle,
+    snapshot_tx: Option<broadcast::WeakSender<BatteryPoolSnapshot>>,
 }
 
 impl BatteryPool {
@@ -26,6 +41,21 @@ impl BatteryPool {
             component_ids,
             client,
             logical_meter,
+            snapshot_tx: None,
+            bounds_tx: None,
+        }
+    }
+
+    pub(crate) fn get_battery_ids(&self) -> BTreeSet<u64> {
+        if let Some(ids) = &self.component_ids {
+            ids.clone()
+        } else {
+            self.logical_meter
+                .graph()
+                .components()
+                .filter(|c| c.category() == ElectricalComponentCategory::Battery)
+                .map(|c| c.id)
+                .collect()
         }
     }
 
@@ -33,5 +63,40 @@ impl BatteryPool {
     pub fn power(&mut self) -> Result<Formula<Power>, Error> {
         self.logical_meter
             .battery::<metric::AcPowerActive>(self.component_ids.clone())
+    }
+
+    /// Returns a receiver for a stream of [`BatteryPoolSnapshot`] values,
+    /// each reflecting the latest component telemetry partitioned into
+    /// healthy and unhealthy sets.
+    ///
+    /// Reuses the running tracker if one exists and still has active receivers
+    /// (including any held by a bounds tracker); otherwise starts a new one.
+    pub(crate) fn telemetry_snapshots(&mut self) -> broadcast::Receiver<BatteryPoolSnapshot> {
+        if let Some(tx) = self
+            .snapshot_tx
+            .as_ref()
+            .and_then(broadcast::WeakSender::upgrade)
+            && tx.receiver_count() > 0
+        {
+            return tx.subscribe();
+        }
+        let (tx, rx) = broadcast::channel(100);
+        self.snapshot_tx = Some(tx.downgrade());
+        let tracker = BatteryPoolTelemetryTracker::new(
+            self.get_battery_ids(),
+            Duration::from_secs(10),
+            HashSet::from([
+                ElectricalComponentStateCode::Ready,
+                ElectricalComponentStateCode::Standby,
+                ElectricalComponentStateCode::Charging,
+                ElectricalComponentStateCode::Discharging,
+                ElectricalComponentStateCode::RelayClosed,
+            ]),
+            self.client.clone(),
+            self.logical_meter.clone(),
+            tx,
+        );
+        tokio::spawn(tracker.run());
+        rx
     }
 }

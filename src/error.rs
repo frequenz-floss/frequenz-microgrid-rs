@@ -78,3 +78,9 @@ impl std::fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl From<frequenz_microgrid_component_graph::Error> for Error {
+    fn from(error: frequenz_microgrid_component_graph::Error) -> Self {
+        Self::component_graph_error(error.to_string())
+    }
+}

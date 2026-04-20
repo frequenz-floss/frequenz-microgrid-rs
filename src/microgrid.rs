@@ -6,6 +6,8 @@
 mod battery_pool;
 pub use battery_pool::BatteryPool;
 
+pub(crate) mod telemetry_tracker;
+
 use crate::{Error, LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle};
 
 /// A high-level interface for the Microgrid API.
