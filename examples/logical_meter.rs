@@ -19,20 +19,20 @@ async fn main() -> Result<(), Error> {
         .init();
 
     let client = MicrogridClientHandle::try_new("http://[::1]:8800").await?;
-    let mut logical_meter = LogicalMeterHandle::try_new(
+    let logical_meter = LogicalMeterHandle::try_new(
         client,
         LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap()),
     )
     .await?;
 
-    let formula_grid = logical_meter.grid(metric::AcPowerActive)?;
-    let formula_pv = logical_meter.pv(None, metric::AcPowerActive)?;
-    let formula_consumer = logical_meter.consumer(metric::AcPowerActive)?;
+    let formula_grid = logical_meter.grid::<metric::AcPowerActive>()?;
+    let formula_pv = logical_meter.pv::<metric::AcPowerActive>(None)?;
+    let formula_consumer = logical_meter.consumer::<metric::AcPowerActive>()?;
 
     // Create a formula that calculates `grid_power - pv_power + consumer_power + 100kW`.
-    let formula = logical_meter.grid(metric::AcPowerActive)?
-        - logical_meter.pv(None, metric::AcPowerActive)?
-        + logical_meter.consumer(metric::AcPowerActive)?
+    let formula = logical_meter.grid::<metric::AcPowerActive>()?
+        - logical_meter.pv::<metric::AcPowerActive>(None)?
+        + logical_meter.consumer::<metric::AcPowerActive>()?
         + Power::from_kilowatts(100.0);
 
     let mut rx = formula.subscribe().await?;
@@ -68,10 +68,10 @@ async fn main() -> Result<(), Error> {
 
     // Create a formula that calculates the grid voltage as:
     // COALESCE(grid_voltage, AVG(grid_voltage_p1, grid_voltage_p2, grid_voltage_p3) * SQRT(3))
-    let formula_grid_voltage = logical_meter.grid(metric::AcVoltage)?.coalesce(
-        logical_meter.grid(metric::AcVoltagePhase1N)?.avg(vec![
-            logical_meter.grid(metric::AcVoltagePhase2N)?,
-            logical_meter.grid(metric::AcVoltagePhase3N)?,
+    let formula_grid_voltage = logical_meter.grid::<metric::AcVoltage>()?.coalesce(
+        logical_meter.grid::<metric::AcVoltagePhase1N>()?.avg(vec![
+            logical_meter.grid::<metric::AcVoltagePhase2N>()?,
+            logical_meter.grid::<metric::AcVoltagePhase3N>()?,
         ])? * 3.0_f32.sqrt(),
     )?;
 
@@ -95,18 +95,21 @@ async fn main() -> Result<(), Error> {
     drop(consumer_rx);
 
     let mut p1 = logical_meter
-        .grid(metric::AcVoltagePhase1N)?
+        .grid::<metric::AcVoltagePhase1N>()?
         .subscribe()
         .await?;
     let mut p2 = logical_meter
-        .grid(metric::AcVoltagePhase2N)?
+        .grid::<metric::AcVoltagePhase2N>()?
         .subscribe()
         .await?;
     let mut p3 = logical_meter
-        .grid(metric::AcVoltagePhase3N)?
+        .grid::<metric::AcVoltagePhase3N>()?
         .subscribe()
         .await?;
-    let mut three_phase = logical_meter.grid(metric::AcVoltage)?.subscribe().await?;
+    let mut three_phase = logical_meter
+        .grid::<metric::AcVoltage>()?
+        .subscribe()
+        .await?;
 
     loop {
         let sample = grid_voltage_rx.recv().await.unwrap();

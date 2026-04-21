@@ -61,13 +61,9 @@ impl LogicalMeterHandle {
 
     /// Returns a receiver that streams samples for the given `metric` at the grid
     /// connection point.
-    pub fn grid<M: metric::Metric>(
-        &mut self,
-        metric: M,
-    ) -> Result<Formula<M::QuantityType>, Error> {
+    pub fn grid<M: metric::Metric>(&self) -> Result<Formula<M::QuantityType>, Error> {
         Ok(Formula::Subscriber(Box::new(M::FormulaType::grid(
             &self.graph,
-            metric,
             self.instructions_tx.clone(),
         )?)))
     }
@@ -77,13 +73,11 @@ impl LogicalMeterHandle {
     ///
     /// When `component_ids` is `None`, all batteries in the microgrid are used.
     pub fn battery<M: metric::Metric>(
-        &mut self,
+        &self,
         component_ids: Option<BTreeSet<u64>>,
-        metric: M,
     ) -> Result<Formula<M::QuantityType>, Error> {
         Ok(Formula::Subscriber(Box::new(M::FormulaType::battery(
             &self.graph,
-            metric,
             self.instructions_tx.clone(),
             component_ids,
         )?)))
@@ -94,13 +88,11 @@ impl LogicalMeterHandle {
     ///
     /// When `component_ids` is `None`, all CHPs in the microgrid are used.
     pub fn chp<M: metric::Metric>(
-        &mut self,
+        &self,
         component_ids: Option<BTreeSet<u64>>,
-        metric: M,
     ) -> Result<Formula<M::QuantityType>, Error> {
         Ok(Formula::Subscriber(Box::new(M::FormulaType::chp(
             &self.graph,
-            metric,
             self.instructions_tx.clone(),
             component_ids,
         )?)))
@@ -111,13 +103,11 @@ impl LogicalMeterHandle {
     ///
     /// When `component_ids` is `None`, all PVs in the microgrid are used.
     pub fn pv<M: metric::Metric>(
-        &mut self,
+        &self,
         component_ids: Option<BTreeSet<u64>>,
-        metric: M,
     ) -> Result<Formula<M::QuantityType>, Error> {
         Ok(Formula::Subscriber(Box::new(M::FormulaType::pv(
             &self.graph,
-            metric,
             self.instructions_tx.clone(),
             component_ids,
         )?)))
@@ -129,13 +119,11 @@ impl LogicalMeterHandle {
     /// When `component_ids` is `None`, all EV chargers in the microgrid are
     /// used.
     pub fn ev_charger<M: metric::Metric>(
-        &mut self,
+        &self,
         component_ids: Option<BTreeSet<u64>>,
-        metric: M,
     ) -> Result<Formula<M::QuantityType>, Error> {
         Ok(Formula::Subscriber(Box::new(M::FormulaType::ev_charger(
             &self.graph,
-            metric,
             self.instructions_tx.clone(),
             component_ids,
         )?)))
@@ -143,26 +131,18 @@ impl LogicalMeterHandle {
 
     /// Returns a receiver that streams samples for the given `metric` for the
     /// logical `consumer` in the microgrid.
-    pub fn consumer<M: metric::Metric>(
-        &mut self,
-        metric: M,
-    ) -> Result<Formula<M::QuantityType>, Error> {
+    pub fn consumer<M: metric::Metric>(&self) -> Result<Formula<M::QuantityType>, Error> {
         Ok(Formula::Subscriber(Box::new(M::FormulaType::consumer(
             &self.graph,
-            metric,
             self.instructions_tx.clone(),
         )?)))
     }
 
     /// Returns a receiver that streams samples for the given `metric` for the
     /// logical `producer` in the microgrid.
-    pub fn producer<M: metric::Metric>(
-        &mut self,
-        metric: M,
-    ) -> Result<Formula<M::QuantityType>, Error> {
+    pub fn producer<M: metric::Metric>(&self) -> Result<Formula<M::QuantityType>, Error> {
         Ok(Formula::Subscriber(Box::new(M::FormulaType::producer(
             &self.graph,
-            metric,
             self.instructions_tx.clone(),
         )?)))
     }
@@ -170,13 +150,11 @@ impl LogicalMeterHandle {
     /// Returns a receiver that streams samples for the given `metric` for the
     /// given component ID.
     pub fn component<M: metric::Metric>(
-        &mut self,
+        &self,
         component_id: u64,
-        metric: M,
     ) -> Result<Formula<M::QuantityType>, Error> {
         Ok(Formula::Subscriber(Box::new(M::FormulaType::component(
             &self.graph,
-            metric,
             self.instructions_tx.clone(),
             component_id,
         )?)))
@@ -260,19 +238,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_formula_display() {
-        let mut lm = new_logical_meter_handle(None).await;
+        let lm = new_logical_meter_handle(None).await;
 
-        let formula = lm.grid(crate::metric::AcPowerActive).unwrap();
+        let formula = lm.grid::<crate::metric::AcPowerActive>().unwrap();
         assert_eq!(formula.to_string(), "METRIC_AC_POWER_ACTIVE::(#2)");
 
-        let formula = lm.battery(None, crate::metric::AcPowerReactive).unwrap();
+        let formula = lm.battery::<crate::metric::AcPowerReactive>(None).unwrap();
         assert_eq!(
             formula.to_string(),
             "METRIC_AC_POWER_REACTIVE::(COALESCE(#8 + #6, #5, COALESCE(#8, 0.0) + COALESCE(#6, 0.0)))"
         );
 
         let formula = lm
-            .battery(Some([9].into()), crate::metric::AcPowerActive)
+            .battery::<crate::metric::AcPowerActive>(Some([9].into()))
             .unwrap();
         assert_eq!(
             formula.to_string(),
@@ -280,35 +258,35 @@ mod tests {
         );
 
         let formula = lm
-            .battery(Some([7].into()), crate::metric::AcVoltage)
+            .battery::<crate::metric::AcVoltage>(Some([7].into()))
             .unwrap();
         assert_eq!(formula.to_string(), "METRIC_AC_VOLTAGE::(COALESCE(#5, #6))");
 
-        let formula = lm.battery(None, crate::metric::AcFrequency).unwrap();
+        let formula = lm.battery::<crate::metric::AcFrequency>(None).unwrap();
         assert_eq!(
             formula.to_string(),
             "METRIC_AC_FREQUENCY::(COALESCE(#5, #6, #8))"
         );
 
-        let formula = lm.pv(None, crate::metric::AcPowerReactive).unwrap();
+        let formula = lm.pv::<crate::metric::AcPowerReactive>(None).unwrap();
         assert_eq!(
             formula.to_string(),
             "METRIC_AC_POWER_REACTIVE::(COALESCE(#4, #3, 0.0))"
         );
 
-        let formula = lm.chp(None, crate::metric::AcPowerActive).unwrap();
+        let formula = lm.chp::<crate::metric::AcPowerActive>(None).unwrap();
         assert_eq!(
             formula.to_string(),
             "METRIC_AC_POWER_ACTIVE::(COALESCE(#12, #11, 0.0))"
         );
 
-        let formula = lm.ev_charger(None, crate::metric::AcCurrent).unwrap();
+        let formula = lm.ev_charger::<crate::metric::AcCurrent>(None).unwrap();
         assert_eq!(
             formula.to_string(),
             "METRIC_AC_CURRENT::(COALESCE(#15 + #14, #13, COALESCE(#15, 0.0) + COALESCE(#14, 0.0)))"
         );
 
-        let formula = lm.consumer(crate::metric::AcCurrent).unwrap();
+        let formula = lm.consumer::<crate::metric::AcCurrent>().unwrap();
         assert_eq!(
             formula.to_string(),
             concat!(
@@ -324,7 +302,7 @@ mod tests {
             )
         );
 
-        let formula = lm.producer(crate::metric::AcPowerActive).unwrap();
+        let formula = lm.producer::<crate::metric::AcPowerActive>().unwrap();
         assert_eq!(
             formula.to_string(),
             concat!(
@@ -335,7 +313,7 @@ mod tests {
             )
         );
 
-        let formula = lm.component(10, crate::metric::AcCurrent).unwrap();
+        let formula = lm.component::<crate::metric::AcCurrent>(10).unwrap();
         assert_eq!(formula.to_string(), "METRIC_AC_CURRENT::(#10)");
     }
 
@@ -343,7 +321,7 @@ mod tests {
     async fn test_grid_power_formula() {
         let formula = new_logical_meter_handle(None)
             .await
-            .grid(crate::metric::AcPowerActive)
+            .grid::<crate::metric::AcPowerActive>()
             .unwrap();
 
         let samples = fetch_samples(formula, 10).await;
@@ -371,7 +349,7 @@ mod tests {
     async fn test_pv_reactive_power_formula() {
         let formula = new_logical_meter_handle(None)
             .await
-            .pv(None, crate::metric::AcPowerReactive)
+            .pv::<crate::metric::AcPowerReactive>(None)
             .unwrap();
 
         let samples = fetch_samples(formula, 10).await;
@@ -399,7 +377,7 @@ mod tests {
     async fn test_battery_voltage_formula() {
         let formula = new_logical_meter_handle(None)
             .await
-            .battery(None, crate::metric::AcVoltage)
+            .battery::<crate::metric::AcVoltage>(None)
             .unwrap();
 
         let samples = fetch_samples(formula, 10).await;
@@ -429,8 +407,8 @@ mod tests {
                 .with_default_resampling_function(ResamplingFunction::Count)
                 .override_resampling_function::<crate::metric::AcVoltage>(ResamplingFunction::Last),
         );
-        let mut lm = new_logical_meter_handle(lm_config).await;
-        let bat_volt_formula = lm.battery(None, crate::metric::AcVoltage).unwrap();
+        let lm = new_logical_meter_handle(lm_config).await;
+        let bat_volt_formula = lm.battery::<crate::metric::AcVoltage>(None).unwrap();
 
         let samples = fetch_samples(bat_volt_formula, 10).await;
         check_samples(
@@ -451,7 +429,7 @@ mod tests {
             ],
         );
 
-        let cons_pow_formula = lm.consumer(crate::metric::AcPowerActive).unwrap();
+        let cons_pow_formula = lm.consumer::<crate::metric::AcPowerActive>().unwrap();
 
         let samples = fetch_samples(cons_pow_formula, 10).await;
         check_samples(
@@ -480,8 +458,8 @@ mod tests {
                 .with_max_age_in_intervals(1)
                 .with_default_resampling_function(ResamplingFunction::Count),
         );
-        let mut lm = new_logical_meter_handle(lm_config).await;
-        let formula = lm.consumer(crate::metric::AcPowerActive).unwrap();
+        let lm = new_logical_meter_handle(lm_config).await;
+        let formula = lm.consumer::<crate::metric::AcPowerActive>().unwrap();
 
         let samples = fetch_samples(formula, 8).await;
         check_samples(
@@ -505,8 +483,8 @@ mod tests {
                 .with_max_age_in_intervals(3)
                 .with_default_resampling_function(ResamplingFunction::Count),
         );
-        let mut lm = new_logical_meter_handle(lm_config).await;
-        let formula = lm.consumer(crate::metric::AcPowerActive).unwrap();
+        let lm = new_logical_meter_handle(lm_config).await;
+        let formula = lm.consumer::<crate::metric::AcPowerActive>().unwrap();
 
         let samples = fetch_samples(formula, 10).await;
         check_samples(
@@ -532,7 +510,7 @@ mod tests {
     async fn test_consumer_current_formula() {
         let formula = new_logical_meter_handle(None)
             .await
-            .consumer(crate::metric::AcCurrent)
+            .consumer::<crate::metric::AcCurrent>()
             .unwrap();
 
         let samples = fetch_samples(formula, 10).await;

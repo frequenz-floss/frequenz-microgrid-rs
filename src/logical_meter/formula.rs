@@ -3,6 +3,8 @@
 
 //! Formula module for the logical meter.
 
+use std::marker::PhantomData;
+
 use async_trait::async_trait;
 pub(crate) mod aggregation_formula;
 mod async_formula;
@@ -37,20 +39,19 @@ pub trait FormulaSubscriber: std::fmt::Display + Sync + Send {
 /// Parameters for creating a logical meter formula.
 pub(super) struct FormulaParams<F: GraphFormulaConnector, M: Metric> {
     pub(super) formula: F::GraphFormulaType,
-    pub(super) metric: M,
     pub(super) instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
+    phantom: PhantomData<M>,
 }
 
 impl<F: GraphFormulaConnector, M: Metric> FormulaParams<F, M> {
     pub(super) fn new(
         formula: F::GraphFormulaType,
-        metric: M,
         instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
     ) -> Self {
         Self {
             formula,
-            metric,
             instructions_tx,
+            phantom: PhantomData,
         }
     }
 }

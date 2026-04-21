@@ -3,6 +3,8 @@
 
 //! An coalesce formula.
 
+use std::marker::PhantomData;
+
 use super::{FormulaParams, FormulaSubscriber, GraphFormulaConnector};
 use crate::{
     Error, Sample, logical_meter::logical_meter_actor, metric::Metric, quantity::Quantity,
@@ -13,8 +15,8 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 #[derive(Clone)]
 pub struct CoalesceFormula<M: Metric> {
     formula: frequenz_microgrid_component_graph::CoalesceFormula,
-    metric: M,
     instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
+    phantom: PhantomData<M>,
 }
 
 impl<M: Metric> std::fmt::Display for CoalesceFormula<M> {
@@ -56,8 +58,8 @@ impl<M: Metric> From<FormulaParams<CoalesceFormula<M>, M>> for CoalesceFormula<M
     fn from(params: FormulaParams<CoalesceFormula<M>, M>) -> Self {
         Self {
             formula: params.formula,
-            metric: params.metric,
             instructions_tx: params.instructions_tx,
+            phantom: PhantomData,
         }
     }
 }
@@ -66,7 +68,7 @@ impl<M: Metric> From<CoalesceFormula<M>> for FormulaParams<CoalesceFormula<M>, M
     fn from(formula: CoalesceFormula<M>) -> Self {
         FormulaParams {
             formula: formula.formula,
-            metric: formula.metric,
+            phantom: formula.phantom,
             instructions_tx: formula.instructions_tx,
         }
     }
