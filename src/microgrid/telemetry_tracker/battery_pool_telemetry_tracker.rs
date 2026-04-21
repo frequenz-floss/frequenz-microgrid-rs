@@ -113,12 +113,10 @@ impl BatteryPoolTelemetryTracker {
             if !group_batteries.is_subset(&self.component_ids) {
                 let e = format!(
                     concat!(
-                        "Inverter {} is connected to batteries {:?} which are not all in the ",
-                        "requested component IDs {:?}"
+                        "Inverters {:?} are connected to batteries {:?} which are not all in ",
+                        "the requested component IDs {:?}"
                     ),
-                    group_inverters.iter().next().unwrap(),
-                    group_batteries,
-                    self.component_ids
+                    group_inverters, group_batteries, self.component_ids
                 );
 
                 tracing::error!("{}", e);
