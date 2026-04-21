@@ -355,8 +355,9 @@ impl MicrogridApiClient for MockMicrogridApiClient {
         if let Some(component) = component {
             if !component.metrics.is_empty() {
                 let metrics = component.metrics.clone();
-                let state_code =
-                    component.state_code.unwrap_or(ElectricalComponentStateCode::Ready);
+                let state_code = component
+                    .state_code
+                    .unwrap_or(ElectricalComponentStateCode::Ready);
                 let silence_after_metrics = component.silence_after_metrics;
                 tokio::spawn(async move {
                     let dur = std::time::Duration::from_millis(200);

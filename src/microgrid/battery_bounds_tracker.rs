@@ -119,7 +119,9 @@ where
     components
         .values()
         .filter_map(extract_metric_bounds::<M>)
-        .fold(Vec::new(), |acc, bounds| combine_parallel_sets(&acc, &bounds))
+        .fold(Vec::new(), |acc, bounds| {
+            combine_parallel_sets(&acc, &bounds)
+        })
 }
 
 fn extract_metric_bounds<M: Metric>(
@@ -217,8 +219,9 @@ mod tests {
             },
         )]);
 
-        let bounds =
-            BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(&snapshot);
+        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
+            &snapshot,
+        );
         assert_eq!(
             bounds,
             vec![
@@ -263,8 +266,9 @@ mod tests {
             },
         )]);
 
-        let bounds =
-            BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(&snapshot);
+        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
+            &snapshot,
+        );
         assert_eq!(
             bounds,
             vec![Bounds::new(
@@ -321,8 +325,9 @@ mod tests {
             ),
         ]);
 
-        let bounds =
-            BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(&snapshot);
+        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
+            &snapshot,
+        );
         assert_eq!(
             bounds,
             vec![Bounds::new(
@@ -335,8 +340,9 @@ mod tests {
     #[test]
     fn empty_pool_yields_empty_bounds() {
         let snapshot = status(vec![]);
-        let bounds =
-            BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(&snapshot);
+        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
+            &snapshot,
+        );
         assert!(bounds.is_empty());
     }
 
@@ -367,8 +373,9 @@ mod tests {
             },
         )]);
 
-        let bounds =
-            BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(&snapshot);
+        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
+            &snapshot,
+        );
         assert!(
             bounds.is_empty(),
             "group with no inverter bounds must not contribute any bounds"
@@ -400,8 +407,9 @@ mod tests {
             },
         )]);
 
-        let bounds =
-            BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(&snapshot);
+        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
+            &snapshot,
+        );
         assert!(
             bounds.is_empty(),
             "group with no battery bounds must not contribute any bounds"
@@ -434,8 +442,9 @@ mod tests {
             },
         )]);
 
-        let bounds =
-            BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(&snapshot);
+        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
+            &snapshot,
+        );
         assert!(
             bounds.is_empty(),
             "group with no healthy inverters must not contribute any bounds"
@@ -467,8 +476,9 @@ mod tests {
             },
         )]);
 
-        let bounds =
-            BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(&snapshot);
+        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
+            &snapshot,
+        );
         assert!(
             bounds.is_empty(),
             "group with no healthy batteries must not contribute any bounds"
@@ -513,8 +523,9 @@ mod tests {
 
         // Inverter side has no active-power bounds → group produces no
         // bounds, so the pool bounds are empty.
-        let bounds =
-            BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(&snapshot);
+        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
+            &snapshot,
+        );
         assert!(bounds.is_empty());
     }
 }
