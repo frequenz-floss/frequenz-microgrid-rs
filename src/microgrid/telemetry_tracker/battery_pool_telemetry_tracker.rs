@@ -250,7 +250,7 @@ mod tests {
         )
         .await
         .unwrap();
-        BatteryPool::new(None, client, lm)
+        BatteryPool::try_new(None, client, lm).unwrap()
     }
 
     /// Drains `rx` for up to `steps` * 100ms of simulated time, returning the

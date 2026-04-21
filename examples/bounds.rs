@@ -23,7 +23,7 @@ async fn main() -> Result<(), Error> {
     )
     .await?;
 
-    let mut battery_pool = microgrid.battery_pool(None);
+    let mut battery_pool = microgrid.battery_pool(None)?;
     let mut bounds_rx = battery_pool.power_bounds();
 
     while let Ok(bounds) = bounds_rx.recv().await {

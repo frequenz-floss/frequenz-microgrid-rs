@@ -59,6 +59,7 @@ ErrorKind!(
     (ChronoError, chrono_error),
     (DroppedUnusedFormulas, dropped_unused_formulas),
     (FormulaEngineError, formula_engine_error),
+    (InvalidComponent, invalid_component),
     (Internal, internal),
     (APIServerError, api_server_error),
 );

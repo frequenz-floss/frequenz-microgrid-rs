@@ -58,8 +58,8 @@ impl Microgrid {
         self.logical_meter.clone()
     }
 
-    pub fn battery_pool(&self, component_ids: Option<Vec<u64>>) -> BatteryPool {
-        BatteryPool::new(
+    pub fn battery_pool(&self, component_ids: Option<Vec<u64>>) -> Result<BatteryPool, Error> {
+        BatteryPool::try_new(
             component_ids.map(|ids| ids.into_iter().collect()),
             self.client.clone(),
             self.logical_meter.clone(),

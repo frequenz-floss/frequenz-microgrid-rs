@@ -36,30 +36,48 @@ pub struct BatteryPool {
 impl BatteryPool {
     /// Creates a new `BatteryPool` instance with the given component IDs,
     /// client and logical meter handles.
-    pub(crate) fn new(
+    pub(crate) fn try_new(
         component_ids: Option<BTreeSet<u64>>,
         client: MicrogridClientHandle,
         logical_meter: LogicalMeterHandle,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, Error> {
+        let this = Self {
             component_ids,
             client,
             logical_meter,
             snapshot_tx: None,
             bounds_tx: None,
+        };
+        if let Some(ids) = &this.component_ids {
+            if ids.is_empty() {
+                let e = "component_ids cannot be an empty set".to_string();
+                tracing::error!("{e}");
+                return Err(Error::invalid_component(e));
+            }
+            // Validate that all provided IDs correspond to batteries in the graph.
+            if !ids.is_subset(&this.get_all_battery_ids()) {
+                let e = format!("All component_ids {:?} must be batteries.", ids);
+                tracing::error!("{e}");
+                return Err(Error::invalid_component(e));
+            }
         }
+        Ok(this)
+    }
+
+    fn get_all_battery_ids(&self) -> BTreeSet<u64> {
+        self.logical_meter
+            .graph()
+            .components()
+            .filter(|c| c.category() == ElectricalComponentCategory::Battery)
+            .map(|c| c.id)
+            .collect()
     }
 
     pub(crate) fn get_battery_ids(&self) -> BTreeSet<u64> {
         if let Some(ids) = &self.component_ids {
             ids.clone()
         } else {
-            self.logical_meter
-                .graph()
-                .components()
-                .filter(|c| c.category() == ElectricalComponentCategory::Battery)
-                .map(|c| c.id)
-                .collect()
+            self.get_all_battery_ids()
         }
     }
 
