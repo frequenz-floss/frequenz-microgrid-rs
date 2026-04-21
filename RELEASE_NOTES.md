@@ -28,6 +28,14 @@
 
 - The resampler's `max_age_in_intervals` has also become configurable, through `LogicalMeterConfig`.
 
+- The `Quantity` trait now exposes numeric operations (`abs`, `floor`, `ceil`, `round`, `trunc`, `fract`, `is_nan`, `is_infinite`, `min`, `max`) as trait methods, so they can be used in generic code over any `Quantity` (including `f32` and all quantity types).
+
+- The `Quantity` trait now provides associated `MIN` and `MAX` constants.
+
+- New `BatteryPool` type (accessible via `Microgrid::battery_pool`) exposing:
+  - `power()` — a `Formula<Power>` for the pool's aggregated power.
+  - `power_bounds()` — a `broadcast::Receiver<Vec<Bounds<Power>>>` tracking the pool's power bounds.
+
 ## Bug Fixes
 
 <!-- Here goes notable bug fixes that are worth a special mention or explanation -->
