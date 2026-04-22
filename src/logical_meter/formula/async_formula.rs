@@ -157,7 +157,11 @@ async fn synchronize_receivers<Q: Quantity>(
     for item in formula_items.iter_mut() {
         match item.recv().await {
             Ok(vv) => latest.push(vv),
-            Err(_) => todo!(),
+            Err(e) => {
+                return Err(crate::Error::internal(format!(
+                    "Failed to receive from formula operand: {e}"
+                )));
+            }
         };
     }
 

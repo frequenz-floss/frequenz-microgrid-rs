@@ -13,7 +13,7 @@ pub(crate) use microgrid_api_client::MicrogridApiClient;
 mod microgrid_client_handle;
 pub use microgrid_client_handle::MicrogridClientHandle;
 
-pub(crate) mod proto;
+pub mod proto;
 pub use proto::common::microgrid::electrical_components::{
     ElectricalComponent, ElectricalComponentCategory,
 };

@@ -13,8 +13,7 @@ use tonic::transport::Channel;
 use crate::{
     Bounds, Error,
     client::MicrogridApiClient,
-    metric::Metric,
-    proto::{
+    client::proto::{
         common::metrics::Bounds as PbBounds,
         common::microgrid::electrical_components::{
             ElectricalComponent, ElectricalComponentCategory, ElectricalComponentConnection,
@@ -22,6 +21,7 @@ use crate::{
         },
         microgrid::microgrid_client::MicrogridClient,
     },
+    metric::Metric,
 };
 
 use super::{instruction::Instruction, microgrid_client_actor::MicrogridClientActor};
@@ -236,11 +236,11 @@ mod tests {
 
     use crate::{
         MicrogridClientHandle,
-        client::test_utils::{MockComponent, MockMicrogridApiClient},
-        proto::common::{
+        client::proto::common::{
             metrics::{SimpleMetricValue, metric_value_variant},
             microgrid::electrical_components::ElectricalComponentCategory,
         },
+        client::test_utils::{MockComponent, MockMicrogridApiClient},
     };
 
     fn new_client_handle() -> MicrogridClientHandle {

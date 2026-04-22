@@ -54,10 +54,12 @@ macro_rules! ErrorKind {
 
 ErrorKind!(
     (ComponentGraphError, component_graph_error),
+    (ComponentDataError, component_data_error),
     (ConnectionFailure, connection_failure),
     (ChronoError, chrono_error),
     (DroppedUnusedFormulas, dropped_unused_formulas),
     (FormulaEngineError, formula_engine_error),
+    (InvalidComponent, invalid_component),
     (Internal, internal),
     (APIServerError, api_server_error),
 );
@@ -77,3 +79,9 @@ impl std::fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl From<frequenz_microgrid_component_graph::Error> for Error {
+    fn from(error: frequenz_microgrid_component_graph::Error) -> Self {
+        Self::component_graph_error(error.to_string())
+    }
+}

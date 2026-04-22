@@ -5,11 +5,11 @@ use crate::logical_meter::formula::Formula;
 use crate::logical_meter::formula::graph_formula_provider::GraphFormulaProvider;
 use crate::{
     client::MicrogridClientHandle,
-    error::Error,
-    metric,
-    proto::common::microgrid::electrical_components::{
+    client::proto::common::microgrid::electrical_components::{
         ElectricalComponent, ElectricalComponentConnection,
     },
+    error::Error,
+    metric,
 };
 use frequenz_microgrid_component_graph::{self, ComponentGraph};
 use std::collections::BTreeSet;
@@ -158,6 +158,11 @@ impl LogicalMeterHandle {
             self.instructions_tx.clone(),
             component_id,
         )?)))
+    }
+
+    /// Returns a reference to the component graph.
+    pub fn graph(&self) -> &ComponentGraph<ElectricalComponent, ElectricalComponentConnection> {
+        &self.graph
     }
 }
 

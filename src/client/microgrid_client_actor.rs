@@ -3,13 +3,16 @@
 
 //! The microgrid client actor that handles communication with the microgrid API.
 
-use crate::{
-    client::{MicrogridApiClient, instruction::Instruction, retry_tracker::RetryTracker},
+use crate::client::{
+    MicrogridApiClient,
+    instruction::Instruction,
+    proto::common::microgrid::electrical_components::ElectricalComponentTelemetry,
     proto::microgrid::{
         ListElectricalComponentConnectionsRequest, ListElectricalComponentsRequest,
         ReceiveElectricalComponentTelemetryStreamRequest,
         ReceiveElectricalComponentTelemetryStreamResponse,
     },
+    retry_tracker::RetryTracker,
 };
 use chrono::DateTime;
 use futures::{Stream, StreamExt};
@@ -20,7 +23,7 @@ use tokio::{
 };
 use tracing::Instrument as _;
 
-use crate::{Error, proto::common::microgrid::electrical_components::ElectricalComponentTelemetry};
+use crate::Error;
 
 enum StreamStatus {
     Failed(u64),
@@ -189,7 +192,7 @@ async fn handle_instruction<T: MicrogridApiClient>(
         }) => {
             let response = client
                 .augment_electrical_component_bounds(
-                    crate::proto::microgrid::AugmentElectricalComponentBoundsRequest {
+                    crate::client::proto::microgrid::AugmentElectricalComponentBoundsRequest {
                         electrical_component_id,
                         target_metric: target_metric as i32,
                         bounds,

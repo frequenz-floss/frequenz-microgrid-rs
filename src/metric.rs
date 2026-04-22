@@ -6,13 +6,14 @@
 use crate::logical_meter::formula::aggregation_formula::AggregationFormula;
 use crate::logical_meter::formula::coalesce_formula::CoalesceFormula;
 use crate::{
-    logical_meter::formula, logical_meter::formula::FormulaSubscriber,
-    proto::common::metrics::Metric as MetricPb,
+    client::proto::common::metrics::Metric as MetricPb, logical_meter::formula,
+    logical_meter::formula::FormulaSubscriber,
 };
 
 pub trait Metric:
     std::fmt::Display + std::fmt::Debug + Clone + Copy + PartialEq + Eq + Sync + 'static
 {
+    #[expect(private_bounds)]
     type FormulaType: FormulaSubscriber<QuantityType = Self::QuantityType>
         + formula::graph_formula_provider::GraphFormulaProvider<MetricType = Self>
         + 'static;
@@ -57,6 +58,7 @@ macro_rules! define_metric {
 }
 
 define_metric! {
+    { name: DcPower,               formula: AggregationFormula, quantity: Power },
     { name: AcPowerActive,         formula: AggregationFormula, quantity: Power },
     { name: AcPowerReactive,       formula: AggregationFormula, quantity: ReactivePower },
     { name: AcCurrent,             formula: AggregationFormula, quantity: Current },

@@ -4,7 +4,7 @@
 //! This module defines the configuration for the logical meter.
 
 use crate::Sample;
-use crate::proto::common::metrics::Metric;
+use crate::client::proto::common::metrics::Metric;
 use chrono::TimeDelta;
 use frequenz_resampling::ResamplingFunction;
 use std::collections::HashMap;

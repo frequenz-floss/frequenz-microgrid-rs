@@ -8,7 +8,7 @@ use tokio::sync::{broadcast, oneshot};
 
 use crate::{
     Error,
-    proto::common::{
+    client::proto::common::{
         metrics::{Bounds, Metric},
         microgrid::electrical_components::{
             ElectricalComponent, ElectricalComponentCategory, ElectricalComponentConnection,

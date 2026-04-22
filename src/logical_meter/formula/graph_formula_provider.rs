@@ -4,14 +4,14 @@
 //! A composable formula type, that can be subscribed to.
 
 use crate::Error;
+use crate::client::proto::common::microgrid::electrical_components::{
+    ElectricalComponent, ElectricalComponentConnection,
+};
 use crate::logical_meter::formula::FormulaParams;
 use crate::logical_meter::formula::aggregation_formula::AggregationFormula;
 use crate::logical_meter::formula::coalesce_formula::CoalesceFormula;
 use crate::logical_meter::logical_meter_actor;
 use crate::metric::Metric;
-use crate::proto::common::microgrid::electrical_components::{
-    ElectricalComponent, ElectricalComponentConnection,
-};
 
 use frequenz_microgrid_component_graph::ComponentGraph;
 use std::collections::BTreeSet;
@@ -44,7 +44,7 @@ macro_rules! graph_formula_provider {
 /// The component graph exposes methods to retrieve `AggregationFormula`s and
 /// `CoalesceFormula`s for each of these metrics.  This trait provides a
 /// way to generalize them.
-pub trait GraphFormulaProvider: Sized {
+pub(crate) trait GraphFormulaProvider: Sized {
     type MetricType: Metric;
 
     graph_formula_provider!(

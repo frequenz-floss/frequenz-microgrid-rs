@@ -9,7 +9,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::Response;
 
 use crate::{
-    proto::{
+    client::proto::{
         common::{
             metrics::{
                 Metric, MetricSample, MetricValueVariant, SimpleMetricValue, metric_value_variant,
@@ -55,6 +55,14 @@ pub struct MockComponent {
         Option<Voltage>,
         Option<Current>,
     )>,
+    /// Overrides the state code reported in each telemetry sample. `None`
+    /// defaults to `Ready`.
+    state_code: Option<ElectricalComponentStateCode>,
+    /// When `true`, the mock stream task holds the sender open (silent)
+    /// after the `metrics` vec is exhausted instead of dropping it, which
+    /// prevents the client actor from reconnecting and replaying the same
+    /// data. Useful for testing missing-data timeouts.
+    silence_after_metrics: bool,
     start_ts: Option<SystemTime>,
     start_instant: Option<tokio::time::Instant>,
 }
@@ -219,6 +227,20 @@ impl MockComponent {
         self
     }
 
+    /// Overrides the state code reported in each telemetry sample.
+    pub fn with_state(mut self, code: ElectricalComponentStateCode) -> Self {
+        self.state_code = Some(code);
+        self
+    }
+
+    /// Keeps the telemetry stream open and silent after the configured
+    /// metrics are exhausted, so the client actor doesn't reconnect and
+    /// replay the data. Useful for testing missing-data timeouts.
+    pub fn with_silence_after_metrics(mut self) -> Self {
+        self.silence_after_metrics = true;
+        self
+    }
+
     pub fn with_start_times(mut self, ts: SystemTime, instant: tokio::time::Instant) -> Self {
         self.start_ts = Some(ts);
         self.start_instant = Some(instant);
@@ -333,6 +355,10 @@ impl MicrogridApiClient for MockMicrogridApiClient {
         if let Some(component) = component {
             if !component.metrics.is_empty() {
                 let metrics = component.metrics.clone();
+                let state_code = component
+                    .state_code
+                    .unwrap_or(ElectricalComponentStateCode::Ready);
+                let silence_after_metrics = component.silence_after_metrics;
                 tokio::spawn(async move {
                     let dur = std::time::Duration::from_millis(200);
                     let mut interval = tokio::time::interval(dur);
@@ -425,7 +451,7 @@ impl MicrogridApiClient for MockMicrogridApiClient {
                                 // TODO: support sending errors
                                 state_snapshots: vec![ElectricalComponentStateSnapshot {
                                     origin_time: ts,
-                                    states: vec![ElectricalComponentStateCode::Ready as i32],
+                                    states: vec![state_code as i32],
                                     warnings: vec![],
                                     errors: vec![],
                                 }],
@@ -434,6 +460,12 @@ impl MicrogridApiClient for MockMicrogridApiClient {
                         if tx.send(Ok(resp)).await.is_err() {
                             break;
                         }
+                    }
+                    if silence_after_metrics {
+                        // Hold the sender open indefinitely so the client
+                        // actor doesn't see the stream end and reconnect.
+                        let _keep_open = tx;
+                        std::future::pending::<()>().await;
                     }
                 });
             }

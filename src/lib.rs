@@ -3,12 +3,23 @@
 
 //! High-level interface for the Microgrid API.
 
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unimplemented,
+        clippy::todo,
+        clippy::unreachable,
+    )
+)]
+
 mod bounds;
 pub use bounds::Bounds;
 
 pub mod client;
 pub use client::MicrogridClientHandle;
-pub(crate) use client::proto;
 
 mod error;
 pub use error::{Error, ErrorKind};
@@ -22,3 +33,6 @@ mod logical_meter;
 pub use logical_meter::{Formula, FormulaSubscriber, LogicalMeterConfig, LogicalMeterHandle};
 
 pub mod metric;
+
+mod microgrid;
+pub use microgrid::{BatteryPool, Microgrid};
