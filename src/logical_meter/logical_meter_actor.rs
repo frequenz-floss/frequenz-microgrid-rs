@@ -5,16 +5,16 @@
 //! component data, evaluating formulas based on that data, and streaming the
 //! data to subscribers.
 
-use chrono::{DateTime, TimeDelta, Utc};
+use chrono::{DateTime, Utc};
 use frequenz_microgrid_formula_engine::FormulaEngine;
 use frequenz_resampling::ResamplingFunction;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tokio::time::{MissedTickBehavior, interval};
 
 use crate::ErrorKind;
 use crate::client::proto::common::metrics::{Metric, metric_value_variant::MetricValueVariant};
 use crate::quantity::{Current, Power, Quantity, ReactivePower, Voltage};
+use crate::wall_clock_timer::{Clock, WallClockTimer};
 use crate::{
     Error, MicrogridClientHandle, Sample,
     client::proto::common::microgrid::electrical_components::ElectricalComponentTelemetry,
@@ -90,12 +90,12 @@ pub(crate) enum Instruction {
     },
 }
 
-pub(super) struct LogicalMeterActor {
+pub(super) struct LogicalMeterActor<C: Clock> {
     instructions_rx: mpsc::Receiver<Instruction>,
     client: MicrogridClientHandle,
     config: LogicalMeterConfig,
     resampler_ts: DateTime<Utc>,
-    resampler_timer: tokio::time::Interval,
+    resampler_timer: WallClockTimer<C>,
 }
 
 /// Holds all active formulas, grouped by quantity type.
@@ -244,47 +244,25 @@ impl Formulas {
     }
 }
 
-/// Returns the next timestamp aligned to the epoch based on the given interval.
-pub(crate) fn epoch_align(timestamp: DateTime<Utc>, interval: TimeDelta) -> Option<DateTime<Utc>> {
-    let millis_since_epoch = timestamp.timestamp_millis();
-    let interval_millis = interval.num_milliseconds();
-
-    let intervals_since_epoch = millis_since_epoch / interval_millis;
-    let aligned_millis_since_epoch = intervals_since_epoch * interval_millis;
-
-    let aligned_timestamp = DateTime::from_timestamp_millis(aligned_millis_since_epoch)?;
-
-    Some(aligned_timestamp)
-}
-
-impl LogicalMeterActor {
-    pub fn try_new(
+impl<C: Clock> LogicalMeterActor<C> {
+    pub(crate) fn try_new(
         instructions_rx: mpsc::Receiver<Instruction>,
         client: MicrogridClientHandle,
         config: LogicalMeterConfig,
+        clock: C,
     ) -> Result<Self, Error> {
-        let now = Utc::now();
-        let last_aligned_ts = epoch_align(now, config.resampling_interval).ok_or_else(|| {
-            Error::chrono_error("Failed to align current time to the epoch".to_string())
-        })?;
-        let mut timer =
-            interval(config.resampling_interval.to_std().map_err(|e| {
-                Error::chrono_error(format!("Failed to convert interval to std: {e}"))
-            })?);
-        timer.set_missed_tick_behavior(MissedTickBehavior::Burst);
-
-        // The next tick should be at the next aligned timestamp.
-        timer.reset_after(
-            (last_aligned_ts + config.resampling_interval - now)
-                .to_std()
-                .map_err(|e| Error::chrono_error(format!("Failed to calculate time delta: {e}")))?,
-        );
+        let timer = WallClockTimer::try_new(config.resampling_interval, clock)?;
+        // Resamplers created before the first tick use `resampler_ts` as
+        // their start; setting it one interval before the first scheduled
+        // tick lines up with the original semantics (first tick produces the
+        // first resampled sample).
+        let resampler_ts = timer.next_tick_time() - config.resampling_interval;
 
         Ok(Self {
             instructions_rx,
             client,
             config,
-            resampler_ts: last_aligned_ts,
+            resampler_ts,
             resampler_timer: timer,
         })
     }
@@ -295,8 +273,29 @@ impl LogicalMeterActor {
 
         loop {
             tokio::select! {
-                _ = self.resampler_timer.tick() => {
-                    self.resampler_ts += self.config.resampling_interval;
+                tick_info = self.resampler_timer.tick() => {
+                    if tick_info.resynced {
+                        // Wall clock jumped; the inner resamplers' `start`
+                        // fields reference the old clock frame and can't be
+                        // advanced through the gap (the API is
+                        // single-output-per-tick). Drop any buffered
+                        // telemetry from the gap and rebuild them aligned
+                        // to one interval before the realigned current
+                        // tick, so the resample below emits a single
+                        // (empty-buffer → `None`) sample at the realigned
+                        // tick — preserving the every-interval cadence
+                        // across the jump.
+                        let realigned_current =
+                            self.resampler_timer.next_tick_time()
+                                - self.config.resampling_interval;
+                        self.rebuild_resamplers_after_jump(
+                            &mut resamplers,
+                            realigned_current - self.config.resampling_interval,
+                        );
+                        self.resampler_ts = realigned_current;
+                    } else {
+                        self.resampler_ts = tick_info.expected_tick_time;
+                    }
 
                     let mut resampled = match self.resample_metrics(&mut resamplers) {
                         Ok(resampled) => resampled,
@@ -480,8 +479,21 @@ impl LogicalMeterActor {
         let mut resampled_metrics: HashMap<Metric, HashMap<u64, Option<f32>>> = HashMap::new();
 
         for (_, resampler) in resamplers.iter_mut() {
-            while let Ok(data) = resampler.receiver.try_recv() {
-                self.push_to_resampler(resampler, data, resampler.metric);
+            loop {
+                match resampler.receiver.try_recv() {
+                    Ok(data) => self.push_to_resampler(resampler, data, resampler.metric),
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                    // On a wall-clock jump the server may burst enough samples
+                    // to fill the broadcast buffer faster than we drain it;
+                    // `Lagged` means we fell behind — skip and keep draining.
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                        tracing::debug!(
+                            "resampler receiver lagged {n} samples for cid={}",
+                            resampler.component_id
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+                }
             }
             let resampled = resampler.resampler.resample(self.resampler_ts);
             if resampled.len() != 1 {
@@ -497,6 +509,46 @@ impl LogicalMeterActor {
         }
 
         Ok(resampled_metrics)
+    }
+
+    /// Rebuilds every inner `frequenz_resampling::Resampler` with `start`
+    /// set to the given boundary, preserving each one's telemetry broadcast
+    /// receiver. Buffered telemetry from the jumped-over window is drained
+    /// and discarded (including `Lagged` errors from the broadcast receiver,
+    /// which can happen when the server bursts enough samples during the
+    /// jump to fill the channel).
+    fn rebuild_resamplers_after_jump(
+        &self,
+        resamplers: &mut HashMap<(u64, Metric), ComponentDataResampler>,
+        start: DateTime<Utc>,
+    ) {
+        for resampler in resamplers.values_mut() {
+            // Drain any samples that were queued during the jump window;
+            // they are timestamped on the old wall-clock frame and would
+            // pollute the freshly-aligned resampler. `Lagged` is fine — it
+            // just means the receiver fell behind; skip and keep draining.
+            loop {
+                match resampler.receiver.try_recv() {
+                    Ok(_) => continue,
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                    _ => break,
+                }
+            }
+            let function = self
+                .config
+                .resampling_overrides
+                .get(&resampler.metric)
+                .cloned()
+                .or_else(|| self.config.resampling_function.clone())
+                .unwrap_or(ResamplingFunction::Average);
+            resampler.resampler = frequenz_resampling::Resampler::new(
+                self.config.resampling_interval,
+                function,
+                self.config.max_age_in_intervals.min(i32::MAX as u32) as i32,
+                start,
+                false,
+            );
+        }
     }
 
     /// Cleans up resamplers that are no longer needed by any formula.
