@@ -3,11 +3,15 @@
 
 //! A mock implementation of the MicrogridApiClient for testing.
 
+mod tokio_synced_clock;
+pub use tokio_synced_clock::TokioSyncedClock;
+
 use std::{sync::Arc, time::SystemTime};
 
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Response;
 
+use crate::wall_clock_timer::Clock as _;
 use crate::{
     client::proto::{
         common::{
@@ -43,6 +47,11 @@ use super::MicrogridApiClient;
 pub struct MockMicrogridApiClient {
     pub components: Vec<Arc<MockComponent>>,
     pub connections: Vec<ElectricalComponentConnection>,
+    /// Shared clock used for every emitted `sample_time`. Tests that want
+    /// to inject wall-clock jumps construct their own [`TokioSyncedClock`],
+    /// share a clone with [`LogicalMeterActor`], and pass another in via
+    /// [`MockMicrogridApiClient::new_with_clock`].
+    clock: TokioSyncedClock,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -63,8 +72,6 @@ pub struct MockComponent {
     /// prevents the client actor from reconnecting and replaying the same
     /// data. Useful for testing missing-data timeouts.
     silence_after_metrics: bool,
-    start_ts: Option<SystemTime>,
-    start_instant: Option<tokio::time::Instant>,
 }
 
 impl MockComponent {
@@ -240,58 +247,54 @@ impl MockComponent {
         self.silence_after_metrics = true;
         self
     }
-
-    pub fn with_start_times(mut self, ts: SystemTime, instant: tokio::time::Instant) -> Self {
-        self.start_ts = Some(ts);
-        self.start_instant = Some(instant);
-        self
-    }
 }
 
 impl MockMicrogridApiClient {
-    /// Creates a new `MockMicrogridApiClient` with default successful responses.
+    /// Creates a new `MockMicrogridApiClient` with an internally-owned
+    /// [`TokioSyncedClock`]. Sleeps until the start of the next second
+    /// before anchoring the clock so that telemetry timestamps line up with
+    /// the resampler's interval boundaries, giving reproducible resampled
+    /// values in tests.
     pub fn new(graph: MockComponent) -> Self {
-        let mut this_client = Self {
-            components: vec![],
-            connections: vec![],
-        };
-
         let now = SystemTime::now();
-
         let since_epoch = now
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default();
-        let next_sec =
-            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(since_epoch.as_secs() + 1);
-
-        // Sleep until the start of the next second to align telemetry
-        // timestamps with the resampler's clock, so that we get reproducible
-        // values from the logical meter.
+        let next_sec_secs = since_epoch.as_secs() + 1;
+        let next_sec = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(next_sec_secs);
         std::thread::sleep(next_sec.duration_since(now).unwrap_or_default());
 
-        let now = next_sec;
-        let now_instant = tokio::time::Instant::now();
+        // Anchor the clock to `next_sec` exactly (not `Utc::now()` post-sleep,
+        // which would overshoot by tens of µs and cause samples emitted at
+        // nominal interval boundaries to land just past the resampler
+        // window's right edge).
+        let anchor = chrono::DateTime::<chrono::Utc>::from_timestamp(next_sec_secs as i64, 0)
+            .unwrap_or_else(chrono::Utc::now);
+        Self::new_with_clock(graph, TokioSyncedClock::with_wall_anchor(anchor))
+    }
 
-        fn traverse(
-            node: &MockComponent,
-            client: &mut MockMicrogridApiClient,
-            now: &SystemTime,
-            now_instant: &tokio::time::Instant,
-        ) {
-            client.components.push(Arc::new(
-                node.clone()
-                    .with_start_times(now.clone(), now_instant.clone()),
-            ));
+    /// Creates a `MockMicrogridApiClient` whose telemetry timestamps come
+    /// from the given clock. Share a clone with [`LogicalMeterActor`] to
+    /// simulate whole-machine NTP jumps that both sides observe.
+    pub fn new_with_clock(graph: MockComponent, clock: TokioSyncedClock) -> Self {
+        let mut this_client = Self {
+            components: vec![],
+            connections: vec![],
+            clock,
+        };
+
+        fn traverse(node: &MockComponent, client: &mut MockMicrogridApiClient) {
+            client.components.push(Arc::new(node.clone()));
             for child in &node.children {
                 client.connections.push(ElectricalComponentConnection {
                     source_electrical_component_id: node.component.id,
                     destination_electrical_component_id: child.component.id,
                     operational_lifetime: None,
                 });
-                traverse(child, client, &now, &now_instant);
+                traverse(child, client);
             }
         }
-        traverse(&Arc::new(graph), &mut this_client, &now, &now_instant);
+        traverse(&graph, &mut this_client);
 
         this_client
     }
@@ -351,7 +354,6 @@ impl MicrogridApiClient for MockMicrogridApiClient {
             .find(|c| c.component.id == comp_id)
             .cloned();
 
-        // TODO: use wall time for next ts, if that's the issue.
         if let Some(component) = component {
             if !component.metrics.is_empty() {
                 let metrics = component.metrics.clone();
@@ -359,15 +361,26 @@ impl MicrogridApiClient for MockMicrogridApiClient {
                     .state_code
                     .unwrap_or(ElectricalComponentStateCode::Ready);
                 let silence_after_metrics = component.silence_after_metrics;
+                let clock = self.clock.clone();
                 tokio::spawn(async move {
                     let dur = std::time::Duration::from_millis(200);
                     let mut interval = tokio::time::interval(dur);
-                    let mut next_ts = component.start_ts.unwrap()
-                        + (tokio::time::Instant::now() - component.start_instant.unwrap());
+                    let offset = chrono::TimeDelta::from_std(dur).unwrap_or_default();
 
                     for metrics in metrics.iter() {
                         interval.tick().await;
-                        next_ts += dur;
+                        // `tokio::time::interval`'s first tick fires
+                        // immediately, so `clock.wall_now()` is still the
+                        // anchor here. Add one interval so the first sample
+                        // is timestamped at `anchor + dur`, matching the
+                        // resampler's first interval boundary.
+                        let wall = clock.wall_now() + offset;
+                        let sys_delta =
+                            wall.signed_duration_since(chrono::DateTime::<chrono::Utc>::UNIX_EPOCH);
+                        let next_ts = SystemTime::UNIX_EPOCH
+                            + std::time::Duration::from_nanos(
+                                sys_delta.num_nanoseconds().unwrap_or(0).max(0) as u64,
+                            );
                         let duration_since_epoch =
                             next_ts.duration_since(SystemTime::UNIX_EPOCH).unwrap();
                         let ts = Some(protobuf::Timestamp {

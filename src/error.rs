@@ -60,6 +60,7 @@ ErrorKind!(
     (DroppedUnusedFormulas, dropped_unused_formulas),
     (FormulaEngineError, formula_engine_error),
     (InvalidComponent, invalid_component),
+    (InvalidConfig, invalid_config),
     (Internal, internal),
     (APIServerError, api_server_error),
 );
