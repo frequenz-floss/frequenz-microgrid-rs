@@ -634,3 +634,267 @@ impl<C: Clock> LogicalMeterActor<C> {
         resampler.resampler.push(sample);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeDelta;
+    use tokio_stream::{StreamExt, wrappers::BroadcastStream};
+
+    use crate::{
+        LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle,
+        client::test_utils::{MockComponent, MockMicrogridApiClient, TokioSyncedClock},
+        logical_meter::formula::Formula,
+        quantity::Power,
+    };
+
+    async fn new_handle(
+        meter: MockComponent,
+        config: LogicalMeterConfig,
+        clock: TokioSyncedClock,
+    ) -> LogicalMeterHandle {
+        let api_client = MockMicrogridApiClient::new_with_clock(
+            MockComponent::grid(1).with_children(vec![meter]),
+            clock.clone(),
+        );
+        LogicalMeterHandle::try_new_with_clock(
+            MicrogridClientHandle::new_from_client(api_client),
+            config,
+            clock,
+        )
+        .await
+        .unwrap()
+    }
+
+    // Pins the upstream contract that `rebuild_resamplers_after_jump`
+    // relies on: after rebuilding with `start = current - interval`, a
+    // `resample(current)` call on an empty buffer must yield exactly
+    // one output, with `value() == None`. If `frequenz_resampling`
+    // ever returns zero outputs for an empty window, the jump-recovery
+    // path flips from a graceful `None` sample to a runtime
+    // `ConnectionFailure("Resampling produced N values")`, so this
+    // assumption deserves a focused regression test rather than only
+    // implicit coverage from the end-to-end NTP-jump tests.
+    #[test]
+    fn test_resampler_empty_window_yields_single_none_sample() {
+        let interval = TimeDelta::try_seconds(1).unwrap();
+        let current = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let start = current - interval;
+        let mut resampler: frequenz_resampling::Resampler<f32, Sample<f32>> =
+            frequenz_resampling::Resampler::new(
+                interval,
+                frequenz_resampling::ResamplingFunction::Average,
+                3,
+                start,
+                false,
+            );
+        let result = resampler.resample(current);
+        assert_eq!(
+            result.len(),
+            1,
+            "rebuild contract: empty window must yield exactly one sample, got {}",
+            result.len(),
+        );
+        assert!(
+            result[0].clone().value().is_none(),
+            "rebuild contract: empty window must yield None, got {:?}",
+            result[0].value(),
+        );
+    }
+
+    async fn next_sample(stream: &mut BroadcastStream<Sample<Power>>) -> Option<Sample<Power>> {
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), stream.next()).await {
+                Ok(Some(Ok(s))) => return Some(s),
+                Ok(Some(Err(_))) => continue,
+                _ => return None,
+            }
+        }
+    }
+
+    /// Anchors a `TokioSyncedClock` to the next whole-second boundary, so
+    /// samples emitted at `anchor + 200ms·N` from the mock land on
+    /// resampler-window boundaries regardless of when in real wall-time
+    /// the test runs. Without this, `Utc::now()`'s subsecond offset can
+    /// place the first resampler tick before the mock has emitted
+    /// anything, surfacing as a flaky `None` first sample.
+    fn aligned_clock() -> TokioSyncedClock {
+        let anchor =
+            chrono::DateTime::from_timestamp(chrono::Utc::now().timestamp() + 1, 0).unwrap();
+        TokioSyncedClock::with_wall_anchor(anchor)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_actor_emits_samples_for_subscribed_formula() {
+        let meter = MockComponent::meter(2)
+            .with_power(vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0]);
+        let lm = new_handle(
+            meter,
+            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap()),
+            aligned_clock(),
+        )
+        .await;
+        let formula: Formula<Power> = lm.grid::<crate::metric::AcPowerActive>().unwrap();
+        let rx = formula.subscribe().await.unwrap();
+        let mut stream = BroadcastStream::new(rx);
+
+        let first = next_sample(&mut stream).await.expect("no first sample");
+        let second = next_sample(&mut stream).await.expect("no second sample");
+
+        assert_eq!(
+            second.timestamp() - first.timestamp(),
+            TimeDelta::try_seconds(1).unwrap(),
+        );
+        assert!(first.value().is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_actor_shares_subscription_across_handles() {
+        let meter = MockComponent::meter(2)
+            .with_power(vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0]);
+        let lm = new_handle(
+            meter,
+            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap()),
+            aligned_clock(),
+        )
+        .await;
+        let mut a = BroadcastStream::new(
+            lm.grid::<crate::metric::AcPowerActive>()
+                .unwrap()
+                .subscribe()
+                .await
+                .unwrap(),
+        );
+        let mut b = BroadcastStream::new(
+            lm.grid::<crate::metric::AcPowerActive>()
+                .unwrap()
+                .subscribe()
+                .await
+                .unwrap(),
+        );
+
+        let sa = next_sample(&mut a).await.expect("no sample on a");
+        let sb = next_sample(&mut b).await.expect("no sample on b");
+        assert_eq!(sa.timestamp(), sb.timestamp());
+        assert_eq!(
+            sa.value().map(|v| v.as_watts()),
+            sb.value().map(|v| v.as_watts()),
+        );
+    }
+
+    // Shared body for forward/backward NTP-jump recovery tests. Asserts the
+    // sample-timestamp contract across the jump in addition to values:
+    //
+    //  - pre-jump cadence is exactly `interval`, values are the baseline 10 W
+    //  - the first post-jump sample is the resync tick: `None`-valued and
+    //    timestamped at `last_pre + jump + interval` (holds for signed `jump`)
+    //  - subsequent ticks flow at `interval` cadence with post-jump values
+    async fn run_ntp_jump_recovery(jump: TimeDelta) {
+        let interval = TimeDelta::try_milliseconds(200).unwrap();
+        let clock = aligned_clock();
+        let power: Vec<f32> = (0..200).map(|i| if i < 10 { 10.0 } else { 99.0 }).collect();
+        let meter = MockComponent::meter(2).with_power(power);
+
+        let lm = new_handle(meter, LogicalMeterConfig::new(interval), clock.clone()).await;
+        let formula = lm.grid::<crate::metric::AcPowerActive>().unwrap();
+        let mut stream = BroadcastStream::new(formula.subscribe().await.unwrap());
+
+        let mut pre = Vec::new();
+        for _ in 0..4 {
+            if let Some(s) = next_sample(&mut stream).await {
+                pre.push(s);
+            }
+        }
+        assert_eq!(pre.len(), 4, "expected 4 pre-jump samples");
+        for w in pre.windows(2) {
+            assert_eq!(
+                w[1].timestamp() - w[0].timestamp(),
+                interval,
+                "pre-jump cadence should be {interval:?}",
+            );
+        }
+        for s in &pre {
+            assert_eq!(
+                s.value().map(|v| v.as_watts()),
+                Some(10.0),
+                "pre-jump sample should be baseline 10.0 W, got {:?}",
+                s.value(),
+            );
+        }
+        let last_pre_ts = pre.last().unwrap().timestamp();
+
+        clock.inject_wall_jump(jump);
+
+        let resync = next_sample(&mut stream)
+            .await
+            .expect("no resync sample after jump");
+        assert!(
+            resync.value().is_none(),
+            "resync tick should be None (buffered telemetry was on the old clock frame), got {:?}",
+            resync.value(),
+        );
+        assert_eq!(
+            resync.timestamp() - last_pre_ts,
+            jump + interval,
+            "resync sample should be jump + interval after the last pre-jump sample",
+        );
+
+        // Collect enough post-jump samples to see the mock's power profile
+        // roll past its baseline-10 prefix into the 99 region. Cadence and
+        // "resync was the only None" are invariants across every sample;
+        // the 99 W value only needs to appear by the end of the window.
+        let mut post = Vec::new();
+        for _ in 0..10 {
+            if let Some(s) = next_sample(&mut stream).await {
+                post.push(s);
+            }
+        }
+        assert_eq!(post.len(), 10, "expected 10 post-jump samples");
+        assert_eq!(
+            post[0].timestamp() - resync.timestamp(),
+            interval,
+            "first post-resync tick should be one interval after the resync tick",
+        );
+        for w in post.windows(2) {
+            assert_eq!(
+                w[1].timestamp() - w[0].timestamp(),
+                interval,
+                "post-jump cadence should be {interval:?}",
+            );
+        }
+        for s in &post {
+            assert!(
+                s.value().is_some(),
+                "post-resync samples should carry real values, got {:?}",
+                s.value(),
+            );
+        }
+        let last = post.last().unwrap();
+        assert!(
+            last.value()
+                .map(|v| (v.as_watts() - 99.0).abs() < 0.01)
+                .unwrap_or(false),
+            "last post-jump sample should be ≈99.0 W, got {:?}",
+            last.value(),
+        );
+    }
+
+    // Realistic NTP resync: a single shared clock drives both the mock
+    // telemetry's `sample_time`s and the actor's `WallClockTimer`. A mid-run
+    // `inject_wall_jump(+30s)` appears to both sides simultaneously, like a
+    // whole-machine NTP adjustment. The WallClockTimer detects the drift
+    // between wall and monotonic on the next sleep, resyncs, and the actor
+    // rebuilds the inner resamplers. Post-jump telemetry should flow through
+    // again.
+    #[tokio::test(start_paused = true)]
+    async fn test_actor_recovers_from_whole_machine_ntp_jump() {
+        run_ntp_jump_recovery(TimeDelta::try_seconds(30).unwrap()).await;
+    }
+
+    // Symmetric to the forward-jump test: a whole-machine backward NTP
+    // adjustment should resync the timer and flow post-jump telemetry.
+    #[tokio::test(start_paused = true)]
+    async fn test_actor_recovers_from_whole_machine_backward_ntp_jump() {
+        run_ntp_jump_recovery(-TimeDelta::try_seconds(30).unwrap()).await;
+    }
+}
