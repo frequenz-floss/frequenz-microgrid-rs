@@ -280,6 +280,12 @@ impl<C: Clock> LogicalMeterActor<C> {
                 config.resampling_interval
             )));
         }
+        if config.max_age_in_intervals > i32::MAX as u32 {
+            return Err(Error::invalid_config(format!(
+                "max_age_in_intervals must fit in i32, got {}",
+                config.max_age_in_intervals
+            )));
+        }
         let timer = WallClockTimer::try_new(config.resampling_interval, clock)?;
         // Resamplers created before the first tick use `resampler_ts` as
         // their start; setting it one interval before the first scheduled
@@ -406,9 +412,8 @@ impl<C: Clock> LogicalMeterActor<C> {
         frequenz_resampling::Resampler::new(
             self.config.resampling_interval,
             function,
-            // The resampler expects max age to be i32, so we cap it if
-            // the user provided a higher value.
-            self.config.max_age_in_intervals.min(i32::MAX as u32) as i32,
+            // Validated at construction to fit in `i32`.
+            self.config.max_age_in_intervals as i32,
             start,
             false,
         )
@@ -726,6 +731,20 @@ mod tests {
                 Err(e) => assert_eq!(e.kind(), crate::ErrorKind::InvalidConfig),
                 Ok(_) => panic!("expected error for interval {bad:?}"),
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_max_age_in_intervals_overflow_rejected() {
+        let api_client = MockMicrogridApiClient::new(MockComponent::grid(1));
+        let client = MicrogridClientHandle::new_from_client(api_client);
+        let (_tx, rx) = mpsc::channel(1);
+        let config = LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap())
+            .with_max_age_in_intervals(i32::MAX as u32 + 1);
+        let result = LogicalMeterActor::try_new(rx, client, config, TokioSyncedClock::new());
+        match result {
+            Err(e) => assert_eq!(e.kind(), crate::ErrorKind::InvalidConfig),
+            Ok(_) => panic!("expected error for over-i32::MAX max_age_in_intervals"),
         }
     }
 
