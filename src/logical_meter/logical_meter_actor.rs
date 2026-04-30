@@ -274,6 +274,12 @@ impl<C: Clock> LogicalMeterActor<C> {
         config: LogicalMeterConfig,
         clock: C,
     ) -> Result<Self, Error> {
+        if config.resampling_interval <= chrono::TimeDelta::zero() {
+            return Err(Error::invalid_config(format!(
+                "resampling_interval must be positive, got {:?}",
+                config.resampling_interval
+            )));
+        }
         let timer = WallClockTimer::try_new(config.resampling_interval, clock)?;
         // Resamplers created before the first tick use `resampler_ts` as
         // their start; setting it one interval before the first scheduled
@@ -702,6 +708,25 @@ mod tests {
             "rebuild contract: empty window must yield None, got {:?}",
             result[0].value(),
         );
+    }
+
+    #[tokio::test]
+    async fn test_nonpositive_resampling_interval_rejected() {
+        let api_client = MockMicrogridApiClient::new(MockComponent::grid(1));
+        let client = MicrogridClientHandle::new_from_client(api_client);
+        for bad in [TimeDelta::zero(), -TimeDelta::try_milliseconds(1).unwrap()] {
+            let (_tx, rx) = mpsc::channel(1);
+            let result = LogicalMeterActor::try_new(
+                rx,
+                client.clone(),
+                LogicalMeterConfig::new(bad),
+                TokioSyncedClock::new(),
+            );
+            match result {
+                Err(e) => assert_eq!(e.kind(), crate::ErrorKind::InvalidConfig),
+                Ok(_) => panic!("expected error for interval {bad:?}"),
+            }
+        }
     }
 
     async fn next_sample(stream: &mut BroadcastStream<Sample<Power>>) -> Option<Sample<Power>> {
