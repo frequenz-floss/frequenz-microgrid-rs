@@ -34,6 +34,26 @@ struct ComponentDataResampler {
     receiver: broadcast::Receiver<ElectricalComponentTelemetry>,
 }
 
+/// Polls the broadcast receiver once, logging `Lagged` as debug and
+/// retrying. Returns `Some(data)` with the next sample, or `None` on
+/// `Empty` / `Closed`. `Lagged` can happen when the server bursts enough
+/// samples during a wall-clock jump to fill the channel buffer.
+fn poll_telemetry(
+    receiver: &mut broadcast::Receiver<ElectricalComponentTelemetry>,
+    component_id: u64,
+) -> Option<ElectricalComponentTelemetry> {
+    loop {
+        match receiver.try_recv() {
+            Ok(data) => return Some(data),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => return None,
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                tracing::debug!("resampler receiver lagged {n} samples for cid={component_id}");
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return None,
+        }
+    }
+}
+
 /// Used to send strongly-typed formula streams from the LogicalMeterActor back
 /// to the Handle.
 pub(crate) enum TypedFormulaResponseSender {
@@ -479,21 +499,8 @@ impl<C: Clock> LogicalMeterActor<C> {
         let mut resampled_metrics: HashMap<Metric, HashMap<u64, Option<f32>>> = HashMap::new();
 
         for (_, resampler) in resamplers.iter_mut() {
-            loop {
-                match resampler.receiver.try_recv() {
-                    Ok(data) => self.push_to_resampler(resampler, data, resampler.metric),
-                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
-                    // On a wall-clock jump the server may burst enough samples
-                    // to fill the broadcast buffer faster than we drain it;
-                    // `Lagged` means we fell behind — skip and keep draining.
-                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
-                        tracing::debug!(
-                            "resampler receiver lagged {n} samples for cid={}",
-                            resampler.component_id
-                        );
-                    }
-                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
-                }
+            while let Some(data) = poll_telemetry(&mut resampler.receiver, resampler.component_id) {
+                self.push_to_resampler(resampler, data, resampler.metric);
             }
             let resampled = resampler.resampler.resample(self.resampler_ts);
             if resampled.len() != 1 {
@@ -525,15 +532,8 @@ impl<C: Clock> LogicalMeterActor<C> {
         for resampler in resamplers.values_mut() {
             // Drain any samples that were queued during the jump window;
             // they are timestamped on the old wall-clock frame and would
-            // pollute the freshly-aligned resampler. `Lagged` is fine — it
-            // just means the receiver fell behind; skip and keep draining.
-            loop {
-                match resampler.receiver.try_recv() {
-                    Ok(_) => continue,
-                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
-                    _ => break,
-                }
-            }
+            // pollute the freshly-aligned resampler.
+            while poll_telemetry(&mut resampler.receiver, resampler.component_id).is_some() {}
             let function = self
                 .config
                 .resampling_overrides
