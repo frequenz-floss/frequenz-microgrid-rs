@@ -376,6 +376,35 @@ impl<C: Clock> LogicalMeterActor<C> {
         }
     }
 
+    /// Builds an inner resampler for `metric` aligned to `start`. Used
+    /// by both the startup path and the post-jump rebuild path so the
+    /// two stay consistent as `LogicalMeterConfig` evolves.
+    fn build_resampler(
+        &self,
+        metric: Metric,
+        start: DateTime<Utc>,
+    ) -> frequenz_resampling::Resampler<f32, Sample<f32>> {
+        let function = self
+            .config
+            // Look for a specific metric override first
+            .resampling_overrides
+            .get(&metric)
+            .cloned()
+            // Then look for a configured default
+            .or_else(|| self.config.resampling_function.clone())
+            // Finally, default to average if no default is configured
+            .unwrap_or(ResamplingFunction::Average);
+        frequenz_resampling::Resampler::new(
+            self.config.resampling_interval,
+            function,
+            // The resampler expects max age to be i32, so we cap it if
+            // the user provided a higher value.
+            self.config.max_age_in_intervals.min(i32::MAX as u32) as i32,
+            start,
+            false,
+        )
+    }
+
     async fn start_resamplers(
         &mut self,
         components: &HashSet<u64>,
@@ -390,24 +419,7 @@ impl<C: Clock> LogicalMeterActor<C> {
             let resampler = ComponentDataResampler {
                 component_id: *component_id,
                 metric,
-                resampler: frequenz_resampling::Resampler::new(
-                    self.config.resampling_interval,
-                    self.config
-                        // Look for a specific metric override first
-                        .resampling_overrides
-                        .get(&metric)
-                        .cloned()
-                        // Then look for a configured default
-                        .or_else(|| self.config.resampling_function.clone())
-                        // Finally, default to average if no default is
-                        // configured
-                        .unwrap_or(ResamplingFunction::Average),
-                    // The resampler expects max age to be i32, so we need to
-                    // cap it if the user provided a higher value.
-                    self.config.max_age_in_intervals.min(i32::MAX as u32) as i32,
-                    self.resampler_ts,
-                    false,
-                ),
+                resampler: self.build_resampler(metric, self.resampler_ts),
                 receiver: self
                     .client
                     .receive_electrical_component_telemetry_stream(*component_id)
@@ -534,20 +546,7 @@ impl<C: Clock> LogicalMeterActor<C> {
             // they are timestamped on the old wall-clock frame and would
             // pollute the freshly-aligned resampler.
             while poll_telemetry(&mut resampler.receiver, resampler.component_id).is_some() {}
-            let function = self
-                .config
-                .resampling_overrides
-                .get(&resampler.metric)
-                .cloned()
-                .or_else(|| self.config.resampling_function.clone())
-                .unwrap_or(ResamplingFunction::Average);
-            resampler.resampler = frequenz_resampling::Resampler::new(
-                self.config.resampling_interval,
-                function,
-                self.config.max_age_in_intervals.min(i32::MAX as u32) as i32,
-                start,
-                false,
-            );
+            resampler.resampler = self.build_resampler(resampler.metric, start);
         }
     }
 
