@@ -34,10 +34,11 @@ struct ComponentDataResampler {
     receiver: broadcast::Receiver<ElectricalComponentTelemetry>,
 }
 
-/// Polls the broadcast receiver once, logging `Lagged` as debug and
-/// retrying. Returns `Some(data)` with the next sample, or `None` on
-/// `Empty` / `Closed`. `Lagged` can happen when the server bursts enough
-/// samples during a wall-clock jump to fill the channel buffer.
+/// Polls the broadcast receiver once, logging `Lagged` as a warning
+/// (it represents real data loss) and retrying. Returns `Some(data)`
+/// with the next sample, or `None` on `Empty` / `Closed`. `Lagged` can
+/// happen during a wall-clock jump if the server bursts enough samples
+/// to fill the channel buffer, or under sustained back-pressure.
 fn poll_telemetry(
     receiver: &mut broadcast::Receiver<ElectricalComponentTelemetry>,
     component_id: u64,
@@ -47,7 +48,9 @@ fn poll_telemetry(
             Ok(data) => return Some(data),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty) => return None,
             Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
-                tracing::debug!("resampler receiver lagged {n} samples for cid={component_id}");
+                tracing::warn!(
+                    "resampler receiver lagged {n} samples for cid={component_id}; samples discarded"
+                );
             }
             Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return None,
         }
