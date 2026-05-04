@@ -1,9 +1,5 @@
 # Frequenz Microgrid Release Notes
 
-## Summary
-
-<!-- Here goes a general summary of what this release is about -->
-
 ## Upgrading
 
 - The `ChronoError` variant has been removed from the `ErrorKind` enum. This is a breaking change for code that pattern-matches on `ErrorKind`. The variant had no remaining constructors; the time-delta arithmetic that previously surfaced it is now performed inside the new `WallClockTimer`, and resampling-interval misconfiguration is reported as `InvalidConfig`.
@@ -39,7 +35,3 @@
   - `power_bounds()` — a `broadcast::Receiver<Vec<Bounds<Power>>>` tracking the pool's power bounds.
 
 - The logical meter now survives NTP-style wall-clock jumps. A new internal `WallClockTimer` schedules resampler ticks against the wall clock while sleeping on tokio's monotonic clock; when the two diverge by more than one interval in either direction, the timer realigns and the actor rebuilds its inner resamplers against the new clock frame. Subscribers see one `None` sample at the resync tick (preserving the every-interval cadence) and real values resume on the next tick. Note: a backward jump produces a sample timestamped in the past relative to the previous one — consumers that assume monotonically increasing `Sample` timestamps must handle this.
-
-## Bug Fixes
-
-<!-- Here goes notable bug fixes that are worth a special mention or explanation -->
