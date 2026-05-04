@@ -380,8 +380,8 @@ mod tests {
     /// single endpoint merge into one.
     #[test]
     fn squash_merges_touching_endpoints() {
-        let a = vec![Bounds::new(Some(1.0), Some(5.0))];
-        let b = vec![Bounds::new(Some(5.0), Some(10.0))];
+        let a = [Bounds::new(Some(1.0), Some(5.0))];
+        let b = [Bounds::new(Some(5.0), Some(10.0))];
         // `intersect_bounds_sets` runs the pairwise intersect through squash.
         let result = intersect_bounds_sets(
             &[Bounds::new(Some(0.0), Some(20.0))],

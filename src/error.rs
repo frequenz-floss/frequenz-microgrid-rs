@@ -56,10 +56,10 @@ ErrorKind!(
     (ComponentGraphError, component_graph_error),
     (ComponentDataError, component_data_error),
     (ConnectionFailure, connection_failure),
-    (ChronoError, chrono_error),
     (DroppedUnusedFormulas, dropped_unused_formulas),
     (FormulaEngineError, formula_engine_error),
     (InvalidComponent, invalid_component),
+    (InvalidConfig, invalid_config),
     (Internal, internal),
     (APIServerError, api_server_error),
 );

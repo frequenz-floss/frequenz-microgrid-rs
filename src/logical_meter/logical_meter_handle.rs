@@ -30,6 +30,14 @@ impl LogicalMeterHandle {
         client: MicrogridClientHandle,
         config: LogicalMeterConfig,
     ) -> Result<Self, Error> {
+        Self::try_new_with_clock(client, config, crate::wall_clock_timer::SystemClock).await
+    }
+
+    pub(crate) async fn try_new_with_clock<C: crate::wall_clock_timer::Clock + 'static>(
+        client: MicrogridClientHandle,
+        config: LogicalMeterConfig,
+        clock: C,
+    ) -> Result<Self, Error> {
         let (sender, receiver) = mpsc::channel(8);
         let graph = ComponentGraph::try_new(
             client.list_electrical_components(vec![], vec![]).await?,
@@ -47,7 +55,7 @@ impl LogicalMeterHandle {
             Error::component_graph_error(format!("Unable to create a component graph: {e}"))
         })?;
 
-        let logical_meter = LogicalMeterActor::try_new(receiver, client, config)?;
+        let logical_meter = LogicalMeterActor::try_new(receiver, client, config, clock)?;
 
         tokio::task::spawn(async move {
             logical_meter.run().await;
@@ -233,9 +241,11 @@ mod tests {
             ]),
         );
 
-        LogicalMeterHandle::try_new(
+        let clock = api_client.clock();
+        LogicalMeterHandle::try_new_with_clock(
             MicrogridClientHandle::new_from_client(api_client),
             config.unwrap_or_else(|| LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap())),
+            clock,
         )
         .await
         .unwrap()
@@ -557,7 +567,7 @@ mod tests {
     ) {
         let values = samples
             .iter()
-            .map(|res| res.value().map(|v| extractor(v)))
+            .map(|res| res.value().map(&extractor))
             .collect::<Vec<_>>();
 
         samples.as_slice().windows(2).for_each(|w| {

@@ -34,5 +34,7 @@ pub use logical_meter::{Formula, FormulaSubscriber, LogicalMeterConfig, LogicalM
 
 pub mod metric;
 
+pub(crate) mod wall_clock_timer;
+
 mod microgrid;
 pub use microgrid::{BatteryPool, Microgrid};
