@@ -251,26 +251,28 @@ impl MockComponent {
 
 impl MockMicrogridApiClient {
     /// Creates a new `MockMicrogridApiClient` with an internally-owned
-    /// [`TokioSyncedClock`]. Sleeps until the start of the next second
-    /// before anchoring the clock so that telemetry timestamps line up with
-    /// the resampler's interval boundaries, giving reproducible resampled
-    /// values in tests.
+    /// [`TokioSyncedClock`] anchored to the next whole-second boundary, so
+    /// telemetry timestamps line up with the resampler's interval boundaries
+    /// and tests get reproducible resampled values.
     pub fn new(graph: MockComponent) -> Self {
-        let now = SystemTime::now();
-        let since_epoch = now
+        let since_epoch = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default();
         let next_sec_secs = since_epoch.as_secs() + 1;
-        let next_sec = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(next_sec_secs);
-        std::thread::sleep(next_sec.duration_since(now).unwrap_or_default());
 
-        // Anchor the clock to `next_sec` exactly (not `Utc::now()` post-sleep,
-        // which would overshoot by tens of µs and cause samples emitted at
-        // nominal interval boundaries to land just past the resampler
-        // window's right edge).
+        // The anchor is the wall-clock value `TokioSyncedClock` will report
+        // at the current tokio instant; it doesn't have to match real time,
+        // so there's no need to sleep until the boundary actually arrives.
         let anchor = chrono::DateTime::<chrono::Utc>::from_timestamp(next_sec_secs as i64, 0)
             .unwrap_or_else(chrono::Utc::now);
         Self::new_with_clock(graph, TokioSyncedClock::with_wall_anchor(anchor))
+    }
+
+    /// Returns a clone of the clock driving telemetry timestamps. Pass it
+    /// to [`LogicalMeterHandle::try_new_with_clock`] so the resampler and
+    /// the mock observe the same wall-clock value at every tokio instant.
+    pub fn clock(&self) -> TokioSyncedClock {
+        self.clock.clone()
     }
 
     /// Creates a `MockMicrogridApiClient` whose telemetry timestamps come

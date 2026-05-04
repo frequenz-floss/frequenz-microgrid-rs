@@ -241,10 +241,11 @@ mod tests {
             ]),
         );
 
+        let clock = api_client.clock();
         LogicalMeterHandle::try_new_with_clock(
             MicrogridClientHandle::new_from_client(api_client),
             config.unwrap_or_else(|| LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap())),
-            crate::client::test_utils::TokioSyncedClock::new(),
+            clock,
         )
         .await
         .unwrap()
