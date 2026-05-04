@@ -54,16 +54,21 @@ pub struct MockMicrogridApiClient {
     clock: TokioSyncedClock,
 }
 
+/// One row per emitted telemetry frame: `(power, reactive_power, voltage,
+/// current)`. Each field is independently optional so individual metrics
+/// can be omitted from a frame.
+pub type MockMetricRow = (
+    Option<Power>,
+    Option<ReactivePower>,
+    Option<Voltage>,
+    Option<Current>,
+);
+
 #[derive(Default, Debug, Clone)]
 pub struct MockComponent {
     pub component: ElectricalComponent,
     pub children: Vec<MockComponent>,
-    pub metrics: Vec<(
-        Option<Power>,
-        Option<ReactivePower>,
-        Option<Voltage>,
-        Option<Current>,
-    )>,
+    pub metrics: Vec<MockMetricRow>,
     /// Overrides the state code reported in each telemetry sample. `None`
     /// defaults to `Ready`.
     state_code: Option<ElectricalComponentStateCode>,
@@ -173,7 +178,7 @@ impl MockComponent {
         if self.component.category == ElectricalComponentCategory::Unspecified as i32 {
             panic!("Cannot add children to a hidden load component");
         }
-        self.children.extend(children.into_iter());
+        self.children.extend(children);
         self
     }
 
@@ -356,134 +361,134 @@ impl MicrogridApiClient for MockMicrogridApiClient {
             .find(|c| c.component.id == comp_id)
             .cloned();
 
-        if let Some(component) = component {
-            if !component.metrics.is_empty() {
-                let metrics = component.metrics.clone();
-                let state_code = component
-                    .state_code
-                    .unwrap_or(ElectricalComponentStateCode::Ready);
-                let silence_after_metrics = component.silence_after_metrics;
-                let clock = self.clock.clone();
-                tokio::spawn(async move {
-                    let dur = std::time::Duration::from_millis(200);
-                    let mut interval = tokio::time::interval(dur);
-                    let offset = chrono::TimeDelta::from_std(dur).unwrap_or_default();
+        if let Some(component) = component
+            && !component.metrics.is_empty()
+        {
+            let metrics = component.metrics.clone();
+            let state_code = component
+                .state_code
+                .unwrap_or(ElectricalComponentStateCode::Ready);
+            let silence_after_metrics = component.silence_after_metrics;
+            let clock = self.clock.clone();
+            tokio::spawn(async move {
+                let dur = std::time::Duration::from_millis(200);
+                let mut interval = tokio::time::interval(dur);
+                let offset = chrono::TimeDelta::from_std(dur).unwrap_or_default();
 
-                    for metrics in metrics.iter() {
-                        interval.tick().await;
-                        // `tokio::time::interval`'s first tick fires
-                        // immediately, so `clock.wall_now()` is still the
-                        // anchor here. Add one interval so the first sample
-                        // is timestamped at `anchor + dur`, matching the
-                        // resampler's first interval boundary.
-                        let wall = clock.wall_now() + offset;
-                        let sys_delta =
-                            wall.signed_duration_since(chrono::DateTime::<chrono::Utc>::UNIX_EPOCH);
-                        let next_ts = SystemTime::UNIX_EPOCH
-                            + std::time::Duration::from_nanos(
-                                sys_delta.num_nanoseconds().unwrap_or(0).max(0) as u64,
-                            );
-                        let duration_since_epoch =
-                            next_ts.duration_since(SystemTime::UNIX_EPOCH).unwrap();
-                        let ts = Some(protobuf::Timestamp {
-                            seconds: duration_since_epoch.as_secs() as i64,
-                            nanos: duration_since_epoch.subsec_nanos() as i32,
-                        });
-                        let mut metric_samples = vec![];
-                        if let Some(power) = metrics.0 {
-                            metric_samples.push(MetricSample {
-                                sample_time: ts.clone(),
-                                metric: Metric::AcPowerActive as i32,
-                                value: Some(MetricValueVariant {
-                                    metric_value_variant: Some(
-                                        metric_value_variant::MetricValueVariant::SimpleMetric(
-                                            SimpleMetricValue {
-                                                value: power.as_watts(),
-                                            },
-                                        ),
+                for metrics in metrics.iter() {
+                    interval.tick().await;
+                    // `tokio::time::interval`'s first tick fires
+                    // immediately, so `clock.wall_now()` is still the
+                    // anchor here. Add one interval so the first sample
+                    // is timestamped at `anchor + dur`, matching the
+                    // resampler's first interval boundary.
+                    let wall = clock.wall_now() + offset;
+                    let sys_delta =
+                        wall.signed_duration_since(chrono::DateTime::<chrono::Utc>::UNIX_EPOCH);
+                    let next_ts = SystemTime::UNIX_EPOCH
+                        + std::time::Duration::from_nanos(
+                            sys_delta.num_nanoseconds().unwrap_or(0).max(0) as u64,
+                        );
+                    let duration_since_epoch =
+                        next_ts.duration_since(SystemTime::UNIX_EPOCH).unwrap();
+                    let ts = Some(protobuf::Timestamp {
+                        seconds: duration_since_epoch.as_secs() as i64,
+                        nanos: duration_since_epoch.subsec_nanos() as i32,
+                    });
+                    let mut metric_samples = vec![];
+                    if let Some(power) = metrics.0 {
+                        metric_samples.push(MetricSample {
+                            sample_time: ts,
+                            metric: Metric::AcPowerActive as i32,
+                            value: Some(MetricValueVariant {
+                                metric_value_variant: Some(
+                                    metric_value_variant::MetricValueVariant::SimpleMetric(
+                                        SimpleMetricValue {
+                                            value: power.as_watts(),
+                                        },
                                     ),
-                                }),
-                                bounds: vec![],
-                                connection: None,
-                            });
-                        }
-                        if let Some(reactive_power) = metrics.1 {
-                            metric_samples.push(MetricSample {
-                                sample_time: ts.clone(),
-                                metric: Metric::AcPowerReactive as i32,
-                                value: Some(MetricValueVariant {
-                                    metric_value_variant: Some(
-                                        metric_value_variant::MetricValueVariant::SimpleMetric(
-                                            SimpleMetricValue {
-                                                value: reactive_power.as_volt_amperes_reactive(),
-                                            },
-                                        ),
-                                    ),
-                                }),
-                                bounds: vec![],
-                                connection: None,
-                            });
-                        }
-                        if let Some(voltage) = metrics.2 {
-                            metric_samples.push(MetricSample {
-                                sample_time: ts.clone(),
-                                metric: Metric::AcVoltage as i32,
-                                value: Some(MetricValueVariant {
-                                    metric_value_variant: Some(
-                                        metric_value_variant::MetricValueVariant::SimpleMetric(
-                                            SimpleMetricValue {
-                                                value: voltage.as_volts(),
-                                            },
-                                        ),
-                                    ),
-                                }),
-                                bounds: vec![],
-                                connection: None,
-                            });
-                        }
-                        if let Some(current) = metrics.3 {
-                            metric_samples.push(MetricSample {
-                                sample_time: ts.clone(),
-                                metric: Metric::AcCurrent as i32,
-                                value: Some(MetricValueVariant {
-                                    metric_value_variant: Some(
-                                        metric_value_variant::MetricValueVariant::SimpleMetric(
-                                            SimpleMetricValue {
-                                                value: current.as_amperes(),
-                                            },
-                                        ),
-                                    ),
-                                }),
-                                bounds: vec![],
-                                connection: None,
-                            });
-                        }
-
-                        let resp = ReceiveElectricalComponentTelemetryStreamResponse {
-                            telemetry: Some(ElectricalComponentTelemetry {
-                                electrical_component_id: comp_id,
-                                metric_samples,
-                                // TODO: support sending errors
-                                state_snapshots: vec![ElectricalComponentStateSnapshot {
-                                    origin_time: ts,
-                                    states: vec![state_code as i32],
-                                    warnings: vec![],
-                                    errors: vec![],
-                                }],
+                                ),
                             }),
-                        };
-                        if tx.send(Ok(resp)).await.is_err() {
-                            break;
-                        }
+                            bounds: vec![],
+                            connection: None,
+                        });
                     }
-                    if silence_after_metrics {
-                        // Hold the sender open indefinitely so the client
-                        // actor doesn't see the stream end and reconnect.
-                        let _keep_open = tx;
-                        std::future::pending::<()>().await;
+                    if let Some(reactive_power) = metrics.1 {
+                        metric_samples.push(MetricSample {
+                            sample_time: ts,
+                            metric: Metric::AcPowerReactive as i32,
+                            value: Some(MetricValueVariant {
+                                metric_value_variant: Some(
+                                    metric_value_variant::MetricValueVariant::SimpleMetric(
+                                        SimpleMetricValue {
+                                            value: reactive_power.as_volt_amperes_reactive(),
+                                        },
+                                    ),
+                                ),
+                            }),
+                            bounds: vec![],
+                            connection: None,
+                        });
                     }
-                });
-            }
+                    if let Some(voltage) = metrics.2 {
+                        metric_samples.push(MetricSample {
+                            sample_time: ts,
+                            metric: Metric::AcVoltage as i32,
+                            value: Some(MetricValueVariant {
+                                metric_value_variant: Some(
+                                    metric_value_variant::MetricValueVariant::SimpleMetric(
+                                        SimpleMetricValue {
+                                            value: voltage.as_volts(),
+                                        },
+                                    ),
+                                ),
+                            }),
+                            bounds: vec![],
+                            connection: None,
+                        });
+                    }
+                    if let Some(current) = metrics.3 {
+                        metric_samples.push(MetricSample {
+                            sample_time: ts,
+                            metric: Metric::AcCurrent as i32,
+                            value: Some(MetricValueVariant {
+                                metric_value_variant: Some(
+                                    metric_value_variant::MetricValueVariant::SimpleMetric(
+                                        SimpleMetricValue {
+                                            value: current.as_amperes(),
+                                        },
+                                    ),
+                                ),
+                            }),
+                            bounds: vec![],
+                            connection: None,
+                        });
+                    }
+
+                    let resp = ReceiveElectricalComponentTelemetryStreamResponse {
+                        telemetry: Some(ElectricalComponentTelemetry {
+                            electrical_component_id: comp_id,
+                            metric_samples,
+                            // TODO: support sending errors
+                            state_snapshots: vec![ElectricalComponentStateSnapshot {
+                                origin_time: ts,
+                                states: vec![state_code as i32],
+                                warnings: vec![],
+                                errors: vec![],
+                            }],
+                        }),
+                    };
+                    if tx.send(Ok(resp)).await.is_err() {
+                        break;
+                    }
+                }
+                if silence_after_metrics {
+                    // Hold the sender open indefinitely so the client
+                    // actor doesn't see the stream end and reconnect.
+                    let _keep_open = tx;
+                    std::future::pending::<()>().await;
+                }
+            });
         }
 
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);

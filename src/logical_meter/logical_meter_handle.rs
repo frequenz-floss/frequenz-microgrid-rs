@@ -567,7 +567,7 @@ mod tests {
     ) {
         let values = samples
             .iter()
-            .map(|res| res.value().map(|v| extractor(v)))
+            .map(|res| res.value().map(&extractor))
             .collect::<Vec<_>>();
 
         samples.as_slice().windows(2).for_each(|w| {

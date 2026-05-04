@@ -107,8 +107,8 @@ mod tests {
         assert_eq!(s(0.0015508), "1.551 mWh");
         assert_eq!(p(0.0015508, 5), "1.5508 mWh");
 
-        assert_eq!(s(1030.04487), "1.03 kWh");
-        assert_eq!(p(1030.04487, 1), "1 kWh");
+        assert_eq!(s(1030.0449), "1.03 kWh");
+        assert_eq!(p(1030.0449, 1), "1 kWh");
 
         assert_eq!(s(2_030_022.0), "2.03 MWh");
         assert_eq!(s(2_030_022_123.0), "2.03 GWh");
@@ -117,8 +117,8 @@ mod tests {
         assert_eq!(s(-1.558), "-1.558 Wh");
         assert_eq!(p(-1.558, 1), "-1.6 Wh");
 
-        assert_eq!(s(-1030.04487), "-1.03 kWh");
-        assert_eq!(p(-1030.04487, 1), "-1 kWh");
+        assert_eq!(s(-1030.0449), "-1.03 kWh");
+        assert_eq!(p(-1030.0449, 1), "-1 kWh");
 
         assert_eq!(s(-2_030_022.0), "-2.03 MWh");
         assert_eq!(p(-2_030_022.0, 1), "-2 MWh");

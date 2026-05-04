@@ -33,7 +33,7 @@ mod tests {
         let freq_2 = Frequency::from_megahertz(0.0012);
         assert_f32_eq(freq_2.as_hertz(), 1200.0);
 
-        let freq_2 = Frequency::from_gigahertz(0.000_0012);
+        let freq_2 = Frequency::from_gigahertz(0.000_001_2);
         assert_f32_eq(freq_2.as_hertz(), 1200.0);
 
         assert!(freq_1 < freq_2);
