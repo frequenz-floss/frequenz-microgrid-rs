@@ -34,7 +34,7 @@ impl<Q: Quantity> Bounds<Q> {
     }
 
     /// Combines two bounds as if their components were connected in parallel.
-    pub(crate) fn combine_parallel(&self, other: &Self) -> Vec<Self> {
+    pub fn combine_parallel(&self, other: &Self) -> Vec<Self> {
         if self.intersect(other).is_none() {
             return vec![self.clone(), other.clone()];
         }
@@ -67,7 +67,7 @@ impl<Q: Quantity> Bounds<Q> {
 
     /// Returns the intersection of `self` and `other`, or `None` if the
     /// intersection is empty.
-    pub(crate) fn intersect(&self, other: &Self) -> Option<Self> {
+    pub fn intersect(&self, other: &Self) -> Option<Self> {
         let lower = Self::map_or_any(Q::max, self.lower, other.lower);
         let upper = Self::map_or_any(Q::min, self.upper, other.upper);
         if let (Some(lower), Some(upper)) = (lower, upper)
@@ -80,7 +80,7 @@ impl<Q: Quantity> Bounds<Q> {
 
     /// If `self` and `other` overlap, returns the smallest single interval
     /// that contains both; otherwise returns `None`.
-    pub(crate) fn merge_if_overlapping(&self, other: &Self) -> Option<Self> {
+    pub fn merge_if_overlapping(&self, other: &Self) -> Option<Self> {
         self.intersect(other)?;
         Some(Bounds {
             lower: self.lower.and_then(|a| other.lower.map(|b| a.min(b))),
