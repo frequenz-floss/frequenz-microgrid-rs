@@ -13,6 +13,7 @@ use crate::{
 };
 use frequenz_microgrid_component_graph::{self, ComponentGraph};
 use std::collections::BTreeSet;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 use super::{LogicalMeterConfig, logical_meter_actor::LogicalMeterActor};
@@ -26,6 +27,11 @@ pub struct LogicalMeterHandle {
 
 impl LogicalMeterHandle {
     /// Creates a new LogicalMeter instance.
+    ///
+    /// Listing the components and connections from the API and building the
+    /// component graph is retried indefinitely with a 3 second backoff, so
+    /// this call blocks until the server is reachable and returns data that
+    /// forms a valid graph.  Returns an error only if `config` is invalid.
     pub async fn try_new(
         client: MicrogridClientHandle,
         config: LogicalMeterConfig,
@@ -39,21 +45,19 @@ impl LogicalMeterHandle {
         clock: C,
     ) -> Result<Self, Error> {
         let (sender, receiver) = mpsc::channel(8);
-        let graph = ComponentGraph::try_new(
-            client.list_electrical_components(vec![], vec![]).await?,
-            client
-                .list_electrical_component_connections(vec![], vec![])
-                .await?,
-            frequenz_microgrid_component_graph::ComponentGraphConfig {
-                allow_component_validation_failures: true,
-                allow_unconnected_components: true,
-                allow_unspecified_inverters: false,
-                disable_fallback_components: false,
-            },
-        )
-        .map_err(|e| {
-            Error::component_graph_error(format!("Unable to create a component graph: {e}"))
-        })?;
+        const RETRY_DELAY: Duration = Duration::from_secs(3);
+        let graph = loop {
+            match build_component_graph(&client).await {
+                Ok(g) => break g,
+                Err(reason) => {
+                    tracing::warn!(
+                        "Microgrid logical-meter setup failed, retrying in {:?}: {reason}",
+                        RETRY_DELAY
+                    );
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+            }
+        };
 
         let logical_meter = LogicalMeterActor::try_new(receiver, client, config, clock)?;
 
@@ -172,6 +176,33 @@ impl LogicalMeterHandle {
     pub fn graph(&self) -> &ComponentGraph<ElectricalComponent, ElectricalComponentConnection> {
         &self.graph
     }
+}
+
+/// Lists the components and connections from the API and builds the
+/// component graph.  Errors from each step are stringified with a prefix so
+/// the retry loop can log a concise reason.
+async fn build_component_graph(
+    client: &MicrogridClientHandle,
+) -> Result<ComponentGraph<ElectricalComponent, ElectricalComponentConnection>, String> {
+    let components = client
+        .list_electrical_components(vec![], vec![])
+        .await
+        .map_err(|e| format!("fetching components failed: {e}"))?;
+    let connections = client
+        .list_electrical_component_connections(vec![], vec![])
+        .await
+        .map_err(|e| format!("fetching component connections failed: {e}"))?;
+    ComponentGraph::try_new(
+        components,
+        connections,
+        frequenz_microgrid_component_graph::ComponentGraphConfig {
+            allow_component_validation_failures: true,
+            allow_unconnected_components: true,
+            allow_unspecified_inverters: false,
+            disable_fallback_components: false,
+        },
+    )
+    .map_err(|e| format!("building component graph failed: {e}"))
 }
 
 #[cfg(test)]
