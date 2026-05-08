@@ -64,8 +64,7 @@ ErrorKind!(
     (APIServerError, api_server_error),
 );
 
-/// An error that can occur during the creation or traversal of a
-/// [ComponentGraph][crate::ComponentGraph].
+/// An error that occurred in `frequenz_microgrid`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Error {
     kind: ErrorKind,
