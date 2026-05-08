@@ -8,7 +8,7 @@
 
 use chrono::TimeDelta;
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tonic::transport::Channel;
+use tonic::transport::{Channel, Endpoint};
 
 use crate::{
     Bounds, Error,
@@ -36,20 +36,25 @@ pub struct MicrogridClientHandle {
 }
 
 impl MicrogridClientHandle {
-    /// Creates a new `MicrogridClientHandle` that connects to the microgrid API
-    /// at the specified URL.
+    /// Creates a new `MicrogridClientHandle` for the microgrid API at the
+    /// specified URL.
+    ///
+    /// The connection is established lazily on the first RPC, so this method
+    /// succeeds even when no server is reachable yet.  Per-call errors will
+    /// surface from the individual RPC methods, and the actor's per-stream
+    /// retry loop will keep attempting to reconnect telemetry streams.
+    ///
+    /// Returns an error only if `url` is not a valid endpoint URL.
     pub async fn try_new(url: impl Into<String>) -> Result<Self, Error> {
-        let client = match MicrogridClient::<Channel>::connect(url.into()).await {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::error!("Could not connect to server: {e}");
-                return Err(Error::connection_failure(format!(
-                    "Could not connect to server: {e}"
-                )));
-            }
-        };
-
-        Ok(Self::new_from_client(client))
+        let url = url.into();
+        let channel = Endpoint::from_shared(url.clone())
+            .map_err(|e| {
+                Error::connection_failure(format!("Invalid microgrid API URL {url}: {e}"))
+            })?
+            .connect_lazy();
+        Ok(Self::new_from_client(MicrogridClient::<Channel>::new(
+            channel,
+        )))
     }
 
     pub fn new_from_client(client: impl MicrogridApiClient) -> Self {

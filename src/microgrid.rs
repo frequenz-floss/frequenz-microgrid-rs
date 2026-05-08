@@ -21,8 +21,11 @@ impl Microgrid {
     /// Creates a new `Microgrid` instance with the given microgrid API URL and
     /// logical meter configuration.
     ///
-    /// Returns an error if the URL is unreachable, or if the component graph
-    /// cannot be created with the given configuration.
+    /// The microgrid API connection is established lazily and connection or
+    /// component-graph build errors during setup are retried indefinitely, so
+    /// this call blocks until the server is reachable and returns valid data.
+    /// Returns an error only if the URL is malformed or if the provided
+    /// logical meter configuration is invalid.
     pub async fn try_new(
         url: impl Into<String>,
         config: LogicalMeterConfig,
