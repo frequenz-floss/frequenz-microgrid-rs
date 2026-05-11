@@ -11,7 +11,7 @@ use crate::{
     error::Error,
     metric,
 };
-use frequenz_microgrid_component_graph::{self, ComponentGraph};
+use frequenz_microgrid_component_graph::{self, ComponentGraph, ComponentGraphConfig};
 use std::collections::BTreeSet;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -47,7 +47,7 @@ impl LogicalMeterHandle {
         let (sender, receiver) = mpsc::channel(8);
         const RETRY_DELAY: Duration = Duration::from_secs(3);
         let graph = loop {
-            match build_component_graph(&client).await {
+            match build_component_graph(&client, &config.component_graph_config).await {
                 Ok(g) => break g,
                 Err(reason) => {
                     tracing::warn!(
@@ -183,6 +183,7 @@ impl LogicalMeterHandle {
 /// the retry loop can log a concise reason.
 async fn build_component_graph(
     client: &MicrogridClientHandle,
+    config: &ComponentGraphConfig,
 ) -> Result<ComponentGraph<ElectricalComponent, ElectricalComponentConnection>, String> {
     let components = client
         .list_electrical_components(vec![], vec![])
@@ -192,17 +193,8 @@ async fn build_component_graph(
         .list_electrical_component_connections(vec![], vec![])
         .await
         .map_err(|e| format!("fetching component connections failed: {e}"))?;
-    ComponentGraph::try_new(
-        components,
-        connections,
-        frequenz_microgrid_component_graph::ComponentGraphConfig {
-            allow_component_validation_failures: true,
-            allow_unconnected_components: true,
-            allow_unspecified_inverters: false,
-            disable_fallback_components: false,
-        },
-    )
-    .map_err(|e| format!("building component graph failed: {e}"))
+    ComponentGraph::try_new(components, connections, config.clone())
+        .map_err(|e| format!("building component graph failed: {e}"))
 }
 
 #[cfg(test)]
@@ -210,6 +202,8 @@ mod tests {
     use chrono::TimeDelta;
     use frequenz_resampling::ResamplingFunction;
     use tokio_stream::{StreamExt, wrappers::BroadcastStream};
+
+    use frequenz_microgrid_component_graph::ComponentGraphConfig;
 
     use crate::{
         LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle, Sample,
@@ -284,7 +278,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_formula_display() {
-        let lm = new_logical_meter_handle(None).await;
+        let lm = new_logical_meter_handle(Some(
+            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap())
+                .with_component_graph_config(
+                    ComponentGraphConfig::builder()
+                        .prefer_meters_in_component_formulas(false)
+                        .include_phantom_loads_in_consumer_formula(true)
+                        .build(),
+                ),
+        ))
+        .await;
 
         let formula = lm.grid::<crate::metric::AcPowerActive>().unwrap();
         assert_eq!(formula.to_string(), "METRIC_AC_POWER_ACTIVE::(#2)");
@@ -554,10 +557,17 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_consumer_current_formula() {
-        let formula = new_logical_meter_handle(None)
-            .await
-            .consumer::<crate::metric::AcCurrent>()
-            .unwrap();
+        let formula = new_logical_meter_handle(Some(
+            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap())
+                .with_component_graph_config(
+                    ComponentGraphConfig::builder()
+                        .include_phantom_loads_in_consumer_formula(true)
+                        .build(),
+                ),
+        ))
+        .await
+        .consumer::<crate::metric::AcCurrent>()
+        .unwrap();
 
         let samples = fetch_samples(formula, 10).await;
         check_samples(

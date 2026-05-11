@@ -131,8 +131,8 @@ impl MicrogridClientHandle {
     ///
     /// The direction of a connection is always away from the grid endpoint,
     /// i.e. aligned with the direction of positive current according to the
-    /// passive sign convention:
-    /// https://en.wikipedia.org/wiki/Passive_sign_convention
+    /// [passive sign
+    /// convention](https://en.wikipedia.org/wiki/Passive_sign_convention).
     ///
     /// If provided, the `start` and `end` filters have an `AND` relationship
     /// between each other, meaning that they are applied serially, but an `OR`

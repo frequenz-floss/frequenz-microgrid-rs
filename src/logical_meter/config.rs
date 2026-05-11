@@ -6,6 +6,7 @@
 use crate::Sample;
 use crate::client::proto::common::metrics::Metric;
 use chrono::TimeDelta;
+use frequenz_microgrid_component_graph::ComponentGraphConfig;
 use frequenz_resampling::ResamplingFunction;
 use std::collections::HashMap;
 
@@ -19,6 +20,11 @@ pub struct LogicalMeterConfig {
     /// The maximum age of samples to be considered for resampling, in number of
     /// intervals.
     pub(crate) max_age_in_intervals: u32,
+    /// Configuration forwarded to the underlying [`ComponentGraph`][cg]. Defaults
+    /// to [`ComponentGraphConfig::default()`].
+    ///
+    /// [cg]: frequenz_microgrid_component_graph::ComponentGraph
+    pub(crate) component_graph_config: ComponentGraphConfig,
 }
 
 impl LogicalMeterConfig {
@@ -29,6 +35,7 @@ impl LogicalMeterConfig {
             resampling_function: None,
             resampling_overrides: HashMap::new(),
             max_age_in_intervals: 3,
+            component_graph_config: ComponentGraphConfig::default(),
         }
     }
 
@@ -70,6 +77,18 @@ impl LogicalMeterConfig {
     pub fn with_max_age_in_intervals(mut self, max_age_in_intervals: u32) -> Self {
         // Ensure that the maximum age is at least 1 interval.
         self.max_age_in_intervals = max_age_in_intervals.max(1);
+        self
+    }
+
+    /// Sets the [`ComponentGraphConfig`] forwarded to the underlying graph
+    /// when [`LogicalMeterHandle::try_new`][lm] (and therefore
+    /// [`Microgrid::try_new`][mg]) builds it. If not set, the graph crate's
+    /// `Default::default()` is used.
+    ///
+    /// [lm]: crate::LogicalMeterHandle::try_new
+    /// [mg]: crate::Microgrid::try_new
+    pub fn with_component_graph_config(mut self, config: ComponentGraphConfig) -> Self {
+        self.component_graph_config = config;
         self
     }
 }
