@@ -38,3 +38,6 @@ pub(crate) mod wall_clock_timer;
 
 mod microgrid;
 pub use microgrid::{BatteryPool, Microgrid};
+
+#[cfg(any(test, feature = "test-utils"))]
+pub use client::test_utils;
