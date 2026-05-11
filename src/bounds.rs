@@ -17,6 +17,18 @@ pub struct Bounds<Q: Quantity> {
     upper: Option<Q>,
 }
 
+impl<Q: Quantity> std::fmt::Display for Bounds<Q> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "[{}, {}]",
+            self.lower
+                .map_or_else(|| String::from("None"), |x| x.to_string()),
+            self.upper
+                .map_or_else(|| String::from("None"), |x| x.to_string()),
+        ))
+    }
+}
+
 impl<Q: Quantity> Bounds<Q> {
     /// Creates a new `Bounds` with the given lower and upper bounds.
     pub fn new(lower: Option<Q>, upper: Option<Q>) -> Self {
@@ -235,6 +247,7 @@ fn squash_bounds_sets<Q: Quantity>(mut input: Vec<Bounds<Q>>) -> Vec<Bounds<Q>> 
 #[cfg(test)]
 mod tests {
     use super::{Bounds, combine_parallel_sets, intersect_bounds_sets};
+    use crate::quantity::Power;
 
     #[test]
     fn test_bounds_addition() {
@@ -397,5 +410,38 @@ mod tests {
         let a = Bounds::<f32>::new(None, None);
         let b = Bounds::<f32>::new(None, None);
         assert_eq!(a.combine_parallel(&b), vec![Bounds::new(None, None)]);
+    }
+
+    #[test]
+    fn display_renders_both_bounds() {
+        let b = Bounds::new(Some(-5.0_f32), Some(5.0_f32));
+        assert_eq!(b.to_string(), "[-5, 5]");
+    }
+
+    #[test]
+    fn display_renders_missing_lower_as_none() {
+        let b = Bounds::new(None, Some(5.0_f32));
+        assert_eq!(b.to_string(), "[None, 5]");
+    }
+
+    #[test]
+    fn display_renders_missing_upper_as_none() {
+        let b = Bounds::new(Some(-5.0_f32), None);
+        assert_eq!(b.to_string(), "[-5, None]");
+    }
+
+    #[test]
+    fn display_renders_fully_unbounded_as_none_none() {
+        let b = Bounds::<f32>::new(None, None);
+        assert_eq!(b.to_string(), "[None, None]");
+    }
+
+    #[test]
+    fn display_uses_inner_quantity_formatting() {
+        let b = Bounds::new(
+            Some(Power::from_kilowatts(-1.0)),
+            Some(Power::from_kilowatts(2.0)),
+        );
+        assert_eq!(b.to_string(), "[-1 kW, 2 kW]");
     }
 }
