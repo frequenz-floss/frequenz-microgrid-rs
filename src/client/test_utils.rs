@@ -6,25 +6,26 @@
 mod tokio_synced_clock;
 pub use tokio_synced_clock::TokioSyncedClock;
 
+use std::sync::Mutex;
 use std::{sync::Arc, time::SystemTime};
-
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Response;
 
+use super::MicrogridApiClient;
 use crate::wall_clock_timer::Clock as _;
 use crate::{
     client::proto::{
         common::{
             metrics::{
-                Bounds, Metric, MetricSample, MetricValueVariant, SimpleMetricValue, metric_value_variant,
+                Bounds, Metric, MetricSample, MetricValueVariant, SimpleMetricValue,
+                metric_value_variant,
             },
             microgrid::electrical_components::{
                 ElectricalComponent, ElectricalComponentCategory,
                 ElectricalComponentCategorySpecificInfo, ElectricalComponentConnection,
                 ElectricalComponentStateCode, ElectricalComponentStateSnapshot,
-                ElectricalComponentTelemetry, Inverter, InverterType,
+                ElectricalComponentTelemetry, Inverter, InverterType, MetricConfigBounds,
                 electrical_component_category_specific_info::Kind,
-                MetricConfigBounds,
             },
         },
         google::protobuf,
@@ -38,7 +39,6 @@ use crate::{
     },
     quantity::{Current, Power, ReactivePower, Voltage},
 };
-use super::MicrogridApiClient;
 
 /// A mock implementation of the `MicrogridApiClient` trait for testing purposes.
 ///
@@ -52,6 +52,7 @@ pub struct MockMicrogridApiClient {
     /// share a clone with [`LogicalMeterActor`], and pass another in via
     /// [`MockMicrogridApiClient::new_with_clock`].
     clock: TokioSyncedClock,
+    pub augment_bounds_calls: Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>>,
 }
 
 /// One row per emitted telemetry frame: `(power, reactive_power, voltage,
@@ -182,13 +183,18 @@ impl MockComponent {
         self
     }
 
-    pub fn add_component_bounds(mut self, metric: i32, lower: Option<f32>, upper: Option<f32>) -> Self {
-        self.component.metric_config_bounds.push(
-            MetricConfigBounds {
+    pub fn add_component_bounds(
+        mut self,
+        metric: i32,
+        lower: Option<f32>,
+        upper: Option<f32>,
+    ) -> Self {
+        self.component
+            .metric_config_bounds
+            .push(MetricConfigBounds {
                 metric,
-                config_bounds: Some(Bounds {lower, upper}),
-            }
-        );
+                config_bounds: Some(Bounds { lower, upper }),
+            });
         self
     }
 
@@ -298,6 +304,7 @@ impl MockMicrogridApiClient {
             components: vec![],
             connections: vec![],
             clock,
+            augment_bounds_calls: Arc::new(Mutex::new(Vec::new())),
         };
 
         fn traverse(node: &MockComponent, client: &mut MockMicrogridApiClient) {
@@ -314,6 +321,13 @@ impl MockMicrogridApiClient {
         traverse(&graph, &mut this_client);
 
         this_client
+    }
+
+    /// Return a handle to captured augment bounds requests.
+    pub fn augment_bounds_calls_handle(
+        &self,
+    ) -> Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>> {
+        self.augment_bounds_calls.clone()
     }
 }
 
@@ -510,7 +524,13 @@ impl MicrogridApiClient for MockMicrogridApiClient {
         _request: impl tonic::IntoRequest<AugmentElectricalComponentBoundsRequest> + Send,
     ) -> std::result::Result<tonic::Response<AugmentElectricalComponentBoundsResponse>, tonic::Status>
     {
-        unimplemented!()
+        // Capture calls for tests
+        let req = _request.into_request().into_inner();
+        self.augment_bounds_calls.lock().unwrap().push(req);
+
+        Ok(Response::new(AugmentElectricalComponentBoundsResponse {
+            valid_until_time: None,
+        }))
     }
 }
 
