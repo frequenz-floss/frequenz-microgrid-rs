@@ -18,5 +18,6 @@ pub use proto::common::microgrid::electrical_components::{
     ElectricalComponent, ElectricalComponentCategory,
 };
 
-#[cfg(test)]
-pub(crate) mod test_utils;
+#[cfg(any(test, feature = "test-utils"))]
+#[expect(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
+pub mod test_utils;
