@@ -22,6 +22,10 @@ use crate::{
 
 use super::config::LogicalMeterConfig;
 
+/// Capacity of each per-formula broadcast channel that buffers resampled
+/// output for that formula's subscribers.
+const FORMULA_STREAM_CHANNEL_CAPACITY: usize = 100;
+
 struct LogicalMeterFormula<Q: Quantity = f32> {
     formula: FormulaEngine<f32>,
     sender: broadcast::Sender<Sample<Q>>,
@@ -206,7 +210,7 @@ impl Formulas {
 
         match response_tx {
             TypedFormulaResponseSender::Power(receiver_tx) => {
-                let (sender, receiver) = broadcast::channel(100);
+                let (sender, receiver) = broadcast::channel(FORMULA_STREAM_CHANNEL_CAPACITY);
                 self.power.insert(
                     formula_key,
                     LogicalMeterFormula {
@@ -219,7 +223,7 @@ impl Formulas {
                 })?;
             }
             TypedFormulaResponseSender::Voltage(receiver_tx) => {
-                let (sender, receiver) = broadcast::channel(100);
+                let (sender, receiver) = broadcast::channel(FORMULA_STREAM_CHANNEL_CAPACITY);
                 self.voltage.insert(
                     formula_key,
                     LogicalMeterFormula {
@@ -232,7 +236,7 @@ impl Formulas {
                 })?;
             }
             TypedFormulaResponseSender::ReactivePower(receiver_tx) => {
-                let (sender, receiver) = broadcast::channel(100);
+                let (sender, receiver) = broadcast::channel(FORMULA_STREAM_CHANNEL_CAPACITY);
                 self.reactive_power.insert(
                     formula_key,
                     LogicalMeterFormula {
@@ -245,7 +249,7 @@ impl Formulas {
                 })?;
             }
             TypedFormulaResponseSender::Current(receiver_tx) => {
-                let (sender, receiver) = broadcast::channel(100);
+                let (sender, receiver) = broadcast::channel(FORMULA_STREAM_CHANNEL_CAPACITY);
                 self.current.insert(
                     formula_key,
                     LogicalMeterFormula {
