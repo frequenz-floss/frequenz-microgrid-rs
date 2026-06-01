@@ -57,45 +57,41 @@ fn poll_telemetry(
     }
 }
 
+/// The channel back to the handle that delivers a strongly-typed formula
+/// stream of quantity `Q`.
+///
+/// Named as a type alias so the deeply-nested `oneshot` / `broadcast` /
+/// `Sample` wrapping stays readable wherever it recurs.
+type FormulaStreamSender<Q> = oneshot::Sender<broadcast::Receiver<Sample<Q>>>;
+
 /// Used to send strongly-typed formula streams from the LogicalMeterActor back
 /// to the Handle.
 pub(crate) enum TypedFormulaResponseSender {
-    Power(oneshot::Sender<broadcast::Receiver<Sample<Power>>>),
-    Voltage(oneshot::Sender<broadcast::Receiver<Sample<Voltage>>>),
-    ReactivePower(oneshot::Sender<broadcast::Receiver<Sample<ReactivePower>>>),
-    Current(oneshot::Sender<broadcast::Receiver<Sample<Current>>>),
+    Power(FormulaStreamSender<Power>),
+    Voltage(FormulaStreamSender<Voltage>),
+    ReactivePower(FormulaStreamSender<ReactivePower>),
+    Current(FormulaStreamSender<Current>),
 }
 
-impl<Q: Quantity + 'static> TryFrom<oneshot::Sender<broadcast::Receiver<Sample<Q>>>>
-    for TypedFormulaResponseSender
-{
+impl<Q: Quantity + 'static> TryFrom<FormulaStreamSender<Q>> for TypedFormulaResponseSender {
     type Error = Error;
 
-    fn try_from(
-        sender: oneshot::Sender<broadcast::Receiver<Sample<Q>>>,
-    ) -> Result<Self, Self::Error> {
+    fn try_from(sender: FormulaStreamSender<Q>) -> Result<Self, Self::Error> {
         let sender: Box<dyn std::any::Any + Send> = Box::new(sender);
 
-        let sender = match sender.downcast::<oneshot::Sender<broadcast::Receiver<Sample<Power>>>>()
-        {
+        let sender = match sender.downcast::<FormulaStreamSender<Power>>() {
             Ok(sender) => return Ok(TypedFormulaResponseSender::Power(*sender)),
             Err(sender) => sender,
         };
-
-        let sender =
-            match sender.downcast::<oneshot::Sender<broadcast::Receiver<Sample<Voltage>>>>() {
-                Ok(sender) => return Ok(TypedFormulaResponseSender::Voltage(*sender)),
-                Err(sender) => sender,
-            };
-
-        let sender = match sender
-            .downcast::<oneshot::Sender<broadcast::Receiver<Sample<ReactivePower>>>>()
-        {
+        let sender = match sender.downcast::<FormulaStreamSender<Voltage>>() {
+            Ok(sender) => return Ok(TypedFormulaResponseSender::Voltage(*sender)),
+            Err(sender) => sender,
+        };
+        let sender = match sender.downcast::<FormulaStreamSender<ReactivePower>>() {
             Ok(sender) => return Ok(TypedFormulaResponseSender::ReactivePower(*sender)),
             Err(sender) => sender,
         };
-
-        match sender.downcast::<oneshot::Sender<broadcast::Receiver<Sample<Current>>>>() {
+        match sender.downcast::<FormulaStreamSender<Current>>() {
             Ok(sender) => Ok(TypedFormulaResponseSender::Current(*sender)),
             _ => Err(Error::internal(format!(
                 "Can't create TypedFormulaResponseSender for `{}`",
