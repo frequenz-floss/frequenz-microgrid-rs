@@ -196,11 +196,10 @@ impl Formulas {
         metric: Metric,
         response_tx: TypedFormulaResponseSender,
     ) -> Result<HashSet<u64>, Error> {
-        let formula_key = (formula, metric);
-
-        let formula_engine = FormulaEngine::try_new(&formula_key.0)
+        let formula_engine = FormulaEngine::try_new(&formula)
             .map_err(|e| Error::formula_engine_error(format!("Failed to parse formula: {e}")))?;
         let components = formula_engine.components().clone();
+        let formula_key = (formula, metric);
 
         match response_tx {
             TypedFormulaResponseSender::Power(tx) => {
