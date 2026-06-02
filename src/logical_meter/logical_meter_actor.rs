@@ -233,6 +233,28 @@ impl Formulas {
             .send(receiver)
             .map_err(|_| Error::internal("Failed to send receiver for formula".to_string()))
     }
+
+    /// The `(component_id, metric)` resampler keys referenced by every active
+    /// formula, across all quantities.
+    fn resampler_keys(&self) -> HashSet<(u64, Metric)> {
+        let mut keys = HashSet::new();
+        Self::collect_keys(&self.power, &mut keys);
+        Self::collect_keys(&self.voltage, &mut keys);
+        Self::collect_keys(&self.reactive_power, &mut keys);
+        Self::collect_keys(&self.current, &mut keys);
+        keys
+    }
+
+    /// Adds the `(component_id, metric)` keys referenced by every formula in
+    /// `map` to `keys`.
+    fn collect_keys<Q: Quantity>(
+        map: &HashMap<(String, Metric), LogicalMeterFormula<Q>>,
+        keys: &mut HashSet<(u64, Metric)>,
+    ) {
+        for ((_, metric), formula) in map.iter() {
+            keys.extend(formula.formula.components().iter().map(|&id| (id, *metric)));
+        }
+    }
 }
 
 impl<C: Clock> LogicalMeterActor<C> {
@@ -538,19 +560,7 @@ impl<C: Clock> LogicalMeterActor<C> {
         formulas: &Formulas,
         resamplers: &mut HashMap<(u64, Metric), ComponentDataResampler>,
     ) {
-        let mut components = HashSet::<(u64, Metric)>::new();
-        for ((_, metric), formula) in formulas.power.iter() {
-            components.extend(formula.formula.components().iter().map(|&id| (id, *metric)));
-        }
-        for ((_, metric), formula) in formulas.voltage.iter() {
-            components.extend(formula.formula.components().iter().map(|&id| (id, *metric)));
-        }
-        for ((_, metric), formula) in formulas.reactive_power.iter() {
-            components.extend(formula.formula.components().iter().map(|&id| (id, *metric)));
-        }
-        for ((_, metric), formula) in formulas.current.iter() {
-            components.extend(formula.formula.components().iter().map(|&id| (id, *metric)));
-        }
+        let components = formulas.resampler_keys();
         resamplers.retain(|component_id, _| {
             if components.contains(component_id) {
                 true
