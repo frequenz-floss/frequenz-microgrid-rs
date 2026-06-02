@@ -187,9 +187,10 @@ impl Formulas {
         Ok(true)
     }
 
-    /// Starts a new formula with the given formula string, metric, and sends a receiver
-    /// back to the handle.
-    fn start_formulas(
+    /// Registers a new formula for `formula`/`metric`, storing it and sending
+    /// the receiver of its stream back to the handle. Returns the component ids
+    /// the formula references, so the caller can start their resamplers.
+    fn subscribe_new(
         &mut self,
         formula: String,
         metric: Metric,
@@ -202,61 +203,36 @@ impl Formulas {
         let components = formula_engine.components().clone();
 
         match response_tx {
-            TypedFormulaResponseSender::Power(receiver_tx) => {
-                let (sender, receiver) = broadcast::channel(FORMULA_STREAM_CHANNEL_CAPACITY);
-                self.power.insert(
-                    formula_key,
-                    LogicalMeterFormula {
-                        formula: formula_engine,
-                        sender,
-                    },
-                );
-                receiver_tx.send(receiver).map_err(|_| {
-                    Error::internal("Failed to send receiver for formula".to_string())
-                })?;
+            TypedFormulaResponseSender::Power(tx) => {
+                Self::insert_and_send(&mut self.power, formula_key, formula_engine, tx)?;
             }
-            TypedFormulaResponseSender::Voltage(receiver_tx) => {
-                let (sender, receiver) = broadcast::channel(FORMULA_STREAM_CHANNEL_CAPACITY);
-                self.voltage.insert(
-                    formula_key,
-                    LogicalMeterFormula {
-                        formula: formula_engine,
-                        sender,
-                    },
-                );
-                receiver_tx.send(receiver).map_err(|_| {
-                    Error::internal("Failed to send receiver for formula".to_string())
-                })?;
+            TypedFormulaResponseSender::Voltage(tx) => {
+                Self::insert_and_send(&mut self.voltage, formula_key, formula_engine, tx)?;
             }
-            TypedFormulaResponseSender::ReactivePower(receiver_tx) => {
-                let (sender, receiver) = broadcast::channel(FORMULA_STREAM_CHANNEL_CAPACITY);
-                self.reactive_power.insert(
-                    formula_key,
-                    LogicalMeterFormula {
-                        formula: formula_engine,
-                        sender,
-                    },
-                );
-                receiver_tx.send(receiver).map_err(|_| {
-                    Error::internal("Failed to send receiver for formula".to_string())
-                })?;
+            TypedFormulaResponseSender::ReactivePower(tx) => {
+                Self::insert_and_send(&mut self.reactive_power, formula_key, formula_engine, tx)?;
             }
-            TypedFormulaResponseSender::Current(receiver_tx) => {
-                let (sender, receiver) = broadcast::channel(FORMULA_STREAM_CHANNEL_CAPACITY);
-                self.current.insert(
-                    formula_key,
-                    LogicalMeterFormula {
-                        formula: formula_engine,
-                        sender,
-                    },
-                );
-                receiver_tx.send(receiver).map_err(|_| {
-                    Error::internal("Failed to send receiver for formula".to_string())
-                })?;
+            TypedFormulaResponseSender::Current(tx) => {
+                Self::insert_and_send(&mut self.current, formula_key, formula_engine, tx)?;
             }
         }
 
         Ok(components)
+    }
+
+    /// Stores a freshly-built formula of quantity `Q` under `key`, wiring up a
+    /// new broadcast channel and forwarding its receiver over `response_tx`.
+    fn insert_and_send<Q: Quantity>(
+        map: &mut HashMap<(String, Metric), LogicalMeterFormula<Q>>,
+        key: (String, Metric),
+        formula: FormulaEngine<f32>,
+        response_tx: FormulaStreamSender<Q>,
+    ) -> Result<(), Error> {
+        let (sender, receiver) = broadcast::channel(FORMULA_STREAM_CHANNEL_CAPACITY);
+        map.insert(key, LogicalMeterFormula { formula, sender });
+        response_tx
+            .send(receiver)
+            .map_err(|_| Error::internal("Failed to send receiver for formula".to_string()))
     }
 }
 
@@ -459,7 +435,7 @@ impl<C: Clock> LogicalMeterActor<C> {
         if all_formulas.contains_key(&formula_key) {
             all_formulas.subscribe_existing(&formula_key, receiver_tx)
         } else {
-            let components = all_formulas.start_formulas(formula, metric, receiver_tx)?;
+            let components = all_formulas.subscribe_new(formula, metric, receiver_tx)?;
             self.start_resamplers(&components, metric, resamplers).await
         }
     }
