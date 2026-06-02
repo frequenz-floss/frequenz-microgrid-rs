@@ -22,6 +22,10 @@ use crate::{
 
 use super::config::LogicalMeterConfig;
 
+/// Capacity of each per-formula broadcast channel that buffers resampled
+/// output for that formula's subscribers.
+const FORMULA_STREAM_CHANNEL_CAPACITY: usize = 100;
+
 struct LogicalMeterFormula<Q: Quantity = f32> {
     formula: FormulaEngine<f32>,
     sender: broadcast::Sender<Sample<Q>>,
@@ -57,45 +61,41 @@ fn poll_telemetry(
     }
 }
 
+/// The channel back to the handle that delivers a strongly-typed formula
+/// stream of quantity `Q`.
+///
+/// Named as a type alias so the deeply-nested `oneshot` / `broadcast` /
+/// `Sample` wrapping stays readable wherever it recurs.
+type FormulaStreamSender<Q> = oneshot::Sender<broadcast::Receiver<Sample<Q>>>;
+
 /// Used to send strongly-typed formula streams from the LogicalMeterActor back
 /// to the Handle.
 pub(crate) enum TypedFormulaResponseSender {
-    Power(oneshot::Sender<broadcast::Receiver<Sample<Power>>>),
-    Voltage(oneshot::Sender<broadcast::Receiver<Sample<Voltage>>>),
-    ReactivePower(oneshot::Sender<broadcast::Receiver<Sample<ReactivePower>>>),
-    Current(oneshot::Sender<broadcast::Receiver<Sample<Current>>>),
+    Power(FormulaStreamSender<Power>),
+    Voltage(FormulaStreamSender<Voltage>),
+    ReactivePower(FormulaStreamSender<ReactivePower>),
+    Current(FormulaStreamSender<Current>),
 }
 
-impl<Q: Quantity + 'static> TryFrom<oneshot::Sender<broadcast::Receiver<Sample<Q>>>>
-    for TypedFormulaResponseSender
-{
+impl<Q: Quantity + 'static> TryFrom<FormulaStreamSender<Q>> for TypedFormulaResponseSender {
     type Error = Error;
 
-    fn try_from(
-        sender: oneshot::Sender<broadcast::Receiver<Sample<Q>>>,
-    ) -> Result<Self, Self::Error> {
+    fn try_from(sender: FormulaStreamSender<Q>) -> Result<Self, Self::Error> {
         let sender: Box<dyn std::any::Any + Send> = Box::new(sender);
 
-        let sender = match sender.downcast::<oneshot::Sender<broadcast::Receiver<Sample<Power>>>>()
-        {
+        let sender = match sender.downcast::<FormulaStreamSender<Power>>() {
             Ok(sender) => return Ok(TypedFormulaResponseSender::Power(*sender)),
             Err(sender) => sender,
         };
-
-        let sender =
-            match sender.downcast::<oneshot::Sender<broadcast::Receiver<Sample<Voltage>>>>() {
-                Ok(sender) => return Ok(TypedFormulaResponseSender::Voltage(*sender)),
-                Err(sender) => sender,
-            };
-
-        let sender = match sender
-            .downcast::<oneshot::Sender<broadcast::Receiver<Sample<ReactivePower>>>>()
-        {
+        let sender = match sender.downcast::<FormulaStreamSender<Voltage>>() {
+            Ok(sender) => return Ok(TypedFormulaResponseSender::Voltage(*sender)),
+            Err(sender) => sender,
+        };
+        let sender = match sender.downcast::<FormulaStreamSender<ReactivePower>>() {
             Ok(sender) => return Ok(TypedFormulaResponseSender::ReactivePower(*sender)),
             Err(sender) => sender,
         };
-
-        match sender.downcast::<oneshot::Sender<broadcast::Receiver<Sample<Current>>>>() {
+        match sender.downcast::<FormulaStreamSender<Current>>() {
             Ok(sender) => Ok(TypedFormulaResponseSender::Current(*sender)),
             _ => Err(Error::internal(format!(
                 "Can't create TypedFormulaResponseSender for `{}`",
@@ -139,131 +139,121 @@ impl Formulas {
             || self.current.contains_key(key)
     }
 
-    /// Sends an existing subscription receiver for the formula with the given key.
-    fn send_subscription(
+    /// Forwards a fresh subscription receiver for an existing formula.
+    ///
+    /// Errors if `key` is registered under a different quantity than the one
+    /// requested -- the caller has already confirmed it exists in some map.
+    fn subscribe_existing(
         &self,
         key: &(String, Metric),
         receiver_tx: TypedFormulaResponseSender,
     ) -> Result<(), Error> {
-        match receiver_tx {
-            TypedFormulaResponseSender::Power(sender) => {
-                if self.power.contains_key(key) {
-                    sender
-                        .send(self.power[key].sender.subscribe())
-                        .map_err(|_| {
-                            Error::internal("Failed to send receiver for formula".to_string())
-                        })?;
-                    return Ok(());
-                }
+        let found = match receiver_tx {
+            TypedFormulaResponseSender::Power(tx) => Self::try_subscribe(&self.power, key, tx),
+            TypedFormulaResponseSender::Voltage(tx) => Self::try_subscribe(&self.voltage, key, tx),
+            TypedFormulaResponseSender::ReactivePower(tx) => {
+                Self::try_subscribe(&self.reactive_power, key, tx)
             }
-            TypedFormulaResponseSender::Voltage(sender) => {
-                if self.voltage.contains_key(key) {
-                    sender
-                        .send(self.voltage[key].sender.subscribe())
-                        .map_err(|_| {
-                            Error::internal("Failed to send receiver for formula".to_string())
-                        })?;
-                    return Ok(());
-                }
-            }
-            TypedFormulaResponseSender::ReactivePower(sender) => {
-                if self.reactive_power.contains_key(key) {
-                    sender
-                        .send(self.reactive_power[key].sender.subscribe())
-                        .map_err(|_| {
-                            Error::internal("Failed to send receiver for formula".to_string())
-                        })?;
-                    return Ok(());
-                }
-            }
-            TypedFormulaResponseSender::Current(sender) => {
-                if self.current.contains_key(key) {
-                    sender
-                        .send(self.current[key].sender.subscribe())
-                        .map_err(|_| {
-                            Error::internal("Failed to send receiver for formula".to_string())
-                        })?;
-                    return Ok(());
-                }
-            }
+            TypedFormulaResponseSender::Current(tx) => Self::try_subscribe(&self.current, key, tx),
+        }?;
+        if !found {
+            // The caller checked `contains_key` across all quantities before
+            // dispatching here, so a miss means the formula is registered under
+            // a different quantity than the one requested.
+            return Err(Error::internal(format!(
+                "Formula exists, but can't find it: {}:({})",
+                key.1.as_str_name(),
+                key.0
+            )));
         }
-        Err(Error::internal(format!(
-            "Formula exists, but can't find it: {}:({})",
-            key.1.as_str_name(),
-            key.0
-        )))
+        Ok(())
     }
 
-    /// Starts a new formula with the given formula string, metric, and sends a receiver
-    /// back to the handle.
-    fn start_formulas(
+    /// Subscribes to an existing formula of quantity `Q` and forwards the new
+    /// receiver over `response_tx`. Returns `Ok(true)` when the formula was
+    /// found and a receiver sent, `Ok(false)` when no formula with `key` exists
+    /// in `map`.
+    fn try_subscribe<Q: Quantity>(
+        map: &HashMap<(String, Metric), LogicalMeterFormula<Q>>,
+        key: &(String, Metric),
+        response_tx: FormulaStreamSender<Q>,
+    ) -> Result<bool, Error> {
+        let Some(formula) = map.get(key) else {
+            return Ok(false);
+        };
+        response_tx
+            .send(formula.sender.subscribe())
+            .map_err(|_| Error::internal("Failed to send receiver for formula".to_string()))?;
+        Ok(true)
+    }
+
+    /// Registers a new formula for `formula`/`metric`, storing it and sending
+    /// the receiver of its stream back to the handle. Returns the component ids
+    /// the formula references, so the caller can start their resamplers.
+    fn subscribe_new(
         &mut self,
         formula: String,
         metric: Metric,
         response_tx: TypedFormulaResponseSender,
     ) -> Result<HashSet<u64>, Error> {
-        let formula_key = (formula, metric);
-
-        let formula_engine = FormulaEngine::try_new(&formula_key.0)
+        let formula_engine = FormulaEngine::try_new(&formula)
             .map_err(|e| Error::formula_engine_error(format!("Failed to parse formula: {e}")))?;
         let components = formula_engine.components().clone();
+        let formula_key = (formula, metric);
 
         match response_tx {
-            TypedFormulaResponseSender::Power(receiver_tx) => {
-                let (sender, receiver) = broadcast::channel(100);
-                self.power.insert(
-                    formula_key,
-                    LogicalMeterFormula {
-                        formula: formula_engine,
-                        sender,
-                    },
-                );
-                receiver_tx.send(receiver).map_err(|_| {
-                    Error::internal("Failed to send receiver for formula".to_string())
-                })?;
+            TypedFormulaResponseSender::Power(tx) => {
+                Self::insert_and_send(&mut self.power, formula_key, formula_engine, tx)?;
             }
-            TypedFormulaResponseSender::Voltage(receiver_tx) => {
-                let (sender, receiver) = broadcast::channel(100);
-                self.voltage.insert(
-                    formula_key,
-                    LogicalMeterFormula {
-                        formula: formula_engine,
-                        sender,
-                    },
-                );
-                receiver_tx.send(receiver).map_err(|_| {
-                    Error::internal("Failed to send receiver for formula".to_string())
-                })?;
+            TypedFormulaResponseSender::Voltage(tx) => {
+                Self::insert_and_send(&mut self.voltage, formula_key, formula_engine, tx)?;
             }
-            TypedFormulaResponseSender::ReactivePower(receiver_tx) => {
-                let (sender, receiver) = broadcast::channel(100);
-                self.reactive_power.insert(
-                    formula_key,
-                    LogicalMeterFormula {
-                        formula: formula_engine,
-                        sender,
-                    },
-                );
-                receiver_tx.send(receiver).map_err(|_| {
-                    Error::internal("Failed to send receiver for formula".to_string())
-                })?;
+            TypedFormulaResponseSender::ReactivePower(tx) => {
+                Self::insert_and_send(&mut self.reactive_power, formula_key, formula_engine, tx)?;
             }
-            TypedFormulaResponseSender::Current(receiver_tx) => {
-                let (sender, receiver) = broadcast::channel(100);
-                self.current.insert(
-                    formula_key,
-                    LogicalMeterFormula {
-                        formula: formula_engine,
-                        sender,
-                    },
-                );
-                receiver_tx.send(receiver).map_err(|_| {
-                    Error::internal("Failed to send receiver for formula".to_string())
-                })?;
+            TypedFormulaResponseSender::Current(tx) => {
+                Self::insert_and_send(&mut self.current, formula_key, formula_engine, tx)?;
             }
         }
 
         Ok(components)
+    }
+
+    /// Stores a freshly-built formula of quantity `Q` under `key`, wiring up a
+    /// new broadcast channel and forwarding its receiver over `response_tx`.
+    fn insert_and_send<Q: Quantity>(
+        map: &mut HashMap<(String, Metric), LogicalMeterFormula<Q>>,
+        key: (String, Metric),
+        formula: FormulaEngine<f32>,
+        response_tx: FormulaStreamSender<Q>,
+    ) -> Result<(), Error> {
+        let (sender, receiver) = broadcast::channel(FORMULA_STREAM_CHANNEL_CAPACITY);
+        map.insert(key, LogicalMeterFormula { formula, sender });
+        response_tx
+            .send(receiver)
+            .map_err(|_| Error::internal("Failed to send receiver for formula".to_string()))
+    }
+
+    /// The `(component_id, metric)` resampler keys referenced by every active
+    /// formula, across all quantities.
+    fn resampler_keys(&self) -> HashSet<(u64, Metric)> {
+        let mut keys = HashSet::new();
+        Self::collect_keys(&self.power, &mut keys);
+        Self::collect_keys(&self.voltage, &mut keys);
+        Self::collect_keys(&self.reactive_power, &mut keys);
+        Self::collect_keys(&self.current, &mut keys);
+        keys
+    }
+
+    /// Adds the `(component_id, metric)` keys referenced by every formula in
+    /// `map` to `keys`.
+    fn collect_keys<Q: Quantity>(
+        map: &HashMap<(String, Metric), LogicalMeterFormula<Q>>,
+        keys: &mut HashSet<(u64, Metric)>,
+    ) {
+        for ((_, metric), formula) in map.iter() {
+            keys.extend(formula.formula.components().iter().map(|&id| (id, *metric)));
+        }
     }
 }
 
@@ -464,9 +454,9 @@ impl<C: Clock> LogicalMeterActor<C> {
     ) -> Result<(), Error> {
         let formula_key = (formula.clone(), metric);
         if all_formulas.contains_key(&formula_key) {
-            all_formulas.send_subscription(&formula_key, receiver_tx)
+            all_formulas.subscribe_existing(&formula_key, receiver_tx)
         } else {
-            let components = all_formulas.start_formulas(formula, metric, receiver_tx)?;
+            let components = all_formulas.subscribe_new(formula, metric, receiver_tx)?;
             self.start_resamplers(&components, metric, resamplers).await
         }
     }
@@ -570,19 +560,7 @@ impl<C: Clock> LogicalMeterActor<C> {
         formulas: &Formulas,
         resamplers: &mut HashMap<(u64, Metric), ComponentDataResampler>,
     ) {
-        let mut components = HashSet::<(u64, Metric)>::new();
-        for ((_, metric), formula) in formulas.power.iter() {
-            components.extend(formula.formula.components().iter().map(|&id| (id, *metric)));
-        }
-        for ((_, metric), formula) in formulas.voltage.iter() {
-            components.extend(formula.formula.components().iter().map(|&id| (id, *metric)));
-        }
-        for ((_, metric), formula) in formulas.reactive_power.iter() {
-            components.extend(formula.formula.components().iter().map(|&id| (id, *metric)));
-        }
-        for ((_, metric), formula) in formulas.current.iter() {
-            components.extend(formula.formula.components().iter().map(|&id| (id, *metric)));
-        }
+        let components = formulas.resampler_keys();
         resamplers.retain(|component_id, _| {
             if components.contains(component_id) {
                 true
