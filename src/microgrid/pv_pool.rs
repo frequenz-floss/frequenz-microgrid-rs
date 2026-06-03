@@ -3,15 +3,27 @@
 
 //! Representation of a pool of PV inverters in the microgrid.
 
-use std::collections::BTreeSet;
+use tokio::sync::broadcast;
 
-use crate::{Error, Formula, LogicalMeterHandle, MicrogridClientHandle, metric, quantity::Power};
+use std::collections::{BTreeSet, HashSet};
+use std::time::Duration;
+
+use crate::{
+    Error, Formula, LogicalMeterHandle, MicrogridClientHandle,
+    client::proto::common::microgrid::electrical_components::ElectricalComponentStateCode,
+    metric,
+    microgrid::telemetry_tracker::pv_pool_telemetry_tracker::{
+        PvPoolSnapshot, PvPoolTelemetryTracker,
+    },
+    quantity::Power,
+};
 
 /// An interface for abstracting over a pool of PV inverters in the microgrid.
 pub struct PvPool {
     component_ids: Option<BTreeSet<u64>>,
     client: MicrogridClientHandle,
     logical_meter: LogicalMeterHandle,
+    snapshot_tx: Option<broadcast::WeakSender<PvPoolSnapshot>>,
 }
 
 impl PvPool {
@@ -30,6 +42,7 @@ impl PvPool {
             component_ids,
             client,
             logical_meter,
+            snapshot_tx: None,
         };
         if let Some(ids) = &this.component_ids {
             if ids.is_empty() {
@@ -57,10 +70,53 @@ impl PvPool {
             .collect()
     }
 
+    pub(crate) fn get_pv_inverter_ids(&self) -> BTreeSet<u64> {
+        if let Some(ids) = &self.component_ids {
+            ids.clone()
+        } else {
+            self.get_all_pv_inverter_ids()
+        }
+    }
+
     /// Returns a formula for the active power of the PV pool.
     pub fn power(&mut self) -> Result<Formula<Power>, Error> {
         self.logical_meter
             .pv::<metric::AcPowerActive>(self.component_ids.clone())
+    }
+
+    /// Returns a receiver for a stream of [`PvPoolSnapshot`] values, each
+    /// reflecting the latest inverter telemetry partitioned into healthy and
+    /// unhealthy sets.
+    ///
+    /// Reuses the running tracker if one exists and still has active receivers
+    /// (including any held by a bounds tracker); otherwise starts a new one.
+    pub(crate) fn telemetry_snapshots(&mut self) -> broadcast::Receiver<PvPoolSnapshot> {
+        if let Some(tx) = self
+            .snapshot_tx
+            .as_ref()
+            .and_then(broadcast::WeakSender::upgrade)
+            && tx.receiver_count() > 0
+        {
+            return tx.subscribe();
+        }
+        let (tx, rx) = broadcast::channel(100);
+        self.snapshot_tx = Some(tx.downgrade());
+        let tracker = PvPoolTelemetryTracker::new(
+            self.get_pv_inverter_ids(),
+            Duration::from_secs(10),
+            // Operational states in which a PV inverter is alive and
+            // reporting usable telemetry: producing (Discharging), or idle
+            // and ready (Ready / Standby).
+            HashSet::from([
+                ElectricalComponentStateCode::Ready,
+                ElectricalComponentStateCode::Standby,
+                ElectricalComponentStateCode::Discharging,
+            ]),
+            self.client.clone(),
+            tx,
+        );
+        tokio::spawn(tracker.run());
+        rx
     }
 }
 
