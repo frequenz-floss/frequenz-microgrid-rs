@@ -9,11 +9,12 @@ use std::collections::{BTreeSet, HashSet};
 use std::time::Duration;
 
 use crate::{
-    Error, Formula, LogicalMeterHandle, MicrogridClientHandle,
+    Bounds, Error, Formula, LogicalMeterHandle, MicrogridClientHandle,
     client::proto::common::microgrid::electrical_components::ElectricalComponentStateCode,
     metric,
-    microgrid::telemetry_tracker::pv_pool_telemetry_tracker::{
-        PvPoolSnapshot, PvPoolTelemetryTracker,
+    microgrid::{
+        pv_bounds_tracker::PvPoolBoundsTracker,
+        telemetry_tracker::pv_pool_telemetry_tracker::{PvPoolSnapshot, PvPoolTelemetryTracker},
     },
     quantity::Power,
 };
@@ -24,6 +25,7 @@ pub struct PvPool {
     client: MicrogridClientHandle,
     logical_meter: LogicalMeterHandle,
     snapshot_tx: Option<broadcast::WeakSender<PvPoolSnapshot>>,
+    bounds_tx: Option<broadcast::WeakSender<Vec<Bounds<Power>>>>,
 }
 
 impl PvPool {
@@ -43,6 +45,7 @@ impl PvPool {
             client,
             logical_meter,
             snapshot_tx: None,
+            bounds_tx: None,
         };
         if let Some(ids) = &this.component_ids {
             if ids.is_empty() {
@@ -82,6 +85,29 @@ impl PvPool {
     pub fn power(&mut self) -> Result<Formula<Power>, Error> {
         self.logical_meter
             .pv::<metric::AcPowerActive>(self.component_ids.clone())
+    }
+
+    /// Returns a receiver for the aggregated active-power bounds of the pool,
+    /// updated on each snapshot.
+    ///
+    /// Reuses the running bounds tracker if one exists and still has active
+    /// receivers; otherwise starts a new one (which also starts or reuses the
+    /// underlying telemetry tracker).
+    pub fn power_bounds(&mut self) -> broadcast::Receiver<Vec<Bounds<Power>>> {
+        if let Some(tx) = self
+            .bounds_tx
+            .as_ref()
+            .and_then(broadcast::WeakSender::upgrade)
+            && tx.receiver_count() > 0
+        {
+            return tx.subscribe();
+        }
+        let snapshot_rx = self.telemetry_snapshots();
+        let (tx, rx) = broadcast::channel(100);
+        self.bounds_tx = Some(tx.downgrade());
+        let tracker = PvPoolBoundsTracker::<metric::AcPowerActive>::new(snapshot_rx, tx);
+        tokio::spawn(tracker.run());
+        rx
     }
 
     /// Returns a receiver for a stream of [`PvPoolSnapshot`] values, each
