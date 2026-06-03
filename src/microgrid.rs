@@ -7,6 +7,9 @@ mod battery_bounds_tracker;
 mod battery_pool;
 pub use battery_pool::BatteryPool;
 
+mod pv_pool;
+pub use pv_pool::PvPool;
+
 pub(crate) mod telemetry_tracker;
 
 use crate::{Error, LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle};
@@ -63,6 +66,14 @@ impl Microgrid {
 
     pub fn battery_pool(&self, component_ids: Option<Vec<u64>>) -> Result<BatteryPool, Error> {
         BatteryPool::try_new(
+            component_ids.map(|ids| ids.into_iter().collect()),
+            self.client.clone(),
+            self.logical_meter.clone(),
+        )
+    }
+
+    pub fn pv_pool(&self, component_ids: Option<Vec<u64>>) -> Result<PvPool, Error> {
+        PvPool::try_new(
             component_ids.map(|ids| ids.into_iter().collect()),
             self.client.clone(),
             self.logical_meter.clone(),
