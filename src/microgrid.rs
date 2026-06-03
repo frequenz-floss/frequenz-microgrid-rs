@@ -3,6 +3,8 @@
 
 //! High-level interface for the Microgrid API.
 
+mod bounds_aggregation;
+
 mod battery_bounds_tracker;
 mod battery_pool;
 pub use battery_pool::BatteryPool;
