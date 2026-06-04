@@ -103,7 +103,7 @@ See the [Contributing Guide](https://github.com/frequenz-floss/frequenz-microgri
 [`LogicalMeterConfig`]: https://docs.rs/frequenz-microgrid/latest/frequenz_microgrid/struct.LogicalMeterConfig.html
 [`LogicalMeterConfig::with_component_graph_config`]: https://docs.rs/frequenz-microgrid/latest/frequenz_microgrid/struct.LogicalMeterConfig.html#method.with_component_graph_config
 [`BatteryPool`]: https://docs.rs/frequenz-microgrid/latest/frequenz_microgrid/struct.BatteryPool.html
-[`MicrogridClientHandle`]: https://docs.rs/frequenz-microgrid/latest/frequenz_microgrid/struct.MicrogridClientHandle.html
+[`MicrogridClientHandle`]: https://docs.rs/frequenz-microgrid/latest/frequenz_microgrid/client/struct.MicrogridClientHandle.html
 [`grid`]: https://docs.rs/frequenz-microgrid/latest/frequenz_microgrid/struct.LogicalMeterHandle.html#method.grid
 [`battery`]: https://docs.rs/frequenz-microgrid/latest/frequenz_microgrid/struct.LogicalMeterHandle.html#method.battery
 [`pv`]: https://docs.rs/frequenz-microgrid/latest/frequenz_microgrid/struct.LogicalMeterHandle.html#method.pv

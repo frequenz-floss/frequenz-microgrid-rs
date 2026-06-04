@@ -8,12 +8,15 @@ use tokio::sync::{broadcast, oneshot};
 
 use crate::{
     Error,
-    client::proto::common::{
-        metrics::{Bounds, Metric},
-        microgrid::electrical_components::{
-            ElectricalComponent, ElectricalComponentCategory, ElectricalComponentConnection,
-            ElectricalComponentTelemetry,
+    client::proto::{
+        common::{
+            metrics::{Bounds, Metric},
+            microgrid::electrical_components::{
+                ElectricalComponent, ElectricalComponentCategory, ElectricalComponentConnection,
+                ElectricalComponentTelemetry,
+            },
         },
+        microgrid::PowerType,
     },
 };
 
@@ -38,6 +41,13 @@ pub(super) enum Instruction {
         electrical_component_id: u64,
         target_metric: Metric,
         bounds: Vec<Bounds>,
+        request_lifetime: Option<TimeDelta>,
+        response_tx: oneshot::Sender<Result<Option<chrono::DateTime<chrono::Utc>>, Error>>,
+    },
+    SetElectricalComponentPower {
+        electrical_component_id: u64,
+        power_type: PowerType,
+        power: f32,
         request_lifetime: Option<TimeDelta>,
         response_tx: oneshot::Sender<Result<Option<chrono::DateTime<chrono::Utc>>, Error>>,
     },

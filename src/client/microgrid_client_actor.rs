@@ -6,11 +6,14 @@
 use crate::client::{
     MicrogridApiClient,
     instruction::Instruction,
-    proto::common::microgrid::electrical_components::ElectricalComponentTelemetry,
-    proto::microgrid::{
-        ListElectricalComponentConnectionsRequest, ListElectricalComponentsRequest,
-        ReceiveElectricalComponentTelemetryStreamRequest,
-        ReceiveElectricalComponentTelemetryStreamResponse,
+    proto::{
+        common::microgrid::electrical_components::ElectricalComponentTelemetry,
+        microgrid::{
+            ListElectricalComponentConnectionsRequest, ListElectricalComponentsRequest, PowerType,
+            ReceiveElectricalComponentTelemetryStreamRequest,
+            ReceiveElectricalComponentTelemetryStreamResponse, SetElectricalComponentPowerRequest,
+            SetElectricalComponentPowerRequestStatus,
+        },
     },
     retry_tracker::RetryTracker,
 };
@@ -230,6 +233,26 @@ async fn handle_instruction<T: MicrogridApiClient>(
                 .send(response)
                 .map_err(|_| Error::internal("failed to send response"))?;
         }
+        Some(Instruction::SetElectricalComponentPower {
+            electrical_component_id,
+            power_type,
+            power,
+            request_lifetime,
+            response_tx,
+        }) => {
+            let response = handle_set_power(
+                client,
+                electrical_component_id,
+                power_type,
+                power,
+                request_lifetime,
+            )
+            .await;
+
+            response_tx
+                .send(response)
+                .map_err(|_| Error::internal("failed to send response"))?;
+        }
         None => {}
     }
 
@@ -269,6 +292,82 @@ async fn handle_retry_timer<T: MicrogridApiClient>(
         }
     }
     Ok(())
+}
+
+/// Handles a `SetElectricalComponentPower` instruction by sending the request
+/// to the API and waiting for the initial response from the returned stream.
+async fn handle_set_power<T: MicrogridApiClient>(
+    client: &mut T,
+    electrical_component_id: u64,
+    power_type: PowerType,
+    power: f32,
+    request_lifetime: Option<chrono::TimeDelta>,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, Error> {
+    let mut stream = client
+        .set_electrical_component_power(SetElectricalComponentPowerRequest {
+            electrical_component_id,
+            power_type: power_type as i32,
+            power,
+            request_lifetime: request_lifetime.and_then(|d| u64::try_from(d.num_seconds()).ok()),
+        })
+        .await
+        .map_err(|e| {
+            Error::api_server_error(format!("set_electrical_component_power failed: {e}"))
+        })?
+        .into_inner();
+
+    let response = stream.next().await.ok_or_else(|| {
+        Error::api_server_error(
+            "set_electrical_component_power: server closed stream without a response".to_string(),
+        )
+    })?;
+
+    let response = response.map_err(|e| {
+        Error::api_server_error(format!("set_electrical_component_power stream error: {e}"))
+    })?;
+
+    let status = SetElectricalComponentPowerRequestStatus::try_from(response.status)
+        .unwrap_or(SetElectricalComponentPowerRequestStatus::Unspecified);
+
+    match status {
+        SetElectricalComponentPowerRequestStatus::Accepted
+        | SetElectricalComponentPowerRequestStatus::Success => {}
+        SetElectricalComponentPowerRequestStatus::Rejected => {
+            return Err(Error::api_server_error(format!(
+                "set_electrical_component_power rejected for component {electrical_component_id}"
+            )));
+        }
+        SetElectricalComponentPowerRequestStatus::Failed => {
+            return Err(Error::api_server_error(format!(
+                "set_electrical_component_power failed for component {electrical_component_id}"
+            )));
+        }
+        SetElectricalComponentPowerRequestStatus::Overridden => {
+            return Err(Error::api_server_error(format!(
+                "set_electrical_component_power overridden for component {electrical_component_id}"
+            )));
+        }
+        SetElectricalComponentPowerRequestStatus::Unspecified => {
+            return Err(Error::api_server_error(format!(
+                "set_electrical_component_power returned unspecified status for component {electrical_component_id}"
+            )));
+        }
+    }
+
+    let valid_until = response.valid_until_time.and_then(|t| {
+        match DateTime::from_timestamp(t.seconds, t.nanos as u32) {
+            dt @ Some(_) => dt,
+            None => {
+                tracing::error!(
+                    "Received invalid valid_until_time in SetElectricalComponentPowerResponse: {:?}",
+                    t
+                );
+                None
+            }
+        }
+    });
+
+    Ok(valid_until)
 }
 
 /// Creates a new data stream for the given component ID and starts a task to
