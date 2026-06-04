@@ -514,7 +514,7 @@ impl<C: Clock> LogicalMeterActor<C> {
     ) -> Result<HashMap<Metric, HashMap<u64, Option<f32>>>, Error> {
         let mut resampled_metrics: HashMap<Metric, HashMap<u64, Option<f32>>> = HashMap::new();
 
-        for (_, resampler) in resamplers.iter_mut() {
+        for resampler in resamplers.values_mut() {
             while let Some(data) = poll_telemetry(&mut resampler.receiver, resampler.component_id) {
                 self.push_to_resampler(resampler, data, resampler.metric);
             }

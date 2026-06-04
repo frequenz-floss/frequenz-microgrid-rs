@@ -19,6 +19,7 @@ use crate::{
             ElectricalComponent, ElectricalComponentCategory, ElectricalComponentConnection,
             ElectricalComponentTelemetry,
         },
+        microgrid::PowerType,
         microgrid::microgrid_client::MicrogridClient,
     },
     metric::Metric,
@@ -232,6 +233,76 @@ impl MicrogridClientHandle {
             .await
             .map_err(|e| Error::internal(format!("failed to receive response: {e}")))?
     }
+
+    /// Sets the active power output of the given electrical component.
+    ///
+    /// The `power_w` value is in watts (W):
+    /// - Negative values indicate discharge (supplying power towards the grid).
+    /// - Positive values indicate charge (consuming power from the grid).
+    ///
+    /// Returns the timestamp until which the power command will stay in effect.
+    /// After this time, the component will return to its default state unless
+    /// a new power command is sent.
+    ///
+    /// If `request_lifetime` is `None`, the server uses a default of 60 seconds.
+    pub async fn set_power_active(
+        &self,
+        electrical_component_id: u64,
+        power_w: f32,
+        request_lifetime: Option<TimeDelta>,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>, Error> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.instructions_tx
+            .send(Instruction::SetElectricalComponentPower {
+                electrical_component_id,
+                power_type: PowerType::Active as i32,
+                power: power_w,
+                request_lifetime,
+                response_tx,
+            })
+            .await
+            .map_err(|_| Error::internal("failed to send instruction"))?;
+
+        response_rx
+            .await
+            .map_err(|e| Error::internal(format!("failed to receive response: {e}")))?
+    }
+
+    /// Sets the reactive power output of the given electrical component.
+    ///
+    /// The `power_var` value is in volt-amperes reactive (VAr):
+    /// - Negative values indicate capacitive reactive power (current leads voltage).
+    /// - Positive values indicate inductive reactive power (current lags voltage).
+    ///
+    /// Returns the timestamp until which the power command will stay in effect.
+    /// After this time, the component will return to its default state unless
+    /// a new power command is sent.
+    ///
+    /// If `request_lifetime` is `None`, the server uses a default of 60 seconds.
+    pub async fn set_power_reactive(
+        &self,
+        electrical_component_id: u64,
+        power_var: f32,
+        request_lifetime: Option<TimeDelta>,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>, Error> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.instructions_tx
+            .send(Instruction::SetElectricalComponentPower {
+                electrical_component_id,
+                power_type: PowerType::Reactive as i32,
+                power: power_var,
+                request_lifetime,
+                response_tx,
+            })
+            .await
+            .map_err(|_| Error::internal("failed to send instruction"))?;
+
+        response_rx
+            .await
+            .map_err(|e| Error::internal(format!("failed to receive response: {e}")))?
+    }
 }
 
 #[cfg(test)]
@@ -404,5 +475,66 @@ mod tests {
                 4000, 4200, 4400, 4600,
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn test_set_power_active() {
+        let api_client = MockMicrogridApiClient::new(
+            MockComponent::grid(1).with_children(vec![MockComponent::battery_inverter(2)]),
+        );
+        let set_power_calls = api_client.set_power_calls_handle();
+        let handle = MicrogridClientHandle::new_from_client(api_client);
+
+        let result = handle.set_power_active(2, 1000.0, None).await;
+        assert!(result.is_ok());
+
+        let calls = set_power_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].electrical_component_id, 2);
+        assert_eq!(
+            calls[0].power_type,
+            crate::client::proto::microgrid::PowerType::Active as i32
+        );
+        assert_eq!(calls[0].power, 1000.0);
+        assert_eq!(calls[0].request_lifetime, None);
+    }
+
+    #[tokio::test]
+    async fn test_set_power_reactive() {
+        let api_client = MockMicrogridApiClient::new(
+            MockComponent::grid(1).with_children(vec![MockComponent::battery_inverter(2)]),
+        );
+        let set_power_calls = api_client.set_power_calls_handle();
+        let handle = MicrogridClientHandle::new_from_client(api_client);
+
+        let result = handle.set_power_reactive(2, -500.0, None).await;
+        assert!(result.is_ok());
+
+        let calls = set_power_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].electrical_component_id, 2);
+        assert_eq!(
+            calls[0].power_type,
+            crate::client::proto::microgrid::PowerType::Reactive as i32
+        );
+        assert_eq!(calls[0].power, -500.0);
+        assert_eq!(calls[0].request_lifetime, None);
+    }
+
+    #[tokio::test]
+    async fn test_set_power_active_with_lifetime() {
+        let api_client = MockMicrogridApiClient::new(
+            MockComponent::grid(1).with_children(vec![MockComponent::battery_inverter(2)]),
+        );
+        let set_power_calls = api_client.set_power_calls_handle();
+        let handle = MicrogridClientHandle::new_from_client(api_client);
+
+        let lifetime = chrono::TimeDelta::seconds(30);
+        let result = handle.set_power_active(2, 2000.0, Some(lifetime)).await;
+        assert!(result.is_ok());
+
+        let calls = set_power_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].request_lifetime, Some(30));
     }
 }

@@ -18,7 +18,7 @@ mod bounds;
 pub use bounds::Bounds;
 
 pub mod client;
-pub use client::MicrogridClientHandle;
+pub use client::{MicrogridClientHandle};
 
 mod error;
 pub use error::{Error, ErrorKind};
