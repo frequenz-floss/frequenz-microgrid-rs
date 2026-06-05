@@ -116,7 +116,7 @@ impl PvPool {
     ///
     /// Reuses the running tracker if one exists and still has active receivers
     /// (including any held by a bounds tracker); otherwise starts a new one.
-    pub(crate) fn telemetry_snapshots(&mut self) -> broadcast::Receiver<PvPoolSnapshot> {
+    pub fn telemetry_snapshots(&mut self) -> broadcast::Receiver<PvPoolSnapshot> {
         if let Some(tx) = self
             .snapshot_tx
             .as_ref()

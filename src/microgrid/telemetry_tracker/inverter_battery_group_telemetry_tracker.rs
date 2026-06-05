@@ -52,7 +52,7 @@ pub(crate) struct InverterBatteryGroupTelemetryTracker {
 /// sample has been received yet. Consumers can use the telemetry (including
 /// per-metric bounds) directly without subscribing to the raw streams again.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct InverterBatteryGroupStatus {
+pub struct InverterBatteryGroupStatus {
     pub healthy_inverters: HashMap<u64, ElectricalComponentTelemetry>,
     pub healthy_batteries: HashMap<u64, ElectricalComponentTelemetry>,
     pub unhealthy_inverters: HashMap<u64, Option<ElectricalComponentTelemetry>>,

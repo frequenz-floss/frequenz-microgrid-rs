@@ -32,7 +32,7 @@ use super::component_telemetry_tracker::{ComponentHealthStatus, ComponentTelemet
 /// sample has been received yet. Consumers can use the telemetry (including
 /// per-metric bounds) directly without subscribing to the raw streams again.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct PvPoolSnapshot {
+pub struct PvPoolSnapshot {
     pub healthy_inverters: HashMap<u64, ElectricalComponentTelemetry>,
     pub unhealthy_inverters: HashMap<u64, Option<ElectricalComponentTelemetry>>,
 }
@@ -41,7 +41,7 @@ pub(crate) struct PvPoolSnapshot {
 /// [`PvPoolSnapshot`] whenever any inverter's telemetry or health
 /// classification changes.
 #[derive(Clone)]
-pub(crate) struct PvPoolTelemetryTracker {
+pub struct PvPoolTelemetryTracker {
     component_ids: BTreeSet<u64>,
     component_pool_status_tx: broadcast::Sender<PvPoolSnapshot>,
     missing_data_tolerance: Duration,

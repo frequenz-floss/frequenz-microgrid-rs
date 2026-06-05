@@ -14,6 +14,11 @@ mod pv_pool;
 pub use pv_pool::PvPool;
 
 pub(crate) mod telemetry_tracker;
+pub use telemetry_tracker::battery_pool_telemetry_tracker::{
+    BatteryPoolSnapshot, BatteryPoolTelemetryTracker, InverterBatteryGroup,
+};
+pub use telemetry_tracker::inverter_battery_group_telemetry_tracker::InverterBatteryGroupStatus;
+pub use telemetry_tracker::pv_pool_telemetry_tracker::{PvPoolSnapshot, PvPoolTelemetryTracker};
 
 use crate::{Error, LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle};
 

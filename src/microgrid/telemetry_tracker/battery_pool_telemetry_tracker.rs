@@ -20,7 +20,7 @@ use crate::{
 /// M inverters in parallel on the AC side, N batteries in parallel on the DC
 /// side, with the inverter side in series with the battery side.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub(crate) struct InverterBatteryGroup {
+pub struct InverterBatteryGroup {
     pub inverter_ids: BTreeSet<u64>,
     pub battery_ids: BTreeSet<u64>,
 }
@@ -35,10 +35,10 @@ impl InverterBatteryGroup {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct BatteryPoolSnapshot(HashMap<InverterBatteryGroup, InverterBatteryGroupStatus>);
+pub struct BatteryPoolSnapshot(HashMap<InverterBatteryGroup, InverterBatteryGroupStatus>);
 
 impl BatteryPoolSnapshot {
-    pub(crate) fn groups(&self) -> &HashMap<InverterBatteryGroup, InverterBatteryGroupStatus> {
+    pub fn groups(&self) -> &HashMap<InverterBatteryGroup, InverterBatteryGroupStatus> {
         &self.0
     }
 }
@@ -47,7 +47,7 @@ impl BatteryPoolSnapshot {
 /// a [`BatteryPoolSnapshot`] whenever any component's telemetry or health
 /// classification changes.
 #[derive(Clone)]
-pub(crate) struct BatteryPoolTelemetryTracker {
+pub struct BatteryPoolTelemetryTracker {
     component_ids: BTreeSet<u64>,
     component_pool_status_tx: tokio::sync::broadcast::Sender<BatteryPoolSnapshot>,
     missing_data_tolerance: Duration,
