@@ -17,6 +17,7 @@ use crate::{
     },
 };
 
+
 /// Instructions that can be sent to the client actor from client handles.
 #[derive(Debug)]
 pub(super) enum Instruction {
@@ -38,6 +39,13 @@ pub(super) enum Instruction {
         electrical_component_id: u64,
         target_metric: Metric,
         bounds: Vec<Bounds>,
+        request_lifetime: Option<TimeDelta>,
+        response_tx: oneshot::Sender<Result<Option<chrono::DateTime<chrono::Utc>>, Error>>,
+    },
+    SetElectricalComponentPower {
+        electrical_component_id: u64,
+        power_type: i32,
+        power: f32,
         request_lifetime: Option<TimeDelta>,
         response_tx: oneshot::Sender<Result<Option<chrono::DateTime<chrono::Utc>>, Error>>,
     },

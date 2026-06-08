@@ -11,6 +11,7 @@
 ## New Features
 
 <!-- Here goes the main new features and examples or instructions on how to use them -->
+- `set_power_reactive` and `set_power_active` is added `MicrogridClientHandle` exposing `SetElectricalComponentPower` from the Microgrid API.
 
 ## Bug Fixes
 

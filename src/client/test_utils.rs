@@ -34,7 +34,8 @@ use crate::{
             ListElectricalComponentConnectionsRequest, ListElectricalComponentConnectionsResponse,
             ListElectricalComponentsRequest, ListElectricalComponentsResponse,
             ReceiveElectricalComponentTelemetryStreamRequest,
-            ReceiveElectricalComponentTelemetryStreamResponse,
+            ReceiveElectricalComponentTelemetryStreamResponse, SetElectricalComponentPowerRequest,
+            SetElectricalComponentPowerRequestStatus, SetElectricalComponentPowerResponse,
         },
     },
     quantity::{Current, Power, ReactivePower, Voltage},
@@ -53,6 +54,7 @@ pub struct MockMicrogridApiClient {
     /// [`MockMicrogridApiClient::new_with_clock`].
     clock: TokioSyncedClock,
     pub augment_bounds_calls: Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>>,
+    pub set_power_calls: Arc<Mutex<Vec<SetElectricalComponentPowerRequest>>>,
 }
 
 /// One row per emitted telemetry frame: `(power, reactive_power, voltage,
@@ -305,6 +307,7 @@ impl MockMicrogridApiClient {
             connections: vec![],
             clock,
             augment_bounds_calls: Arc::new(Mutex::new(Vec::new())),
+            set_power_calls: Arc::new(Mutex::new(Vec::new())),
         };
 
         fn traverse(node: &MockComponent, client: &mut MockMicrogridApiClient) {
@@ -328,6 +331,11 @@ impl MockMicrogridApiClient {
         &self,
     ) -> Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>> {
         self.augment_bounds_calls.clone()
+    }
+
+    /// Return a handle to captured set power requests.
+    pub fn set_power_calls_handle(&self) -> Arc<Mutex<Vec<SetElectricalComponentPowerRequest>>> {
+        self.set_power_calls.clone()
     }
 }
 
@@ -531,6 +539,30 @@ impl MicrogridApiClient for MockMicrogridApiClient {
         Ok(Response::new(AugmentElectricalComponentBoundsResponse {
             valid_until_time: None,
         }))
+    }
+
+    type SetPowerStream =
+        ReceiverStream<std::result::Result<SetElectricalComponentPowerResponse, tonic::Status>>;
+
+    async fn set_electrical_component_power(
+        &mut self,
+        request: impl tonic::IntoRequest<SetElectricalComponentPowerRequest> + Send,
+    ) -> std::result::Result<tonic::Response<Self::SetPowerStream>, tonic::Status> {
+        let req = request.into_request().into_inner();
+        self.set_power_calls.lock().unwrap().push(req);
+
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        // Simulate immediate acceptance response
+        let response = SetElectricalComponentPowerResponse {
+            valid_until_time: None,
+            status: SetElectricalComponentPowerRequestStatus::Accepted as i32,
+        };
+        // Send the response in a task so this method can return immediately.
+        tokio::spawn(async move {
+            let _ = tx.send(Ok(response)).await;
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
     }
 }
 
