@@ -82,6 +82,29 @@ impl<T: MicrogridApiClient> MicrogridClientActor<T> {
                         }
                         Some(StreamStatus::Ended(component_id)) => {
                             components_to_retry.remove(&component_id);
+                            match component_streams.get(&component_id) {
+                                // A subscriber arrived between the stream
+                                // task's no-receivers check and this message;
+                                // the task is gone, so restart the stream for
+                                // the new subscriber.
+                                Some(tx) if tx.receiver_count() > 0 => {
+                                    let tx = tx.clone();
+                                    start_electrical_component_telemetry_stream(
+                                        &mut self.client,
+                                        component_id,
+                                        tx,
+                                        stream_status_tx.clone(),
+                                    )
+                                    .await;
+                                }
+                                // Drop the cached sender: nothing writes to it
+                                // anymore, so handing out further subscriptions
+                                // on it would never yield data. The next
+                                // subscription starts a fresh stream instead.
+                                _ => {
+                                    component_streams.remove(&component_id);
+                                }
+                            }
                         }
                         None => {
                             tracing::error!("MicrogridClientActor: Stream status channel closed, exiting.");
