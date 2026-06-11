@@ -6,6 +6,7 @@
 mod bounds_aggregation;
 mod pool_bounds;
 mod pool_bounds_tracker;
+mod pool_validation;
 
 mod battery_pool;
 pub use battery_pool::BatteryPool;

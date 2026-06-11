@@ -19,6 +19,7 @@ use crate::{
     microgrid::{
         pool_bounds,
         pool_bounds_tracker::PoolBoundsTracker,
+        pool_validation::validate_pool_ids,
         telemetry_tracker::battery_pool_telemetry_tracker::{
             BatteryPoolSnapshot, BatteryPoolTelemetryTracker,
         },
@@ -50,19 +51,12 @@ impl BatteryPool {
             snapshot_tx: None,
             bounds_tx: None,
         };
-        if let Some(ids) = &this.component_ids {
-            if ids.is_empty() {
-                let e = "component_ids cannot be an empty set".to_string();
-                tracing::error!("{e}");
-                return Err(Error::invalid_component(e));
-            }
-            // Validate that all provided IDs correspond to batteries in the graph.
-            if !ids.is_subset(&this.get_all_battery_ids()) {
-                let e = format!("All component_ids {:?} must be batteries.", ids);
-                tracing::error!("{e}");
-                return Err(Error::invalid_component(e));
-            }
-        }
+        validate_pool_ids(
+            &this.component_ids,
+            &this.get_all_battery_ids(),
+            "batteries",
+        )
+        .inspect_err(|e| tracing::error!("{e}"))?;
         Ok(this)
     }
 
