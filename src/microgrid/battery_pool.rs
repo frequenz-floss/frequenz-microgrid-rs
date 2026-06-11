@@ -17,6 +17,7 @@ use crate::{
     metric,
     microgrid::{
         battery_bounds_tracker::BatteryPoolBoundsTracker,
+        pool_broadcast::try_reuse,
         telemetry_tracker::battery_pool_telemetry_tracker::{
             BatteryPoolSnapshot, BatteryPoolTelemetryTracker,
         },
@@ -94,13 +95,8 @@ impl BatteryPool {
     /// receivers; otherwise starts a new one (which also starts or reuses the
     /// underlying telemetry tracker).
     pub fn power_bounds(&mut self) -> broadcast::Receiver<Vec<Bounds<Power>>> {
-        if let Some(tx) = self
-            .bounds_tx
-            .as_ref()
-            .and_then(broadcast::WeakSender::upgrade)
-            && tx.receiver_count() > 0
-        {
-            return tx.subscribe();
+        if let Some(rx) = try_reuse(&self.bounds_tx) {
+            return rx;
         }
         let snapshot_rx = self.telemetry_snapshots();
         let (tx, rx) = broadcast::channel(100);
@@ -120,13 +116,8 @@ impl BatteryPool {
     /// Reuses the running tracker if one exists and still has active receivers
     /// (including any held by a bounds tracker); otherwise starts a new one.
     pub fn telemetry_snapshots(&mut self) -> broadcast::Receiver<BatteryPoolSnapshot> {
-        if let Some(tx) = self
-            .snapshot_tx
-            .as_ref()
-            .and_then(broadcast::WeakSender::upgrade)
-            && tx.receiver_count() > 0
-        {
-            return tx.subscribe();
+        if let Some(rx) = try_reuse(&self.snapshot_tx) {
+            return rx;
         }
         let (tx, rx) = broadcast::channel(100);
         self.snapshot_tx = Some(tx.downgrade());
