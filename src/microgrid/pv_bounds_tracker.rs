@@ -25,7 +25,7 @@ where
     M: Metric,
     Bounds<M::QuantityType>: From<PbBounds>,
 {
-    aggregate_parallel::<M>(&status.healthy_inverters)
+    aggregate_parallel::<M>(&status.inverters.healthy)
 }
 
 #[cfg(test)]
@@ -38,6 +38,7 @@ mod tests {
     };
     use crate::client::proto::common::microgrid::electrical_components::ElectricalComponentTelemetry;
     use crate::metric::AcPowerActive;
+    use crate::microgrid::telemetry_tracker::component_partition::ComponentHealthPartition;
     use crate::microgrid::telemetry_tracker::pv_pool_telemetry_tracker::PvPoolSnapshot;
     use crate::quantity::Power;
 
@@ -71,8 +72,10 @@ mod tests {
             .map(|t| (t.electrical_component_id, t))
             .collect();
         PvPoolSnapshot {
-            healthy_inverters: healthy,
-            unhealthy_inverters: HashMap::new(),
+            inverters: ComponentHealthPartition {
+                healthy,
+                unhealthy: HashMap::new(),
+            },
         }
     }
 
@@ -135,8 +138,7 @@ mod tests {
             )),
         );
         let snap = PvPoolSnapshot {
-            healthy_inverters: healthy,
-            unhealthy_inverters: unhealthy,
+            inverters: ComponentHealthPartition { healthy, unhealthy },
         };
 
         let bounds = compute_pool_bounds::<AcPowerActive>(&snap);

@@ -44,8 +44,8 @@ where
         .groups()
         .values()
         .map(|group| {
-            let inverter_bounds = aggregate_parallel::<InverterM>(&group.healthy_inverters);
-            let battery_bounds = aggregate_parallel::<BatteryM>(&group.healthy_batteries);
+            let inverter_bounds = aggregate_parallel::<InverterM>(&group.inverters.healthy);
+            let battery_bounds = aggregate_parallel::<BatteryM>(&group.batteries.healthy);
             intersect_bounds_sets(&inverter_bounds, &battery_bounds)
         })
         .fold(Vec::new(), |acc, group_bounds| {
@@ -66,6 +66,7 @@ mod tests {
     use crate::microgrid::telemetry_tracker::battery_pool_telemetry_tracker::{
         BatteryPoolSnapshot, InverterBatteryGroup,
     };
+    use crate::microgrid::telemetry_tracker::component_partition::ComponentHealthPartition;
     use crate::microgrid::telemetry_tracker::inverter_battery_group_telemetry_tracker::InverterBatteryGroupStatus;
     use crate::quantity::Power;
 
@@ -124,16 +125,18 @@ mod tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters,
-                healthy_batteries,
-                unhealthy_inverters: HashMap::new(),
-                unhealthy_batteries: HashMap::new(),
+                inverters: ComponentHealthPartition {
+                    healthy: healthy_inverters,
+                    unhealthy: HashMap::new(),
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: healthy_batteries,
+                    unhealthy: HashMap::new(),
+                },
             },
         )]);
 
-        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(
-            &snapshot,
-        );
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(&snapshot);
         assert_eq!(
             bounds,
             vec![
@@ -171,16 +174,18 @@ mod tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters,
-                healthy_batteries,
-                unhealthy_inverters: HashMap::new(),
-                unhealthy_batteries: HashMap::new(),
+                inverters: ComponentHealthPartition {
+                    healthy: healthy_inverters,
+                    unhealthy: HashMap::new(),
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: healthy_batteries,
+                    unhealthy: HashMap::new(),
+                },
             },
         )]);
 
-        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(
-            &snapshot,
-        );
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(&snapshot);
         assert_eq!(
             bounds,
             vec![Bounds::new(
@@ -220,26 +225,32 @@ mod tests {
             (
                 g1,
                 InverterBatteryGroupStatus {
-                    healthy_inverters: h_inv_1,
-                    healthy_batteries: h_bat_1,
-                    unhealthy_inverters: HashMap::new(),
-                    unhealthy_batteries: HashMap::new(),
+                    inverters: ComponentHealthPartition {
+                        healthy: h_inv_1,
+                        unhealthy: HashMap::new(),
+                    },
+                    batteries: ComponentHealthPartition {
+                        healthy: h_bat_1,
+                        unhealthy: HashMap::new(),
+                    },
                 },
             ),
             (
                 g2,
                 InverterBatteryGroupStatus {
-                    healthy_inverters: h_inv_2,
-                    healthy_batteries: h_bat_2,
-                    unhealthy_inverters: HashMap::new(),
-                    unhealthy_batteries: HashMap::new(),
+                    inverters: ComponentHealthPartition {
+                        healthy: h_inv_2,
+                        unhealthy: HashMap::new(),
+                    },
+                    batteries: ComponentHealthPartition {
+                        healthy: h_bat_2,
+                        unhealthy: HashMap::new(),
+                    },
                 },
             ),
         ]);
 
-        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(
-            &snapshot,
-        );
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(&snapshot);
         assert_eq!(
             bounds,
             vec![Bounds::new(
@@ -252,9 +263,7 @@ mod tests {
     #[test]
     fn empty_pool_yields_empty_bounds() {
         let snapshot = status(vec![]);
-        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(
-            &snapshot,
-        );
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(&snapshot);
         assert!(bounds.is_empty());
     }
 
@@ -278,16 +287,18 @@ mod tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters,
-                healthy_batteries,
-                unhealthy_inverters: HashMap::new(),
-                unhealthy_batteries: HashMap::new(),
+                inverters: ComponentHealthPartition {
+                    healthy: healthy_inverters,
+                    unhealthy: HashMap::new(),
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: healthy_batteries,
+                    unhealthy: HashMap::new(),
+                },
             },
         )]);
 
-        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(
-            &snapshot,
-        );
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(&snapshot);
         assert!(
             bounds.is_empty(),
             "group with no inverter bounds must not contribute any bounds"
@@ -312,16 +323,18 @@ mod tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters,
-                healthy_batteries,
-                unhealthy_inverters: HashMap::new(),
-                unhealthy_batteries: HashMap::new(),
+                inverters: ComponentHealthPartition {
+                    healthy: healthy_inverters,
+                    unhealthy: HashMap::new(),
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: healthy_batteries,
+                    unhealthy: HashMap::new(),
+                },
             },
         )]);
 
-        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(
-            &snapshot,
-        );
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(&snapshot);
         assert!(
             bounds.is_empty(),
             "group with no battery bounds must not contribute any bounds"
@@ -347,16 +360,18 @@ mod tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters: HashMap::new(),
-                healthy_batteries,
-                unhealthy_inverters,
-                unhealthy_batteries: HashMap::new(),
+                inverters: ComponentHealthPartition {
+                    healthy: HashMap::new(),
+                    unhealthy: unhealthy_inverters,
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: healthy_batteries,
+                    unhealthy: HashMap::new(),
+                },
             },
         )]);
 
-        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(
-            &snapshot,
-        );
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(&snapshot);
         assert!(
             bounds.is_empty(),
             "group with no healthy inverters must not contribute any bounds"
@@ -381,16 +396,18 @@ mod tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters,
-                healthy_batteries: HashMap::new(),
-                unhealthy_inverters: HashMap::new(),
-                unhealthy_batteries,
+                inverters: ComponentHealthPartition {
+                    healthy: healthy_inverters,
+                    unhealthy: HashMap::new(),
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: HashMap::new(),
+                    unhealthy: unhealthy_batteries,
+                },
             },
         )]);
 
-        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(
-            &snapshot,
-        );
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(&snapshot);
         assert!(
             bounds.is_empty(),
             "group with no healthy batteries must not contribute any bounds"
@@ -426,18 +443,20 @@ mod tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters: h_inv,
-                healthy_batteries: h_bat,
-                unhealthy_inverters: HashMap::new(),
-                unhealthy_batteries: HashMap::new(),
+                inverters: ComponentHealthPartition {
+                    healthy: h_inv,
+                    unhealthy: HashMap::new(),
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: h_bat,
+                    unhealthy: HashMap::new(),
+                },
             },
         )]);
 
         // Inverter side has no active-power bounds → group produces no
         // bounds, so the pool bounds are empty.
-        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(
-            &snapshot,
-        );
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(&snapshot);
         assert!(bounds.is_empty());
     }
 }

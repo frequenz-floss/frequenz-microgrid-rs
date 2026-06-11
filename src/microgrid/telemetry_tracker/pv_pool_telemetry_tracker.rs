@@ -8,7 +8,7 @@
 //! sets, whenever any inverter's telemetry or health classification changes.
 
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashSet},
     time::Duration,
 };
 
@@ -16,25 +16,18 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::{
     MicrogridClientHandle,
-    client::proto::common::microgrid::electrical_components::{
-        ElectricalComponentStateCode, ElectricalComponentTelemetry,
-    },
+    client::proto::common::microgrid::electrical_components::ElectricalComponentStateCode,
 };
 
+use super::component_partition::ComponentHealthPartition;
 use super::component_telemetry_tracker::{ComponentHealthStatus, ComponentTelemetryTracker};
 
 /// A snapshot of a PV pool's inverters, partitioned by health status and
-/// annotated with the latest telemetry sample for each.
-///
-/// `healthy_inverters` holds the most recent [`ElectricalComponentTelemetry`]
-/// observed for each healthy inverter. `unhealthy_inverters` holds the last
-/// telemetry observed before the inverter became unhealthy, or `None` if no
-/// sample has been received yet. Consumers can use the telemetry (including
-/// per-metric bounds) directly without subscribing to the raw streams again.
+/// annotated with the latest telemetry sample for each (see
+/// [`ComponentHealthPartition`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PvPoolSnapshot {
-    pub healthy_inverters: HashMap<u64, ElectricalComponentTelemetry>,
-    pub unhealthy_inverters: HashMap<u64, Option<ElectricalComponentTelemetry>>,
+    pub inverters: ComponentHealthPartition,
 }
 
 /// A tracker that watches every PV inverter in the pool and emits a
@@ -72,9 +65,7 @@ impl PvPoolTelemetryTracker {
             return;
         }
 
-        let mut healthy_inverters: HashMap<u64, ElectricalComponentTelemetry> = HashMap::new();
-        let mut unhealthy_inverters: HashMap<u64, Option<ElectricalComponentTelemetry>> =
-            HashMap::new();
+        let mut inverters = ComponentHealthPartition::default();
 
         let (status_tx, mut status_rx) = mpsc::channel(100);
         for &inverter_id in &self.component_ids {
@@ -103,7 +94,7 @@ impl PvPoolTelemetryTracker {
                 tracker.run().await;
             });
             // Initially mark the inverter as unhealthy until we see data.
-            unhealthy_inverters.insert(inverter_id, None);
+            inverters.mark_unhealthy(inverter_id, None);
         }
 
         // Drop the original sender so the channel closes once every component
@@ -118,12 +109,10 @@ impl PvPoolTelemetryTracker {
                 maybe_status = status_rx.recv() => {
                     match maybe_status {
                         Some(ComponentHealthStatus::Healthy(id, data)) => {
-                            healthy_inverters.insert(id, data);
-                            unhealthy_inverters.remove(&id);
+                            inverters.mark_healthy(id, data);
                         }
                         Some(ComponentHealthStatus::Unhealthy(id, data)) => {
-                            unhealthy_inverters.insert(id, data);
-                            healthy_inverters.remove(&id);
+                            inverters.mark_unhealthy(id, data);
                         }
                         // Every component tracker has exited and dropped its
                         // sender, so no further updates will ever arrive. The
@@ -141,17 +130,15 @@ impl PvPoolTelemetryTracker {
                     if self.component_pool_status_tx.receiver_count() == 0 {
                         break;
                     }
-                    // Skip sending if the partitioning hasn't changed.
-                    let unchanged = last_sent.as_ref().is_some_and(|s| {
-                        s.healthy_inverters == healthy_inverters
-                            && s.unhealthy_inverters == unhealthy_inverters
-                    });
+                    // Skip sending if the partitioning hasn't changed. Comparing
+                    // the whole partition (not field by field) means a future
+                    // field can't silently escape change detection.
+                    let unchanged = last_sent.as_ref().is_some_and(|s| s.inverters == inverters);
                     if unchanged {
                         continue;
                     }
                     let snapshot = PvPoolSnapshot {
-                        healthy_inverters: healthy_inverters.clone(),
-                        unhealthy_inverters: unhealthy_inverters.clone(),
+                        inverters: inverters.clone(),
                     };
                     if self.component_pool_status_tx.send(snapshot.clone()).is_err() {
                         // All receivers dropped between the check above and here;
@@ -227,8 +214,8 @@ mod tests {
         let mut rx = pool.telemetry_snapshots();
         let snap = last_snapshot(&mut rx, 10).await;
 
-        assert!(snap.healthy_inverters.contains_key(&3));
-        assert!(snap.unhealthy_inverters.is_empty());
+        assert!(snap.inverters.healthy.contains_key(&3));
+        assert!(snap.inverters.unhealthy.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
@@ -245,9 +232,9 @@ mod tests {
         let mut rx = pool.telemetry_snapshots();
         let snap = last_snapshot(&mut rx, 10).await;
 
-        assert!(snap.healthy_inverters.contains_key(&3));
-        assert!(snap.healthy_inverters.contains_key(&4));
-        assert!(snap.unhealthy_inverters.is_empty());
+        assert!(snap.inverters.healthy.contains_key(&3));
+        assert!(snap.inverters.healthy.contains_key(&4));
+        assert!(snap.inverters.unhealthy.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
@@ -291,7 +278,7 @@ mod tests {
         // First confirm the inverter reaches a healthy state.
         let healthy = last_snapshot(&mut rx, 10).await;
         assert!(
-            healthy.healthy_inverters.contains_key(&3),
+            healthy.inverters.healthy.contains_key(&3),
             "expected inverter to go healthy after initial samples, got {:?}",
             healthy
         );
@@ -302,11 +289,11 @@ mod tests {
         let unhealthy = last_snapshot(&mut rx, 5).await;
 
         assert!(
-            unhealthy.healthy_inverters.is_empty(),
+            unhealthy.inverters.healthy.is_empty(),
             "inverter should be unhealthy after data stops, got healthy set {:?}",
-            unhealthy.healthy_inverters.keys()
+            unhealthy.inverters.healthy.keys()
         );
-        assert!(unhealthy.unhealthy_inverters.contains_key(&3));
+        assert!(unhealthy.inverters.unhealthy.contains_key(&3));
     }
 
     #[tokio::test(start_paused = true)]
@@ -326,11 +313,11 @@ mod tests {
         let snap = last_snapshot(&mut rx, 10).await;
 
         assert!(
-            !snap.healthy_inverters.contains_key(&3),
+            !snap.inverters.healthy.contains_key(&3),
             "inverter with Error state should not be in healthy set"
         );
         assert!(
-            snap.unhealthy_inverters.contains_key(&3),
+            snap.inverters.unhealthy.contains_key(&3),
             "inverter with Error state should be in unhealthy set, got {:?}",
             snap
         );

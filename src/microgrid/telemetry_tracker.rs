@@ -8,6 +8,7 @@
 //! the latest telemetry sample for each.
 
 pub(crate) mod battery_pool_telemetry_tracker;
+pub(crate) mod component_partition;
 pub(crate) mod component_telemetry_tracker;
 pub(crate) mod inverter_battery_group_telemetry_tracker;
 pub(crate) mod pv_pool_telemetry_tracker;
