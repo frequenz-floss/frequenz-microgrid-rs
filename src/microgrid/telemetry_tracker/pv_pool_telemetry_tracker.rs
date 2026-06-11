@@ -125,6 +125,13 @@ impl PvPoolTelemetryTracker {
                     }
                 },
                 _ = interval.tick() => {
+                    // The unchanged-skip below means a stable partition never
+                    // reaches `send()`, whose failure is otherwise the only
+                    // signal that every receiver has dropped. Check for that
+                    // here so the tracker still shuts down instead of leaking.
+                    if self.component_pool_status_tx.receiver_count() == 0 {
+                        break;
+                    }
                     // Skip sending if the partitioning hasn't changed.
                     let unchanged = last_sent.as_ref().is_some_and(|s| {
                         s.healthy_inverters == healthy_inverters
