@@ -203,7 +203,7 @@ mod tests {
 
     use super::PvPool;
     use crate::client::test_utils::MockComponent;
-    use crate::microgrid::test_utils::handles;
+    use crate::microgrid::test_utils::{handles, last_snapshot};
 
     /// grid → meter → [pv meter → pv_inverter(4), pv_inverter(5)],
     ///                 [battery meter → battery_inverter(7) → battery(8)]
@@ -220,12 +220,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn try_new_rejects_empty_component_ids() {
+    async fn try_new_accepts_empty_component_ids() {
         let (client, lm) = handles(graph()).await;
-        let err = PvPool::try_new(Some(BTreeSet::new()), client, lm)
-            .err()
-            .expect("empty component_ids should be rejected");
-        assert!(err.to_string().contains("empty"), "unexpected error: {err}");
+        // An explicit empty selection is a valid (empty) pool, not an error.
+        let mut pool = PvPool::try_new(Some(BTreeSet::new()), client, lm)
+            .expect("an empty component_ids set should yield an empty pool");
+        pool.power().expect("empty pool power formula");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn empty_pool_emits_empty_snapshot_and_bounds() {
+        // grid → meter, with no PV inverters anywhere.
+        let (client, lm) =
+            handles(MockComponent::grid(1).with_children(vec![MockComponent::meter(2)])).await;
+        let mut pool = PvPool::try_new(None, client, lm).unwrap();
+
+        let mut snapshots = pool.telemetry_snapshots();
+        let mut bounds = pool.power_bounds();
+
+        let snapshot = last_snapshot(&mut snapshots, 5).await;
+        assert!(
+            snapshot.inverters.healthy.is_empty() && snapshot.inverters.unhealthy.is_empty(),
+            "empty pool snapshot should have no inverters, got {snapshot:?}"
+        );
+
+        let bounds = last_snapshot(&mut bounds, 5).await;
+        assert!(
+            bounds.is_empty(),
+            "empty pool should have empty power bounds"
+        );
     }
 
     #[tokio::test]

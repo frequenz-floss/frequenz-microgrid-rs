@@ -150,3 +150,45 @@ impl BatteryPool {
         rx
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::BatteryPool;
+    use crate::client::test_utils::MockComponent;
+    use crate::microgrid::test_utils::{handles, last_snapshot};
+
+    /// grid → meter, with no batteries anywhere.
+    fn battery_less_graph() -> MockComponent {
+        MockComponent::grid(1).with_children(vec![MockComponent::meter(2)])
+    }
+
+    #[tokio::test]
+    async fn try_new_none_constructs_an_empty_pool_without_batteries() {
+        let (client, lm) = handles(battery_less_graph()).await;
+        // A battery-less microgrid is a valid (empty) pool, not an error.
+        let mut pool = BatteryPool::try_new(None, client, lm)
+            .expect("a battery-less microgrid should yield an empty pool");
+        pool.power().expect("empty pool power formula");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn empty_pool_emits_empty_snapshot_and_bounds() {
+        let (client, lm) = handles(battery_less_graph()).await;
+        let mut pool = BatteryPool::try_new(None, client, lm).unwrap();
+
+        let mut snapshots = pool.telemetry_snapshots();
+        let mut bounds = pool.power_bounds();
+
+        let snapshot = last_snapshot(&mut snapshots, 5).await;
+        assert!(
+            snapshot.groups().is_empty(),
+            "empty pool snapshot should have no groups, got {snapshot:?}"
+        );
+
+        let bounds = last_snapshot(&mut bounds, 5).await;
+        assert!(
+            bounds.is_empty(),
+            "empty pool should have empty power bounds"
+        );
+    }
+}

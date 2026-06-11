@@ -22,7 +22,10 @@
 
 ## New Features
 
-<!-- Here goes the main new features and examples or instructions on how to use them -->
+- `PvPool` and `BatteryPool` can now be constructed empty, yielding a valid pool (zero power, empty bounds, empty snapshots) instead of an error, from either:
+
+  - an explicit empty component set, or
+  - `None` on a microgrid with no components of that kind.
 
 ## Bug Fixes
 
