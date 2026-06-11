@@ -249,23 +249,13 @@ impl BatteryPoolTelemetryTracker {
 mod tests {
     use std::collections::HashMap;
 
-    use chrono::TimeDelta;
-
     use super::BatteryPoolSnapshot;
-    use crate::{
-        LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle,
-        client::{
-            proto::common::microgrid::electrical_components::ElectricalComponentStateCode,
-            test_utils::{MockComponent, MockMicrogridApiClient},
-        },
-        microgrid::{
-            battery_pool::BatteryPool,
-            telemetry_tracker::{
-                battery_pool_telemetry_tracker::InverterBatteryGroup,
-                inverter_battery_group_telemetry_tracker::InverterBatteryGroupStatus,
-            },
-        },
-    };
+    use crate::client::proto::common::microgrid::electrical_components::ElectricalComponentStateCode;
+    use crate::client::test_utils::MockComponent;
+    use crate::microgrid::battery_pool::BatteryPool;
+    use crate::microgrid::telemetry_tracker::battery_pool_telemetry_tracker::InverterBatteryGroup;
+    use crate::microgrid::telemetry_tracker::inverter_battery_group_telemetry_tracker::InverterBatteryGroupStatus;
+    use crate::microgrid::test_support::{handles, last_snapshot};
 
     impl BatteryPoolSnapshot {
         pub(crate) fn from_groups(
@@ -275,31 +265,8 @@ mod tests {
         }
     }
     async fn new_pool(graph: MockComponent) -> BatteryPool {
-        let api = MockMicrogridApiClient::new(graph);
-        let client = MicrogridClientHandle::new_from_client(api);
-        let lm = LogicalMeterHandle::try_new(
-            client.clone(),
-            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap()),
-        )
-        .await
-        .unwrap();
+        let (client, lm) = handles(graph).await;
         BatteryPool::try_new(None, client, lm).unwrap()
-    }
-
-    /// Drains `rx` for up to `steps` * 100ms of simulated time, returning the
-    /// last snapshot seen.
-    async fn last_snapshot(
-        rx: &mut tokio::sync::broadcast::Receiver<BatteryPoolSnapshot>,
-        steps: u32,
-    ) -> BatteryPoolSnapshot {
-        let mut last = None;
-        for _ in 0..steps {
-            tokio::time::advance(std::time::Duration::from_millis(100)).await;
-            while let Ok(snap) = rx.try_recv() {
-                last = Some(snap);
-            }
-        }
-        last.expect("no snapshot received")
     }
 
     #[tokio::test(start_paused = true)]

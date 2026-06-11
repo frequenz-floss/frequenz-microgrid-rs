@@ -8,6 +8,9 @@ mod pool_bounds_tracker;
 mod pool_broadcast;
 mod pool_validation;
 
+#[cfg(test)]
+mod test_support;
+
 mod battery_bounds_tracker;
 mod battery_pool;
 pub use battery_pool::BatteryPool;

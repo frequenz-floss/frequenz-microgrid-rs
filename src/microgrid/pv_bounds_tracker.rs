@@ -43,26 +43,7 @@ mod tests {
     use crate::quantity::Power;
 
     use super::compute_pool_bounds;
-
-    fn telem_with_power_bounds(
-        id: u64,
-        bounds: Vec<(Option<f32>, Option<f32>)>,
-    ) -> ElectricalComponentTelemetry {
-        ElectricalComponentTelemetry {
-            electrical_component_id: id,
-            metric_samples: vec![MetricSample {
-                sample_time: None,
-                metric: MetricPb::AcPowerActive as i32,
-                value: None,
-                bounds: bounds
-                    .into_iter()
-                    .map(|(lower, upper)| PbBounds { lower, upper })
-                    .collect(),
-                ..Default::default()
-            }],
-            ..Default::default()
-        }
-    }
+    use crate::microgrid::test_support::telem_with_power_bounds;
 
     /// Builds a snapshot whose healthy set holds the given telemetry, keyed by
     /// component ID, and an empty unhealthy set.

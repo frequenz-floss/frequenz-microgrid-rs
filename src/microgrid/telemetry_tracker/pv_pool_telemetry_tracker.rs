@@ -161,44 +161,14 @@ impl PvPoolTelemetryTracker {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeDelta;
-
-    use super::PvPoolSnapshot;
-    use crate::{
-        LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle,
-        client::{
-            proto::common::microgrid::electrical_components::ElectricalComponentStateCode,
-            test_utils::{MockComponent, MockMicrogridApiClient},
-        },
-        microgrid::pv_pool::PvPool,
-    };
+    use crate::client::proto::common::microgrid::electrical_components::ElectricalComponentStateCode;
+    use crate::client::test_utils::MockComponent;
+    use crate::microgrid::pv_pool::PvPool;
+    use crate::microgrid::test_support::{handles, last_snapshot};
 
     async fn new_pool(graph: MockComponent) -> PvPool {
-        let api = MockMicrogridApiClient::new(graph);
-        let client = MicrogridClientHandle::new_from_client(api);
-        let lm = LogicalMeterHandle::try_new(
-            client.clone(),
-            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap()),
-        )
-        .await
-        .unwrap();
+        let (client, lm) = handles(graph).await;
         PvPool::try_new(None, client, lm).unwrap()
-    }
-
-    /// Drains `rx` for up to `steps` * 100ms of simulated time, returning the
-    /// last snapshot seen.
-    async fn last_snapshot(
-        rx: &mut tokio::sync::broadcast::Receiver<PvPoolSnapshot>,
-        steps: u32,
-    ) -> PvPoolSnapshot {
-        let mut last = None;
-        for _ in 0..steps {
-            tokio::time::advance(std::time::Duration::from_millis(100)).await;
-            while let Ok(snap) = rx.try_recv() {
-                last = Some(snap);
-            }
-        }
-        last.expect("no snapshot received")
     }
 
     #[tokio::test(start_paused = true)]

@@ -191,26 +191,9 @@ impl PvPool {
 mod tests {
     use std::collections::BTreeSet;
 
-    use chrono::TimeDelta;
-
     use super::PvPool;
-    use crate::{
-        LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle,
-        client::test_utils::{MockComponent, MockMicrogridApiClient},
-    };
-
-    /// Builds client and logical-meter handles backed by the given mock graph.
-    async fn handles(graph: MockComponent) -> (MicrogridClientHandle, LogicalMeterHandle) {
-        let api = MockMicrogridApiClient::new(graph);
-        let client = MicrogridClientHandle::new_from_client(api);
-        let lm = LogicalMeterHandle::try_new(
-            client.clone(),
-            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap()),
-        )
-        .await
-        .unwrap();
-        (client, lm)
-    }
+    use crate::client::test_utils::MockComponent;
+    use crate::microgrid::test_support::handles;
 
     /// grid → meter → [pv meter → pv_inverter(4), pv_inverter(5)],
     ///                 [battery meter → battery_inverter(7) → battery(8)]
