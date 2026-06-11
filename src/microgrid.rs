@@ -6,6 +6,7 @@
 mod bounds_aggregation;
 mod pool_bounds_tracker;
 mod pool_broadcast;
+mod pool_validation;
 
 mod battery_bounds_tracker;
 mod battery_pool;
