@@ -15,8 +15,10 @@ use crate::{
         proto::common::microgrid::electrical_components::ElectricalComponentStateCode,
     },
     metric,
+    metric::Metric,
     microgrid::{
-        battery_bounds_tracker::BatteryPoolBoundsTracker,
+        battery_bounds_tracker,
+        pool_bounds_tracker::PoolBoundsTracker,
         pool_broadcast::try_reuse,
         telemetry_tracker::battery_pool_telemetry_tracker::{
             BatteryPoolSnapshot, BatteryPoolTelemetryTracker,
@@ -101,9 +103,15 @@ impl BatteryPool {
         let snapshot_rx = self.telemetry_snapshots();
         let (tx, rx) = broadcast::channel(100);
         self.bounds_tx = Some(tx.downgrade());
-        let tracker = BatteryPoolBoundsTracker::<metric::AcPowerActive, metric::DcPower>::new(
+        let tracker = PoolBoundsTracker::new(
             snapshot_rx,
             tx,
+            battery_bounds_tracker::compute_pool_bounds::<metric::AcPowerActive, metric::DcPower>,
+            format!(
+                "{}/{}",
+                metric::AcPowerActive::str_name(),
+                metric::DcPower::str_name()
+            ),
         );
         tokio::spawn(tracker.run());
         rx

@@ -19,93 +19,38 @@
 //!   aggregated bounds are intersected.
 //! * Groups within a pool are in parallel — their bounds are added together.
 
-use std::marker::PhantomData;
-
-use tokio::sync::broadcast;
-
 use crate::bounds::{combine_parallel_sets, intersect_bounds_sets};
 use crate::client::proto::common::metrics::Bounds as PbBounds;
 use crate::microgrid::bounds_aggregation::aggregate_parallel;
 use crate::microgrid::telemetry_tracker::battery_pool_telemetry_tracker::BatteryPoolSnapshot;
 use crate::{Bounds, metric::Metric};
 
-/// Tracks and aggregates power bounds for a battery pool.
+/// Aggregates the power bounds of a battery pool following the physical
+/// topology of its inverter-battery groups (see the module docs).
 ///
 /// `InverterM` is the metric used to read bounds from inverters (e.g.
 /// `AcPowerActive`); `BatteryM` is the metric used to read bounds from
 /// batteries (e.g. `DcPower`). Both must share the same `QuantityType` so
 /// their bounds can be intersected and summed.
-pub(crate) struct BatteryPoolBoundsTracker<InverterM: Metric, BatteryM: Metric> {
-    pool_status_rx: broadcast::Receiver<BatteryPoolSnapshot>,
-    pool_bounds_tx: broadcast::Sender<Vec<Bounds<InverterM::QuantityType>>>,
-    _marker: PhantomData<(InverterM, BatteryM)>,
-}
-
-impl<InverterM, BatteryM> BatteryPoolBoundsTracker<InverterM, BatteryM>
+pub(crate) fn compute_pool_bounds<InverterM, BatteryM>(
+    status: &BatteryPoolSnapshot,
+) -> Vec<Bounds<InverterM::QuantityType>>
 where
     InverterM: Metric,
     BatteryM: Metric<QuantityType = InverterM::QuantityType>,
     Bounds<InverterM::QuantityType>: From<PbBounds>,
 {
-    pub(crate) fn new(
-        pool_status_rx: broadcast::Receiver<BatteryPoolSnapshot>,
-        pool_bounds_tx: broadcast::Sender<Vec<Bounds<InverterM::QuantityType>>>,
-    ) -> Self {
-        Self {
-            pool_status_rx,
-            pool_bounds_tx,
-            _marker: PhantomData,
-        }
-    }
-
-    pub(crate) async fn run(mut self) {
-        loop {
-            match self.pool_status_rx.recv().await {
-                Ok(pool_status) => {
-                    let bounds = Self::compute_pool_bounds(&pool_status);
-                    if self.pool_bounds_tx.send(bounds).is_err() {
-                        tracing::debug!(
-                            "No receivers for {}/{} bounds tracker; shutting down.",
-                            InverterM::str_name(),
-                            BatteryM::str_name(),
-                        );
-                        break;
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(
-                        "{}/{} bounds tracker lagged by {n} pool status updates.",
-                        InverterM::str_name(),
-                        BatteryM::str_name(),
-                    );
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    // The telemetry tracker upstream has shut down — a normal
-                    // teardown of the whole pool, not an error here.
-                    tracing::debug!(
-                        "Pool status channel closed; {}/{} bounds tracker shutting down.",
-                        InverterM::str_name(),
-                        BatteryM::str_name(),
-                    );
-                    break;
-                }
-            }
-        }
-    }
-
-    fn compute_pool_bounds(status: &BatteryPoolSnapshot) -> Vec<Bounds<InverterM::QuantityType>> {
-        status
-            .groups()
-            .values()
-            .map(|group| {
-                let inverter_bounds = aggregate_parallel::<InverterM>(&group.healthy_inverters);
-                let battery_bounds = aggregate_parallel::<BatteryM>(&group.healthy_batteries);
-                intersect_bounds_sets(&inverter_bounds, &battery_bounds)
-            })
-            .fold(Vec::new(), |acc, group_bounds| {
-                combine_parallel_sets(&acc, &group_bounds)
-            })
-    }
+    status
+        .groups()
+        .values()
+        .map(|group| {
+            let inverter_bounds = aggregate_parallel::<InverterM>(&group.healthy_inverters);
+            let battery_bounds = aggregate_parallel::<BatteryM>(&group.healthy_batteries);
+            intersect_bounds_sets(&inverter_bounds, &battery_bounds)
+        })
+        .fold(Vec::new(), |acc, group_bounds| {
+            combine_parallel_sets(&acc, &group_bounds)
+        })
 }
 
 #[cfg(test)]
@@ -124,7 +69,7 @@ mod tests {
     use crate::microgrid::telemetry_tracker::inverter_battery_group_telemetry_tracker::InverterBatteryGroupStatus;
     use crate::quantity::Power;
 
-    use super::BatteryPoolBoundsTracker;
+    use super::compute_pool_bounds;
 
     fn telem_with_power_bounds(
         id: u64,
@@ -186,7 +131,7 @@ mod tests {
             },
         )]);
 
-        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(
             &snapshot,
         );
         assert_eq!(
@@ -233,7 +178,7 @@ mod tests {
             },
         )]);
 
-        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(
             &snapshot,
         );
         assert_eq!(
@@ -292,7 +237,7 @@ mod tests {
             ),
         ]);
 
-        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(
             &snapshot,
         );
         assert_eq!(
@@ -307,7 +252,7 @@ mod tests {
     #[test]
     fn empty_pool_yields_empty_bounds() {
         let snapshot = status(vec![]);
-        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(
             &snapshot,
         );
         assert!(bounds.is_empty());
@@ -340,7 +285,7 @@ mod tests {
             },
         )]);
 
-        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(
             &snapshot,
         );
         assert!(
@@ -374,7 +319,7 @@ mod tests {
             },
         )]);
 
-        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(
             &snapshot,
         );
         assert!(
@@ -409,7 +354,7 @@ mod tests {
             },
         )]);
 
-        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(
             &snapshot,
         );
         assert!(
@@ -443,7 +388,7 @@ mod tests {
             },
         )]);
 
-        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(
             &snapshot,
         );
         assert!(
@@ -490,7 +435,7 @@ mod tests {
 
         // Inverter side has no active-power bounds → group produces no
         // bounds, so the pool bounds are empty.
-        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(
             &snapshot,
         );
         assert!(bounds.is_empty());
