@@ -179,8 +179,17 @@ impl BatteryPoolTelemetryTracker {
 
         loop {
             tokio::select! {
-                Some((group_ids, status)) = component_status_rx.recv() => {
-                    inverter_battery_group_data.insert(group_ids, status);
+                maybe_status = component_status_rx.recv() => {
+                    match maybe_status {
+                        Some((group_ids, status)) => {
+                            inverter_battery_group_data.insert(group_ids, status);
+                        }
+                        // Every group tracker has exited and dropped its sender,
+                        // so no further updates will arrive. The `interval.tick()`
+                        // arm never disables, so the `select!` `else` can never
+                        // run; break here instead.
+                        None => break,
+                    }
                 },
                 _ = interval.tick() => {
                     if last_sent_status.as_ref() == Some(&inverter_battery_group_data) {
@@ -195,7 +204,6 @@ impl BatteryPoolTelemetryTracker {
                     }
                     last_sent_status = Some(inverter_battery_group_data.clone());
                 },
-                else => break,
             }
         }
 

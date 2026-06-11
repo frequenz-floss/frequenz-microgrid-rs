@@ -107,16 +107,21 @@ impl PvPoolTelemetryTracker {
 
         loop {
             tokio::select! {
-                Some(status) = status_rx.recv() => {
-                    match status {
-                        ComponentHealthStatus::Healthy(id, data) => {
+                maybe_status = status_rx.recv() => {
+                    match maybe_status {
+                        Some(ComponentHealthStatus::Healthy(id, data)) => {
                             healthy_inverters.insert(id, data);
                             unhealthy_inverters.remove(&id);
                         }
-                        ComponentHealthStatus::Unhealthy(id, data) => {
+                        Some(ComponentHealthStatus::Unhealthy(id, data)) => {
                             unhealthy_inverters.insert(id, data);
                             healthy_inverters.remove(&id);
                         }
+                        // Every component tracker has exited and dropped its
+                        // sender, so no further updates will arrive. The
+                        // `interval.tick()` arm never disables, so the `select!`
+                        // `else` can never run; break here instead.
+                        None => break,
                     }
                 },
                 _ = interval.tick() => {
@@ -138,7 +143,6 @@ impl PvPoolTelemetryTracker {
                     }
                     last_sent = Some(snapshot);
                 },
-                else => break,
             }
         }
 
