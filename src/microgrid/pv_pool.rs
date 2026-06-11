@@ -2,6 +2,15 @@
 // Copyright © 2026 Frequenz Energy-as-a-Service GmbH
 
 //! Representation of a pool of PV inverters in the microgrid.
+//!
+//! A [`PvPool`] aggregates a set of PV inverters — either an explicit subset or
+//! every PV inverter in the microgrid — and exposes their combined active
+//! power, their aggregated active-power bounds, and a health-partitioned
+//! telemetry snapshot stream.
+//!
+//! Obtain one from [`Microgrid::pv_pool`]; see [`PvPool`] for a usage example.
+//!
+//! [`Microgrid::pv_pool`]: crate::Microgrid::pv_pool
 
 use tokio::sync::broadcast;
 
@@ -19,7 +28,49 @@ use crate::{
     quantity::Power,
 };
 
-/// An interface for abstracting over a pool of PV inverters in the microgrid.
+/// A pool of PV inverters in the microgrid.
+///
+/// Created with [`Microgrid::pv_pool`][mg], passing either an explicit set of PV
+/// inverter component IDs or `None` to cover every PV inverter in the microgrid.
+/// It exposes:
+///
+/// - [`power`](Self::power) — a [`Formula`] for the pool's aggregate active
+///   power;
+/// - [`power_bounds`](Self::power_bounds) — a stream of the pool's aggregated
+///   active-power bounds;
+/// - [`telemetry_snapshots`](Self::telemetry_snapshots) — a stream of
+///   [`PvPoolSnapshot`]s partitioning the inverters into healthy and unhealthy
+///   sets.
+///
+/// The bounds and snapshot streams share a telemetry tracker that is started on
+/// first use and reused while it still has live receivers.
+///
+/// # Example
+///
+/// ```no_run
+/// # async fn example() -> Result<(), frequenz_microgrid::Error> {
+/// use chrono::TimeDelta;
+/// use frequenz_microgrid::{LogicalMeterConfig, Microgrid};
+///
+/// let microgrid = Microgrid::try_new(
+///     "grpc://localhost:50051",
+///     LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap()),
+/// )
+/// .await?;
+///
+/// // A pool over every PV inverter in the microgrid.
+/// let mut pv_pool = microgrid.pv_pool(None)?;
+///
+/// // Subscribe to the pool's aggregated active-power bounds.
+/// let mut bounds_rx = pv_pool.power_bounds();
+/// while let Ok(bounds) = bounds_rx.recv().await {
+///     println!("PV pool active-power bounds: {bounds:?}");
+/// }
+/// # Ok(())
+/// # }
+/// ```
+///
+/// [mg]: crate::Microgrid::pv_pool
 pub struct PvPool {
     component_ids: Option<BTreeSet<u64>>,
     client: MicrogridClientHandle,
