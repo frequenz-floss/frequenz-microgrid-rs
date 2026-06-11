@@ -60,11 +60,6 @@ impl PvPoolTelemetryTracker {
     }
 
     pub(crate) async fn run(self) {
-        if self.component_ids.is_empty() {
-            tracing::error!("No component IDs provided for PvPoolTelemetryTracker");
-            return;
-        }
-
         let mut inverters = ComponentHealthPartition::default();
 
         let (status_tx, mut status_rx) = mpsc::channel(100);
@@ -98,8 +93,16 @@ impl PvPoolTelemetryTracker {
         }
 
         // Drop the original sender so the channel closes once every component
-        // tracker finishes, which signals the main loop to stop.
-        drop(status_tx);
+        // tracker finishes, which signals the main loop to stop. An empty pool
+        // spawns no trackers, so keep the sender instead — otherwise the
+        // channel would close immediately and be read as shutdown before the
+        // tick arm can emit the pool's (empty) snapshot.
+        let _empty_pool_keepalive = if self.component_ids.is_empty() {
+            Some(status_tx)
+        } else {
+            drop(status_tx);
+            None
+        };
 
         let mut interval = tokio::time::interval(Duration::from_millis(200));
         let mut last_sent: Option<PvPoolSnapshot> = None;

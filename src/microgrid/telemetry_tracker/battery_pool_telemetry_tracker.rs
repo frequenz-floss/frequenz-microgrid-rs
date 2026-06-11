@@ -76,11 +76,8 @@ impl BatteryPoolTelemetryTracker {
     }
 
     pub(crate) fn get_inverter_battery_groups(&self) -> Result<Vec<InverterBatteryGroup>, Error> {
-        if self.component_ids.is_empty() {
-            let e = "No component IDs provided for BatteryPoolTelemetryTracker".to_string();
-            tracing::error!("{}", e);
-            return Err(Error::component_data_error(e));
-        }
+        // An empty component set is a valid (empty) pool; the loop below visits
+        // no batteries and yields no groups.
         let mut unvisited_batteries = self.component_ids.clone();
         let mut groups = Vec::new();
 
@@ -176,6 +173,8 @@ impl BatteryPoolTelemetryTracker {
             return;
         };
 
+        let is_empty_pool = inverter_battery_group_ids.is_empty();
+
         let (component_status_tx, mut component_status_rx) = tokio::sync::mpsc::channel(100);
         for inverter_battery_group in inverter_battery_group_ids {
             let tracker = InverterBatteryGroupTelemetryTracker::new(
@@ -190,8 +189,15 @@ impl BatteryPoolTelemetryTracker {
         }
 
         // Drop the original sender so that the channel will close when all
-        // trackers finish.
-        drop(component_status_tx);
+        // trackers finish. An empty pool spawns no trackers, so keep the sender
+        // instead — otherwise the channel would close immediately and be read
+        // as shutdown before the tick arm can emit the pool's (empty) snapshot.
+        let _empty_pool_keepalive = if is_empty_pool {
+            Some(component_status_tx)
+        } else {
+            drop(component_status_tx);
+            None
+        };
 
         let mut interval = tokio::time::interval(Duration::from_millis(200));
         let mut last_sent_status = None;
