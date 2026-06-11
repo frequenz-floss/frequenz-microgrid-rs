@@ -8,6 +8,18 @@
 
 - `BatteryPoolTelemetryTracker` and `PvPoolTelemetryTracker` are no longer public; they were an implementation detail. Use `BatteryPool::telemetry_snapshots()` / `PvPool::telemetry_snapshots()` to consume their snapshots.
 
+- `PvPoolSnapshot` now exposes a single `inverters: ComponentHealthPartition` instead of the separate `healthy_inverters` / `unhealthy_inverters` maps:
+
+  - `snapshot.healthy_inverters` → `snapshot.inverters.healthy`
+  - `snapshot.unhealthy_inverters` → `snapshot.inverters.unhealthy`
+
+- `InverterBatteryGroupStatus` (reached via `BatteryPoolSnapshot::groups()`) now groups its telemetry into `inverters: ComponentHealthPartition` and `batteries: ComponentHealthPartition`:
+
+  - `status.healthy_inverters` → `status.inverters.healthy`
+  - `status.unhealthy_inverters` → `status.inverters.unhealthy`
+  - `status.healthy_batteries` → `status.batteries.healthy`
+  - `status.unhealthy_batteries` → `status.batteries.unhealthy`
+
 ## New Features
 
 <!-- Here goes the main new features and examples or instructions on how to use them -->

@@ -26,7 +26,7 @@ where
     M: Metric,
     Bounds<M::QuantityType>: From<PbBounds>,
 {
-    aggregate_parallel::<M>(&status.healthy_inverters)
+    aggregate_parallel::<M>(&status.inverters.healthy)
 }
 
 /// Aggregates the power bounds of a battery pool following the physical
@@ -48,8 +48,8 @@ where
         .groups()
         .values()
         .map(|group| {
-            let inverter_bounds = aggregate_parallel::<InverterM>(&group.healthy_inverters);
-            let battery_bounds = aggregate_parallel::<BatteryM>(&group.healthy_batteries);
+            let inverter_bounds = aggregate_parallel::<InverterM>(&group.inverters.healthy);
+            let battery_bounds = aggregate_parallel::<BatteryM>(&group.batteries.healthy);
             intersect_bounds_sets(&inverter_bounds, &battery_bounds)
         })
         .fold(Vec::new(), |acc, group_bounds| {
@@ -67,6 +67,7 @@ mod pv_tests {
     };
     use crate::client::proto::common::microgrid::electrical_components::ElectricalComponentTelemetry;
     use crate::metric::AcPowerActive;
+    use crate::microgrid::telemetry_tracker::component_partition::ComponentHealthPartition;
     use crate::microgrid::telemetry_tracker::pv_pool_telemetry_tracker::PvPoolSnapshot;
     use crate::quantity::Power;
 
@@ -100,8 +101,10 @@ mod pv_tests {
             .map(|t| (t.electrical_component_id, t))
             .collect();
         PvPoolSnapshot {
-            healthy_inverters: healthy,
-            unhealthy_inverters: HashMap::new(),
+            inverters: ComponentHealthPartition {
+                healthy,
+                unhealthy: HashMap::new(),
+            },
         }
     }
 
@@ -164,8 +167,7 @@ mod pv_tests {
             )),
         );
         let snap = PvPoolSnapshot {
-            healthy_inverters: healthy,
-            unhealthy_inverters: unhealthy,
+            inverters: ComponentHealthPartition { healthy, unhealthy },
         };
 
         let bounds = compute_pool_bounds::<AcPowerActive>(&snap);
@@ -215,6 +217,7 @@ mod battery_tests {
     use crate::microgrid::telemetry_tracker::battery_pool_telemetry_tracker::{
         BatteryPoolSnapshot, InverterBatteryGroup,
     };
+    use crate::microgrid::telemetry_tracker::component_partition::ComponentHealthPartition;
     use crate::microgrid::telemetry_tracker::inverter_battery_group_telemetry_tracker::InverterBatteryGroupStatus;
     use crate::quantity::Power;
 
@@ -273,10 +276,14 @@ mod battery_tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters,
-                healthy_batteries,
-                unhealthy_inverters: HashMap::new(),
-                unhealthy_batteries: HashMap::new(),
+                inverters: ComponentHealthPartition {
+                    healthy: healthy_inverters,
+                    unhealthy: HashMap::new(),
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: healthy_batteries,
+                    unhealthy: HashMap::new(),
+                },
             },
         )]);
 
@@ -318,10 +325,14 @@ mod battery_tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters,
-                healthy_batteries,
-                unhealthy_inverters: HashMap::new(),
-                unhealthy_batteries: HashMap::new(),
+                inverters: ComponentHealthPartition {
+                    healthy: healthy_inverters,
+                    unhealthy: HashMap::new(),
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: healthy_batteries,
+                    unhealthy: HashMap::new(),
+                },
             },
         )]);
 
@@ -365,19 +376,27 @@ mod battery_tests {
             (
                 g1,
                 InverterBatteryGroupStatus {
-                    healthy_inverters: h_inv_1,
-                    healthy_batteries: h_bat_1,
-                    unhealthy_inverters: HashMap::new(),
-                    unhealthy_batteries: HashMap::new(),
+                    inverters: ComponentHealthPartition {
+                        healthy: h_inv_1,
+                        unhealthy: HashMap::new(),
+                    },
+                    batteries: ComponentHealthPartition {
+                        healthy: h_bat_1,
+                        unhealthy: HashMap::new(),
+                    },
                 },
             ),
             (
                 g2,
                 InverterBatteryGroupStatus {
-                    healthy_inverters: h_inv_2,
-                    healthy_batteries: h_bat_2,
-                    unhealthy_inverters: HashMap::new(),
-                    unhealthy_batteries: HashMap::new(),
+                    inverters: ComponentHealthPartition {
+                        healthy: h_inv_2,
+                        unhealthy: HashMap::new(),
+                    },
+                    batteries: ComponentHealthPartition {
+                        healthy: h_bat_2,
+                        unhealthy: HashMap::new(),
+                    },
                 },
             ),
         ]);
@@ -419,10 +438,14 @@ mod battery_tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters,
-                healthy_batteries,
-                unhealthy_inverters: HashMap::new(),
-                unhealthy_batteries: HashMap::new(),
+                inverters: ComponentHealthPartition {
+                    healthy: healthy_inverters,
+                    unhealthy: HashMap::new(),
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: healthy_batteries,
+                    unhealthy: HashMap::new(),
+                },
             },
         )]);
 
@@ -451,10 +474,14 @@ mod battery_tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters,
-                healthy_batteries,
-                unhealthy_inverters: HashMap::new(),
-                unhealthy_batteries: HashMap::new(),
+                inverters: ComponentHealthPartition {
+                    healthy: healthy_inverters,
+                    unhealthy: HashMap::new(),
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: healthy_batteries,
+                    unhealthy: HashMap::new(),
+                },
             },
         )]);
 
@@ -484,10 +511,14 @@ mod battery_tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters: HashMap::new(),
-                healthy_batteries,
-                unhealthy_inverters,
-                unhealthy_batteries: HashMap::new(),
+                inverters: ComponentHealthPartition {
+                    healthy: HashMap::new(),
+                    unhealthy: unhealthy_inverters,
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: healthy_batteries,
+                    unhealthy: HashMap::new(),
+                },
             },
         )]);
 
@@ -516,10 +547,14 @@ mod battery_tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters,
-                healthy_batteries: HashMap::new(),
-                unhealthy_inverters: HashMap::new(),
-                unhealthy_batteries,
+                inverters: ComponentHealthPartition {
+                    healthy: healthy_inverters,
+                    unhealthy: HashMap::new(),
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: HashMap::new(),
+                    unhealthy: unhealthy_batteries,
+                },
             },
         )]);
 
@@ -559,10 +594,14 @@ mod battery_tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters: h_inv,
-                healthy_batteries: h_bat,
-                unhealthy_inverters: HashMap::new(),
-                unhealthy_batteries: HashMap::new(),
+                inverters: ComponentHealthPartition {
+                    healthy: h_inv,
+                    unhealthy: HashMap::new(),
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: h_bat,
+                    unhealthy: HashMap::new(),
+                },
             },
         )]);
 

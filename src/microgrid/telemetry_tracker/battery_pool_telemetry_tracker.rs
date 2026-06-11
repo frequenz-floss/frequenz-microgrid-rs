@@ -330,10 +330,10 @@ mod tests {
         let (group, status) = groups.iter().next().unwrap();
         assert_eq!(group.inverter_ids, [3].into());
         assert_eq!(group.battery_ids, [4].into());
-        assert!(status.healthy_inverters.contains_key(&3));
-        assert!(status.healthy_batteries.contains_key(&4));
-        assert!(status.unhealthy_inverters.is_empty());
-        assert!(status.unhealthy_batteries.is_empty());
+        assert!(status.inverters.healthy.contains_key(&3));
+        assert!(status.batteries.healthy.contains_key(&4));
+        assert!(status.inverters.unhealthy.is_empty());
+        assert!(status.batteries.unhealthy.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
@@ -375,8 +375,8 @@ mod tests {
         assert_eq!(all_batteries, [4, 6].into());
 
         for status in groups.values() {
-            assert!(status.unhealthy_inverters.is_empty());
-            assert!(status.unhealthy_batteries.is_empty());
+            assert!(status.inverters.unhealthy.is_empty());
+            assert!(status.batteries.unhealthy.is_empty());
         }
     }
 
@@ -434,7 +434,7 @@ mod tests {
         let healthy = last_snapshot(&mut rx, 10).await;
         let (_, status) = healthy.groups().iter().next().unwrap();
         assert!(
-            status.healthy_inverters.contains_key(&3) && status.healthy_batteries.contains_key(&4),
+            status.inverters.healthy.contains_key(&3) && status.batteries.healthy.contains_key(&4),
             "expected components to go healthy after initial samples, got {:?}",
             status
         );
@@ -447,17 +447,17 @@ mod tests {
 
         let (_, status) = unhealthy.groups().iter().next().unwrap();
         assert!(
-            status.healthy_inverters.is_empty(),
+            status.inverters.healthy.is_empty(),
             "inverter should be unhealthy after data stops, got healthy set {:?}",
-            status.healthy_inverters.keys()
+            status.inverters.healthy.keys()
         );
         assert!(
-            status.healthy_batteries.is_empty(),
+            status.batteries.healthy.is_empty(),
             "battery should be unhealthy after data stops, got healthy set {:?}",
-            status.healthy_batteries.keys()
+            status.batteries.healthy.keys()
         );
-        assert!(status.unhealthy_inverters.contains_key(&3));
-        assert!(status.unhealthy_batteries.contains_key(&4));
+        assert!(status.inverters.unhealthy.contains_key(&3));
+        assert!(status.batteries.unhealthy.contains_key(&4));
     }
 
     #[tokio::test(start_paused = true)]
@@ -482,15 +482,15 @@ mod tests {
 
         let (_, status) = snap.groups().iter().next().unwrap();
         assert!(
-            status.healthy_inverters.contains_key(&3),
+            status.inverters.healthy.contains_key(&3),
             "inverter with Ready state should be healthy"
         );
         assert!(
-            !status.healthy_batteries.contains_key(&4),
+            !status.batteries.healthy.contains_key(&4),
             "battery with Error state should not be in healthy set"
         );
         assert!(
-            status.unhealthy_batteries.contains_key(&4),
+            status.batteries.unhealthy.contains_key(&4),
             "battery with Error state should be in unhealthy set, got {:?}",
             status
         );

@@ -37,8 +37,8 @@ pub(crate) mod wall_clock_timer;
 
 mod microgrid;
 pub use microgrid::{
-    BatteryPool, BatteryPoolSnapshot, InverterBatteryGroup, InverterBatteryGroupStatus, Microgrid,
-    PvPool, PvPoolSnapshot,
+    BatteryPool, BatteryPoolSnapshot, ComponentHealthPartition, InverterBatteryGroup,
+    InverterBatteryGroupStatus, Microgrid, PvPool, PvPoolSnapshot,
 };
 
 #[cfg(any(test, feature = "test-utils"))]
