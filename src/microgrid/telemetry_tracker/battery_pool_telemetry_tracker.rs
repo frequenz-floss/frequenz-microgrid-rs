@@ -20,7 +20,7 @@ use crate::{
 /// M inverters in parallel on the AC side, N batteries in parallel on the DC
 /// side, with the inverter side in series with the battery side.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub(crate) struct InverterBatteryGroup {
+pub struct InverterBatteryGroup {
     pub inverter_ids: BTreeSet<u64>,
     pub battery_ids: BTreeSet<u64>,
 }
@@ -35,10 +35,10 @@ impl InverterBatteryGroup {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct BatteryPoolSnapshot(HashMap<InverterBatteryGroup, InverterBatteryGroupStatus>);
+pub struct BatteryPoolSnapshot(HashMap<InverterBatteryGroup, InverterBatteryGroupStatus>);
 
 impl BatteryPoolSnapshot {
-    pub(crate) fn groups(&self) -> &HashMap<InverterBatteryGroup, InverterBatteryGroupStatus> {
+    pub fn groups(&self) -> &HashMap<InverterBatteryGroup, InverterBatteryGroupStatus> {
         &self.0
     }
 }
@@ -47,7 +47,7 @@ impl BatteryPoolSnapshot {
 /// a [`BatteryPoolSnapshot`] whenever any component's telemetry or health
 /// classification changes.
 #[derive(Clone)]
-pub(crate) struct BatteryPoolTelemetryTracker {
+pub struct BatteryPoolTelemetryTracker {
     component_ids: BTreeSet<u64>,
     component_pool_status_tx: tokio::sync::broadcast::Sender<BatteryPoolSnapshot>,
     missing_data_tolerance: Duration,
@@ -179,8 +179,17 @@ impl BatteryPoolTelemetryTracker {
 
         loop {
             tokio::select! {
-                Some((group_ids, status)) = component_status_rx.recv() => {
-                    inverter_battery_group_data.insert(group_ids, status);
+                maybe_status = component_status_rx.recv() => {
+                    match maybe_status {
+                        Some((group_ids, status)) => {
+                            inverter_battery_group_data.insert(group_ids, status);
+                        }
+                        // Every group tracker has exited and dropped its sender,
+                        // so no further updates will arrive. The `interval.tick()`
+                        // arm never disables, so the `select!` `else` can never
+                        // run; break here instead.
+                        None => break,
+                    }
                 },
                 _ = interval.tick() => {
                     if last_sent_status.as_ref() == Some(&inverter_battery_group_data) {
@@ -195,7 +204,6 @@ impl BatteryPoolTelemetryTracker {
                     }
                     last_sent_status = Some(inverter_battery_group_data.clone());
                 },
-                else => break,
             }
         }
 

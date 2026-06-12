@@ -36,7 +36,10 @@ pub mod metric;
 pub(crate) mod wall_clock_timer;
 
 mod microgrid;
-pub use microgrid::{BatteryPool, Microgrid};
+pub use microgrid::{
+    BatteryPool, BatteryPoolSnapshot, BatteryPoolTelemetryTracker, InverterBatteryGroup,
+    InverterBatteryGroupStatus, Microgrid, PvPool, PvPoolSnapshot, PvPoolTelemetryTracker,
+};
 
 #[cfg(any(test, feature = "test-utils"))]
 pub use client::test_utils;
