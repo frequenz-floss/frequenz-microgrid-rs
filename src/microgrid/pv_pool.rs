@@ -21,8 +21,12 @@ use crate::{
     Bounds, Error, Formula, LogicalMeterHandle, MicrogridClientHandle,
     client::proto::common::microgrid::electrical_components::ElectricalComponentStateCode,
     metric,
+    metric::Metric,
     microgrid::{
-        pv_bounds_tracker::PvPoolBoundsTracker,
+        pool_bounds_tracker::PoolBoundsTracker,
+        pool_broadcast::try_reuse,
+        pool_validation::validate_pool_ids,
+        pv_bounds_tracker,
         telemetry_tracker::pv_pool_telemetry_tracker::{PvPoolSnapshot, PvPoolTelemetryTracker},
     },
     quantity::Power,
@@ -98,20 +102,11 @@ impl PvPool {
             snapshot_tx: None,
             bounds_tx: None,
         };
-        if let Some(ids) = &this.component_ids {
-            if ids.is_empty() {
-                let e = "component_ids cannot be an empty set".to_string();
-                tracing::error!("{e}");
-                return Err(Error::invalid_component(e));
-            }
-            // Validate that all provided IDs correspond to PV inverters in the
-            // graph.
-            if !ids.is_subset(&this.get_all_pv_inverter_ids()) {
-                let e = format!("All component_ids {:?} must be PV inverters.", ids);
-                tracing::error!("{e}");
-                return Err(Error::invalid_component(e));
-            }
-        }
+        validate_pool_ids(
+            &this.component_ids,
+            &this.get_all_pv_inverter_ids(),
+            "PV inverters",
+        )?;
         Ok(this)
     }
 
@@ -145,18 +140,18 @@ impl PvPool {
     /// receivers; otherwise starts a new one (which also starts or reuses the
     /// underlying telemetry tracker).
     pub fn power_bounds(&mut self) -> broadcast::Receiver<Vec<Bounds<Power>>> {
-        if let Some(tx) = self
-            .bounds_tx
-            .as_ref()
-            .and_then(broadcast::WeakSender::upgrade)
-            && tx.receiver_count() > 0
-        {
-            return tx.subscribe();
+        if let Some(rx) = try_reuse(&self.bounds_tx) {
+            return rx;
         }
         let snapshot_rx = self.telemetry_snapshots();
         let (tx, rx) = broadcast::channel(100);
         self.bounds_tx = Some(tx.downgrade());
-        let tracker = PvPoolBoundsTracker::<metric::AcPowerActive>::new(snapshot_rx, tx);
+        let tracker = PoolBoundsTracker::new(
+            snapshot_rx,
+            tx,
+            pv_bounds_tracker::compute_pool_bounds::<metric::AcPowerActive>,
+            format!("{} PV", metric::AcPowerActive::str_name()),
+        );
         tokio::spawn(tracker.run());
         rx
     }
@@ -168,13 +163,8 @@ impl PvPool {
     /// Reuses the running tracker if one exists and still has active receivers
     /// (including any held by a bounds tracker); otherwise starts a new one.
     pub fn telemetry_snapshots(&mut self) -> broadcast::Receiver<PvPoolSnapshot> {
-        if let Some(tx) = self
-            .snapshot_tx
-            .as_ref()
-            .and_then(broadcast::WeakSender::upgrade)
-            && tx.receiver_count() > 0
-        {
-            return tx.subscribe();
+        if let Some(rx) = try_reuse(&self.snapshot_tx) {
+            return rx;
         }
         let (tx, rx) = broadcast::channel(100);
         self.snapshot_tx = Some(tx.downgrade());
@@ -201,26 +191,9 @@ impl PvPool {
 mod tests {
     use std::collections::BTreeSet;
 
-    use chrono::TimeDelta;
-
     use super::PvPool;
-    use crate::{
-        LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle,
-        client::test_utils::{MockComponent, MockMicrogridApiClient},
-    };
-
-    /// Builds client and logical-meter handles backed by the given mock graph.
-    async fn handles(graph: MockComponent) -> (MicrogridClientHandle, LogicalMeterHandle) {
-        let api = MockMicrogridApiClient::new(graph);
-        let client = MicrogridClientHandle::new_from_client(api);
-        let lm = LogicalMeterHandle::try_new(
-            client.clone(),
-            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap()),
-        )
-        .await
-        .unwrap();
-        (client, lm)
-    }
+    use crate::client::test_utils::MockComponent;
+    use crate::microgrid::test_support::handles;
 
     /// grid → meter → [pv meter → pv_inverter(4), pv_inverter(5)],
     ///                 [battery meter → battery_inverter(7) → battery(8)]

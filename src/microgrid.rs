@@ -4,6 +4,12 @@
 //! High-level interface for the Microgrid API.
 
 mod bounds_aggregation;
+mod pool_bounds_tracker;
+mod pool_broadcast;
+mod pool_validation;
+
+#[cfg(test)]
+mod test_support;
 
 mod battery_bounds_tracker;
 mod battery_pool;
@@ -17,6 +23,7 @@ pub(crate) mod telemetry_tracker;
 pub use telemetry_tracker::battery_pool_telemetry_tracker::{
     BatteryPoolSnapshot, BatteryPoolTelemetryTracker, InverterBatteryGroup,
 };
+pub use telemetry_tracker::component_partition::ComponentHealthPartition;
 pub use telemetry_tracker::inverter_battery_group_telemetry_tracker::InverterBatteryGroupStatus;
 pub use telemetry_tracker::pv_pool_telemetry_tracker::{PvPoolSnapshot, PvPoolTelemetryTracker};
 

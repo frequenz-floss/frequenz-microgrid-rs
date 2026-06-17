@@ -88,7 +88,11 @@ impl BatteryPoolTelemetryTracker {
 
         while let Some(battery_id) = unvisited_batteries.iter().next().cloned() {
             let group_inverters = graph
-                .predecessors(battery_id)?
+                .predecessors(battery_id)
+                .map_err(|e| {
+                    tracing::error!("Failed to query predecessors of battery {battery_id}: {e}");
+                    e
+                })?
                 .filter(|c| c.category() == crate::client::ElectricalComponentCategory::Inverter)
                 .map(|c| c.id)
                 .collect::<BTreeSet<_>>();
@@ -102,7 +106,13 @@ impl BatteryPoolTelemetryTracker {
             let mut group_batteries = BTreeSet::new();
             for inverter_id in &group_inverters {
                 let connected_batteries = graph
-                    .successors(*inverter_id)?
+                    .successors(*inverter_id)
+                    .map_err(|e| {
+                        tracing::error!(
+                            "Failed to query successors of inverter {inverter_id}: {e}"
+                        );
+                        e
+                    })?
                     .map(|c| c.id)
                     .collect::<BTreeSet<_>>();
 
@@ -129,7 +139,13 @@ impl BatteryPoolTelemetryTracker {
             // Ensure that group batteries are only connect to group inverters
             for battery_id in &group_batteries {
                 let connected_inverters = graph
-                    .predecessors(*battery_id)?
+                    .predecessors(*battery_id)
+                    .map_err(|e| {
+                        tracing::error!(
+                            "Failed to query predecessors of battery {battery_id}: {e}"
+                        );
+                        e
+                    })?
                     .filter(|c| {
                         c.category() == crate::client::ElectricalComponentCategory::Inverter
                     })
@@ -152,10 +168,13 @@ impl BatteryPoolTelemetryTracker {
         Ok(groups)
     }
 
-    pub async fn run(self) -> Result<(), Error> {
+    pub async fn run(self) {
         let mut inverter_battery_group_data = HashMap::new();
 
-        let inverter_battery_group_ids = self.get_inverter_battery_groups()?;
+        // Errors are logged at source inside `get_inverter_battery_groups`.
+        let Ok(inverter_battery_group_ids) = self.get_inverter_battery_groups() else {
+            return;
+        };
 
         let (component_status_tx, mut component_status_rx) = tokio::sync::mpsc::channel(100);
         for inverter_battery_group in inverter_battery_group_ids {
@@ -185,21 +204,31 @@ impl BatteryPoolTelemetryTracker {
                             inverter_battery_group_data.insert(group_ids, status);
                         }
                         // Every group tracker has exited and dropped its sender,
-                        // so no further updates will arrive. The `interval.tick()`
-                        // arm never disables, so the `select!` `else` can never
-                        // run; break here instead.
+                        // so no further updates will ever arrive. The `_ =
+                        // interval.tick()` arm below is a catch-all that never
+                        // disables, so the `select!` `else` branch can never run;
+                        // break here instead.
                         None => break,
                     }
                 },
                 _ = interval.tick() => {
+                    // The unchanged-skip below means a stable partition never
+                    // reaches `send()`, whose failure is otherwise the only
+                    // signal that every receiver has dropped. Check for that
+                    // here so the tracker still shuts down instead of leaking.
+                    if self.component_pool_status_tx.receiver_count() == 0 {
+                        break;
+                    }
                     if last_sent_status.as_ref() == Some(&inverter_battery_group_data) {
                         continue; // Skip sending if the status hasn't changed
                     }
-                    if let Err(e) = self.component_pool_status_tx.send(
-                        BatteryPoolSnapshot(inverter_battery_group_data.clone())
-                    )
+                    if self
+                        .component_pool_status_tx
+                        .send(BatteryPoolSnapshot(inverter_battery_group_data.clone()))
+                        .is_err()
                     {
-                        tracing::error!("Failed to send pool snapshot: {}", e);
+                        // All receivers dropped between the check above and here;
+                        // a normal shutdown, recorded by the terminal log below.
                         break;
                     }
                     last_sent_status = Some(inverter_battery_group_data.clone());
@@ -207,14 +236,12 @@ impl BatteryPoolTelemetryTracker {
             }
         }
 
-        let err = format!(
-            "BatteryPoolTelemetryTracker (component IDs {:?}) stopped receiving group telemetry updates.",
+        // Reaching here means every group tracker exited or every receiver
+        // dropped — a normal shutdown, not an error.
+        tracing::debug!(
+            "BatteryPoolTelemetryTracker (component IDs {:?}) stopped: all group trackers or receivers are gone.",
             self.component_ids
         );
-
-        tracing::error!("{}", err);
-
-        Err(Error::component_data_error(err))
     }
 }
 
@@ -222,23 +249,13 @@ impl BatteryPoolTelemetryTracker {
 mod tests {
     use std::collections::HashMap;
 
-    use chrono::TimeDelta;
-
     use super::BatteryPoolSnapshot;
-    use crate::{
-        LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle,
-        client::{
-            proto::common::microgrid::electrical_components::ElectricalComponentStateCode,
-            test_utils::{MockComponent, MockMicrogridApiClient},
-        },
-        microgrid::{
-            battery_pool::BatteryPool,
-            telemetry_tracker::{
-                battery_pool_telemetry_tracker::InverterBatteryGroup,
-                inverter_battery_group_telemetry_tracker::InverterBatteryGroupStatus,
-            },
-        },
-    };
+    use crate::client::proto::common::microgrid::electrical_components::ElectricalComponentStateCode;
+    use crate::client::test_utils::MockComponent;
+    use crate::microgrid::battery_pool::BatteryPool;
+    use crate::microgrid::telemetry_tracker::battery_pool_telemetry_tracker::InverterBatteryGroup;
+    use crate::microgrid::telemetry_tracker::inverter_battery_group_telemetry_tracker::InverterBatteryGroupStatus;
+    use crate::microgrid::test_support::{handles, last_snapshot};
 
     impl BatteryPoolSnapshot {
         pub(crate) fn from_groups(
@@ -248,31 +265,8 @@ mod tests {
         }
     }
     async fn new_pool(graph: MockComponent) -> BatteryPool {
-        let api = MockMicrogridApiClient::new(graph);
-        let client = MicrogridClientHandle::new_from_client(api);
-        let lm = LogicalMeterHandle::try_new(
-            client.clone(),
-            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap()),
-        )
-        .await
-        .unwrap();
+        let (client, lm) = handles(graph).await;
         BatteryPool::try_new(None, client, lm).unwrap()
-    }
-
-    /// Drains `rx` for up to `steps` * 100ms of simulated time, returning the
-    /// last snapshot seen.
-    async fn last_snapshot(
-        rx: &mut tokio::sync::broadcast::Receiver<BatteryPoolSnapshot>,
-        steps: u32,
-    ) -> BatteryPoolSnapshot {
-        let mut last = None;
-        for _ in 0..steps {
-            tokio::time::advance(std::time::Duration::from_millis(100)).await;
-            while let Ok(snap) = rx.try_recv() {
-                last = Some(snap);
-            }
-        }
-        last.expect("no snapshot received")
     }
 
     #[tokio::test(start_paused = true)]
@@ -303,10 +297,10 @@ mod tests {
         let (group, status) = groups.iter().next().unwrap();
         assert_eq!(group.inverter_ids, [3].into());
         assert_eq!(group.battery_ids, [4].into());
-        assert!(status.healthy_inverters.contains_key(&3));
-        assert!(status.healthy_batteries.contains_key(&4));
-        assert!(status.unhealthy_inverters.is_empty());
-        assert!(status.unhealthy_batteries.is_empty());
+        assert!(status.inverters.healthy.contains_key(&3));
+        assert!(status.batteries.healthy.contains_key(&4));
+        assert!(status.inverters.unhealthy.is_empty());
+        assert!(status.batteries.unhealthy.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
@@ -348,8 +342,8 @@ mod tests {
         assert_eq!(all_batteries, [4, 6].into());
 
         for status in groups.values() {
-            assert!(status.unhealthy_inverters.is_empty());
-            assert!(status.unhealthy_batteries.is_empty());
+            assert!(status.inverters.unhealthy.is_empty());
+            assert!(status.batteries.unhealthy.is_empty());
         }
     }
 
@@ -407,7 +401,7 @@ mod tests {
         let healthy = last_snapshot(&mut rx, 10).await;
         let (_, status) = healthy.groups().iter().next().unwrap();
         assert!(
-            status.healthy_inverters.contains_key(&3) && status.healthy_batteries.contains_key(&4),
+            status.inverters.healthy.contains_key(&3) && status.batteries.healthy.contains_key(&4),
             "expected components to go healthy after initial samples, got {:?}",
             status
         );
@@ -420,17 +414,17 @@ mod tests {
 
         let (_, status) = unhealthy.groups().iter().next().unwrap();
         assert!(
-            status.healthy_inverters.is_empty(),
+            status.inverters.healthy.is_empty(),
             "inverter should be unhealthy after data stops, got healthy set {:?}",
-            status.healthy_inverters.keys()
+            status.inverters.healthy.keys()
         );
         assert!(
-            status.healthy_batteries.is_empty(),
+            status.batteries.healthy.is_empty(),
             "battery should be unhealthy after data stops, got healthy set {:?}",
-            status.healthy_batteries.keys()
+            status.batteries.healthy.keys()
         );
-        assert!(status.unhealthy_inverters.contains_key(&3));
-        assert!(status.unhealthy_batteries.contains_key(&4));
+        assert!(status.inverters.unhealthy.contains_key(&3));
+        assert!(status.batteries.unhealthy.contains_key(&4));
     }
 
     #[tokio::test(start_paused = true)]
@@ -455,15 +449,15 @@ mod tests {
 
         let (_, status) = snap.groups().iter().next().unwrap();
         assert!(
-            status.healthy_inverters.contains_key(&3),
+            status.inverters.healthy.contains_key(&3),
             "inverter with Ready state should be healthy"
         );
         assert!(
-            !status.healthy_batteries.contains_key(&4),
+            !status.batteries.healthy.contains_key(&4),
             "battery with Error state should not be in healthy set"
         );
         assert!(
-            status.unhealthy_batteries.contains_key(&4),
+            status.batteries.unhealthy.contains_key(&4),
             "battery with Error state should be in unhealthy set, got {:?}",
             status
         );

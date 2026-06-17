@@ -19,91 +19,38 @@
 //!   aggregated bounds are intersected.
 //! * Groups within a pool are in parallel — their bounds are added together.
 
-use std::marker::PhantomData;
-
-use tokio::sync::broadcast;
-
 use crate::bounds::{combine_parallel_sets, intersect_bounds_sets};
 use crate::client::proto::common::metrics::Bounds as PbBounds;
 use crate::microgrid::bounds_aggregation::aggregate_parallel;
 use crate::microgrid::telemetry_tracker::battery_pool_telemetry_tracker::BatteryPoolSnapshot;
 use crate::{Bounds, metric::Metric};
 
-/// Tracks and aggregates power bounds for a battery pool.
+/// Aggregates the power bounds of a battery pool following the physical
+/// topology of its inverter-battery groups (see the module docs).
 ///
 /// `InverterM` is the metric used to read bounds from inverters (e.g.
 /// `AcPowerActive`); `BatteryM` is the metric used to read bounds from
 /// batteries (e.g. `DcPower`). Both must share the same `QuantityType` so
 /// their bounds can be intersected and summed.
-pub(crate) struct BatteryPoolBoundsTracker<InverterM: Metric, BatteryM: Metric> {
-    pool_status_rx: broadcast::Receiver<BatteryPoolSnapshot>,
-    pool_bounds_tx: broadcast::Sender<Vec<Bounds<InverterM::QuantityType>>>,
-    _marker: PhantomData<(InverterM, BatteryM)>,
-}
-
-impl<InverterM, BatteryM> BatteryPoolBoundsTracker<InverterM, BatteryM>
+pub(crate) fn compute_pool_bounds<InverterM, BatteryM>(
+    status: &BatteryPoolSnapshot,
+) -> Vec<Bounds<InverterM::QuantityType>>
 where
     InverterM: Metric,
     BatteryM: Metric<QuantityType = InverterM::QuantityType>,
     Bounds<InverterM::QuantityType>: From<PbBounds>,
 {
-    pub(crate) fn new(
-        pool_status_rx: broadcast::Receiver<BatteryPoolSnapshot>,
-        pool_bounds_tx: broadcast::Sender<Vec<Bounds<InverterM::QuantityType>>>,
-    ) -> Self {
-        Self {
-            pool_status_rx,
-            pool_bounds_tx,
-            _marker: PhantomData,
-        }
-    }
-
-    pub(crate) async fn run(mut self) {
-        loop {
-            match self.pool_status_rx.recv().await {
-                Ok(pool_status) => {
-                    let bounds = Self::compute_pool_bounds(&pool_status);
-                    if self.pool_bounds_tx.send(bounds).is_err() {
-                        tracing::debug!(
-                            "No receivers for {}/{} bounds tracker; shutting down.",
-                            InverterM::str_name(),
-                            BatteryM::str_name(),
-                        );
-                        break;
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(
-                        "{}/{} bounds tracker lagged by {n} pool status updates.",
-                        InverterM::str_name(),
-                        BatteryM::str_name(),
-                    );
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    tracing::error!(
-                        "Pool status channel closed; {}/{} bounds tracker shutting down.",
-                        InverterM::str_name(),
-                        BatteryM::str_name(),
-                    );
-                    break;
-                }
-            }
-        }
-    }
-
-    fn compute_pool_bounds(status: &BatteryPoolSnapshot) -> Vec<Bounds<InverterM::QuantityType>> {
-        status
-            .groups()
-            .values()
-            .map(|group| {
-                let inverter_bounds = aggregate_parallel::<InverterM>(&group.healthy_inverters);
-                let battery_bounds = aggregate_parallel::<BatteryM>(&group.healthy_batteries);
-                intersect_bounds_sets(&inverter_bounds, &battery_bounds)
-            })
-            .fold(Vec::new(), |acc, group_bounds| {
-                combine_parallel_sets(&acc, &group_bounds)
-            })
-    }
+    status
+        .groups()
+        .values()
+        .map(|group| {
+            let inverter_bounds = aggregate_parallel::<InverterM>(&group.inverters.healthy);
+            let battery_bounds = aggregate_parallel::<BatteryM>(&group.batteries.healthy);
+            intersect_bounds_sets(&inverter_bounds, &battery_bounds)
+        })
+        .fold(Vec::new(), |acc, group_bounds| {
+            combine_parallel_sets(&acc, &group_bounds)
+        })
 }
 
 #[cfg(test)]
@@ -119,30 +66,12 @@ mod tests {
     use crate::microgrid::telemetry_tracker::battery_pool_telemetry_tracker::{
         BatteryPoolSnapshot, InverterBatteryGroup,
     };
+    use crate::microgrid::telemetry_tracker::component_partition::ComponentHealthPartition;
     use crate::microgrid::telemetry_tracker::inverter_battery_group_telemetry_tracker::InverterBatteryGroupStatus;
     use crate::quantity::Power;
 
-    use super::BatteryPoolBoundsTracker;
-
-    fn telem_with_power_bounds(
-        id: u64,
-        bounds: Vec<(Option<f32>, Option<f32>)>,
-    ) -> ElectricalComponentTelemetry {
-        ElectricalComponentTelemetry {
-            electrical_component_id: id,
-            metric_samples: vec![MetricSample {
-                sample_time: None,
-                metric: MetricPb::AcPowerActive as i32,
-                value: None,
-                bounds: bounds
-                    .into_iter()
-                    .map(|(lower, upper)| PbBounds { lower, upper })
-                    .collect(),
-                ..Default::default()
-            }],
-            ..Default::default()
-        }
-    }
+    use super::compute_pool_bounds;
+    use crate::microgrid::test_support::telem_with_power_bounds;
 
     fn group(inverter_ids: &[u64], battery_ids: &[u64]) -> InverterBatteryGroup {
         InverterBatteryGroup::new(
@@ -177,16 +106,18 @@ mod tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters,
-                healthy_batteries,
-                unhealthy_inverters: HashMap::new(),
-                unhealthy_batteries: HashMap::new(),
+                inverters: ComponentHealthPartition {
+                    healthy: healthy_inverters,
+                    unhealthy: HashMap::new(),
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: healthy_batteries,
+                    unhealthy: HashMap::new(),
+                },
             },
         )]);
 
-        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
-            &snapshot,
-        );
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(&snapshot);
         assert_eq!(
             bounds,
             vec![
@@ -224,16 +155,18 @@ mod tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters,
-                healthy_batteries,
-                unhealthy_inverters: HashMap::new(),
-                unhealthy_batteries: HashMap::new(),
+                inverters: ComponentHealthPartition {
+                    healthy: healthy_inverters,
+                    unhealthy: HashMap::new(),
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: healthy_batteries,
+                    unhealthy: HashMap::new(),
+                },
             },
         )]);
 
-        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
-            &snapshot,
-        );
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(&snapshot);
         assert_eq!(
             bounds,
             vec![Bounds::new(
@@ -273,26 +206,32 @@ mod tests {
             (
                 g1,
                 InverterBatteryGroupStatus {
-                    healthy_inverters: h_inv_1,
-                    healthy_batteries: h_bat_1,
-                    unhealthy_inverters: HashMap::new(),
-                    unhealthy_batteries: HashMap::new(),
+                    inverters: ComponentHealthPartition {
+                        healthy: h_inv_1,
+                        unhealthy: HashMap::new(),
+                    },
+                    batteries: ComponentHealthPartition {
+                        healthy: h_bat_1,
+                        unhealthy: HashMap::new(),
+                    },
                 },
             ),
             (
                 g2,
                 InverterBatteryGroupStatus {
-                    healthy_inverters: h_inv_2,
-                    healthy_batteries: h_bat_2,
-                    unhealthy_inverters: HashMap::new(),
-                    unhealthy_batteries: HashMap::new(),
+                    inverters: ComponentHealthPartition {
+                        healthy: h_inv_2,
+                        unhealthy: HashMap::new(),
+                    },
+                    batteries: ComponentHealthPartition {
+                        healthy: h_bat_2,
+                        unhealthy: HashMap::new(),
+                    },
                 },
             ),
         ]);
 
-        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
-            &snapshot,
-        );
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(&snapshot);
         assert_eq!(
             bounds,
             vec![Bounds::new(
@@ -305,9 +244,7 @@ mod tests {
     #[test]
     fn empty_pool_yields_empty_bounds() {
         let snapshot = status(vec![]);
-        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
-            &snapshot,
-        );
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(&snapshot);
         assert!(bounds.is_empty());
     }
 
@@ -331,16 +268,18 @@ mod tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters,
-                healthy_batteries,
-                unhealthy_inverters: HashMap::new(),
-                unhealthy_batteries: HashMap::new(),
+                inverters: ComponentHealthPartition {
+                    healthy: healthy_inverters,
+                    unhealthy: HashMap::new(),
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: healthy_batteries,
+                    unhealthy: HashMap::new(),
+                },
             },
         )]);
 
-        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
-            &snapshot,
-        );
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(&snapshot);
         assert!(
             bounds.is_empty(),
             "group with no inverter bounds must not contribute any bounds"
@@ -365,16 +304,18 @@ mod tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters,
-                healthy_batteries,
-                unhealthy_inverters: HashMap::new(),
-                unhealthy_batteries: HashMap::new(),
+                inverters: ComponentHealthPartition {
+                    healthy: healthy_inverters,
+                    unhealthy: HashMap::new(),
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: healthy_batteries,
+                    unhealthy: HashMap::new(),
+                },
             },
         )]);
 
-        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
-            &snapshot,
-        );
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(&snapshot);
         assert!(
             bounds.is_empty(),
             "group with no battery bounds must not contribute any bounds"
@@ -400,16 +341,18 @@ mod tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters: HashMap::new(),
-                healthy_batteries,
-                unhealthy_inverters,
-                unhealthy_batteries: HashMap::new(),
+                inverters: ComponentHealthPartition {
+                    healthy: HashMap::new(),
+                    unhealthy: unhealthy_inverters,
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: healthy_batteries,
+                    unhealthy: HashMap::new(),
+                },
             },
         )]);
 
-        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
-            &snapshot,
-        );
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(&snapshot);
         assert!(
             bounds.is_empty(),
             "group with no healthy inverters must not contribute any bounds"
@@ -434,16 +377,18 @@ mod tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters,
-                healthy_batteries: HashMap::new(),
-                unhealthy_inverters: HashMap::new(),
-                unhealthy_batteries,
+                inverters: ComponentHealthPartition {
+                    healthy: healthy_inverters,
+                    unhealthy: HashMap::new(),
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: HashMap::new(),
+                    unhealthy: unhealthy_batteries,
+                },
             },
         )]);
 
-        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
-            &snapshot,
-        );
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(&snapshot);
         assert!(
             bounds.is_empty(),
             "group with no healthy batteries must not contribute any bounds"
@@ -479,18 +424,20 @@ mod tests {
         let snapshot = status(vec![(
             g,
             InverterBatteryGroupStatus {
-                healthy_inverters: h_inv,
-                healthy_batteries: h_bat,
-                unhealthy_inverters: HashMap::new(),
-                unhealthy_batteries: HashMap::new(),
+                inverters: ComponentHealthPartition {
+                    healthy: h_inv,
+                    unhealthy: HashMap::new(),
+                },
+                batteries: ComponentHealthPartition {
+                    healthy: h_bat,
+                    unhealthy: HashMap::new(),
+                },
             },
         )]);
 
         // Inverter side has no active-power bounds → group produces no
         // bounds, so the pool bounds are empty.
-        let bounds = BatteryPoolBoundsTracker::<AcPowerActive, AcPowerActive>::compute_pool_bounds(
-            &snapshot,
-        );
+        let bounds = compute_pool_bounds::<AcPowerActive, AcPowerActive>(&snapshot);
         assert!(bounds.is_empty());
     }
 }

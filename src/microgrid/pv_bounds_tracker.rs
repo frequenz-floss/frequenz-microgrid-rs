@@ -10,76 +10,22 @@
 //! PV inverters in a pool are wired in parallel, so their bounds are simply
 //! added together.
 
-use std::marker::PhantomData;
-
-use tokio::sync::broadcast;
-
 use crate::client::proto::common::metrics::Bounds as PbBounds;
 use crate::microgrid::bounds_aggregation::aggregate_parallel;
 use crate::microgrid::telemetry_tracker::pv_pool_telemetry_tracker::PvPoolSnapshot;
 use crate::{Bounds, metric::Metric};
 
-/// Tracks and aggregates power bounds for a PV pool.
+/// Aggregates the bounds of every healthy PV inverter in the pool. The
+/// inverters are wired in parallel, so their bounds combine in parallel.
 ///
 /// `M` is the metric used to read bounds from the PV inverters (e.g.
 /// `AcPowerActive`).
-pub(crate) struct PvPoolBoundsTracker<M: Metric> {
-    pool_status_rx: broadcast::Receiver<PvPoolSnapshot>,
-    pool_bounds_tx: broadcast::Sender<Vec<Bounds<M::QuantityType>>>,
-    _marker: PhantomData<M>,
-}
-
-impl<M> PvPoolBoundsTracker<M>
+pub(crate) fn compute_pool_bounds<M>(status: &PvPoolSnapshot) -> Vec<Bounds<M::QuantityType>>
 where
     M: Metric,
     Bounds<M::QuantityType>: From<PbBounds>,
 {
-    pub(crate) fn new(
-        pool_status_rx: broadcast::Receiver<PvPoolSnapshot>,
-        pool_bounds_tx: broadcast::Sender<Vec<Bounds<M::QuantityType>>>,
-    ) -> Self {
-        Self {
-            pool_status_rx,
-            pool_bounds_tx,
-            _marker: PhantomData,
-        }
-    }
-
-    pub(crate) async fn run(mut self) {
-        loop {
-            match self.pool_status_rx.recv().await {
-                Ok(pool_status) => {
-                    let bounds = Self::compute_pool_bounds(&pool_status);
-                    if self.pool_bounds_tx.send(bounds).is_err() {
-                        tracing::debug!(
-                            "No receivers for {} PV bounds tracker; shutting down.",
-                            M::str_name(),
-                        );
-                        break;
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(
-                        "{} PV bounds tracker lagged by {n} pool status updates.",
-                        M::str_name(),
-                    );
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    tracing::error!(
-                        "Pool status channel closed; {} PV bounds tracker shutting down.",
-                        M::str_name(),
-                    );
-                    break;
-                }
-            }
-        }
-    }
-
-    /// Aggregates the bounds of every healthy PV inverter in the pool. The
-    /// inverters are wired in parallel, so their bounds combine in parallel.
-    fn compute_pool_bounds(status: &PvPoolSnapshot) -> Vec<Bounds<M::QuantityType>> {
-        aggregate_parallel::<M>(&status.healthy_inverters)
-    }
+    aggregate_parallel::<M>(&status.inverters.healthy)
 }
 
 #[cfg(test)]
@@ -92,30 +38,12 @@ mod tests {
     };
     use crate::client::proto::common::microgrid::electrical_components::ElectricalComponentTelemetry;
     use crate::metric::AcPowerActive;
+    use crate::microgrid::telemetry_tracker::component_partition::ComponentHealthPartition;
     use crate::microgrid::telemetry_tracker::pv_pool_telemetry_tracker::PvPoolSnapshot;
     use crate::quantity::Power;
 
-    use super::PvPoolBoundsTracker;
-
-    fn telem_with_power_bounds(
-        id: u64,
-        bounds: Vec<(Option<f32>, Option<f32>)>,
-    ) -> ElectricalComponentTelemetry {
-        ElectricalComponentTelemetry {
-            electrical_component_id: id,
-            metric_samples: vec![MetricSample {
-                sample_time: None,
-                metric: MetricPb::AcPowerActive as i32,
-                value: None,
-                bounds: bounds
-                    .into_iter()
-                    .map(|(lower, upper)| PbBounds { lower, upper })
-                    .collect(),
-                ..Default::default()
-            }],
-            ..Default::default()
-        }
-    }
+    use super::compute_pool_bounds;
+    use crate::microgrid::test_support::telem_with_power_bounds;
 
     /// Builds a snapshot whose healthy set holds the given telemetry, keyed by
     /// component ID, and an empty unhealthy set.
@@ -125,8 +53,10 @@ mod tests {
             .map(|t| (t.electrical_component_id, t))
             .collect();
         PvPoolSnapshot {
-            healthy_inverters: healthy,
-            unhealthy_inverters: HashMap::new(),
+            inverters: ComponentHealthPartition {
+                healthy,
+                unhealthy: HashMap::new(),
+            },
         }
     }
 
@@ -136,7 +66,7 @@ mod tests {
             10,
             vec![(Some(-1000.0), Some(0.0))],
         )]);
-        let bounds = PvPoolBoundsTracker::<AcPowerActive>::compute_pool_bounds(&snap);
+        let bounds = compute_pool_bounds::<AcPowerActive>(&snap);
         assert_eq!(
             bounds,
             vec![Bounds::new(
@@ -152,7 +82,7 @@ mod tests {
             telem_with_power_bounds(10, vec![(Some(-1000.0), Some(0.0))]),
             telem_with_power_bounds(11, vec![(Some(-2000.0), Some(0.0))]),
         ]);
-        let bounds = PvPoolBoundsTracker::<AcPowerActive>::compute_pool_bounds(&snap);
+        let bounds = compute_pool_bounds::<AcPowerActive>(&snap);
         assert_eq!(
             bounds,
             vec![Bounds::new(
@@ -165,7 +95,7 @@ mod tests {
     #[test]
     fn empty_pool_yields_empty_bounds() {
         let snap = healthy_snapshot(vec![]);
-        let bounds = PvPoolBoundsTracker::<AcPowerActive>::compute_pool_bounds(&snap);
+        let bounds = compute_pool_bounds::<AcPowerActive>(&snap);
         assert!(bounds.is_empty());
     }
 
@@ -189,11 +119,10 @@ mod tests {
             )),
         );
         let snap = PvPoolSnapshot {
-            healthy_inverters: healthy,
-            unhealthy_inverters: unhealthy,
+            inverters: ComponentHealthPartition { healthy, unhealthy },
         };
 
-        let bounds = PvPoolBoundsTracker::<AcPowerActive>::compute_pool_bounds(&snap);
+        let bounds = compute_pool_bounds::<AcPowerActive>(&snap);
         assert_eq!(
             bounds,
             vec![Bounds::new(
@@ -222,7 +151,7 @@ mod tests {
             ..Default::default()
         };
         let snap = healthy_snapshot(vec![other]);
-        let bounds = PvPoolBoundsTracker::<AcPowerActive>::compute_pool_bounds(&snap);
+        let bounds = compute_pool_bounds::<AcPowerActive>(&snap);
         assert!(bounds.is_empty());
     }
 }

@@ -8,33 +8,26 @@
 //! sets, whenever any inverter's telemetry or health classification changes.
 
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashSet},
     time::Duration,
 };
 
 use tokio::sync::{broadcast, mpsc};
 
 use crate::{
-    Error, MicrogridClientHandle,
-    client::proto::common::microgrid::electrical_components::{
-        ElectricalComponentStateCode, ElectricalComponentTelemetry,
-    },
+    MicrogridClientHandle,
+    client::proto::common::microgrid::electrical_components::ElectricalComponentStateCode,
 };
 
+use super::component_partition::ComponentHealthPartition;
 use super::component_telemetry_tracker::{ComponentHealthStatus, ComponentTelemetryTracker};
 
 /// A snapshot of a PV pool's inverters, partitioned by health status and
-/// annotated with the latest telemetry sample for each.
-///
-/// `healthy_inverters` holds the most recent [`ElectricalComponentTelemetry`]
-/// observed for each healthy inverter. `unhealthy_inverters` holds the last
-/// telemetry observed before the inverter became unhealthy, or `None` if no
-/// sample has been received yet. Consumers can use the telemetry (including
-/// per-metric bounds) directly without subscribing to the raw streams again.
+/// annotated with the latest telemetry sample for each (see
+/// [`ComponentHealthPartition`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PvPoolSnapshot {
-    pub healthy_inverters: HashMap<u64, ElectricalComponentTelemetry>,
-    pub unhealthy_inverters: HashMap<u64, Option<ElectricalComponentTelemetry>>,
+    pub inverters: ComponentHealthPartition,
 }
 
 /// A tracker that watches every PV inverter in the pool and emits a
@@ -66,23 +59,29 @@ impl PvPoolTelemetryTracker {
         }
     }
 
-    pub async fn run(self) -> Result<(), Error> {
+    pub async fn run(self) {
         if self.component_ids.is_empty() {
-            let e = "No component IDs provided for PvPoolTelemetryTracker".to_string();
-            tracing::error!("{}", e);
-            return Err(Error::component_data_error(e));
+            tracing::error!("No component IDs provided for PvPoolTelemetryTracker");
+            return;
         }
 
-        let mut healthy_inverters: HashMap<u64, ElectricalComponentTelemetry> = HashMap::new();
-        let mut unhealthy_inverters: HashMap<u64, Option<ElectricalComponentTelemetry>> =
-            HashMap::new();
+        let mut inverters = ComponentHealthPartition::default();
 
         let (status_tx, mut status_rx) = mpsc::channel(100);
         for &inverter_id in &self.component_ids {
-            let component_data_stream = self
+            let component_data_stream = match self
                 .client
                 .receive_electrical_component_telemetry_stream(inverter_id)
-                .await?;
+                .await
+            {
+                Ok(stream) => stream,
+                Err(e) => {
+                    tracing::error!(
+                        "Internal error opening telemetry stream for inverter {inverter_id}: {e}; PV pool telemetry tracker aborting.",
+                    );
+                    return;
+                }
+            };
             let tracker = ComponentTelemetryTracker::new(
                 inverter_id,
                 self.missing_data_tolerance,
@@ -95,7 +94,7 @@ impl PvPoolTelemetryTracker {
                 tracker.run().await;
             });
             // Initially mark the inverter as unhealthy until we see data.
-            unhealthy_inverters.insert(inverter_id, None);
+            inverters.mark_unhealthy(inverter_id, None);
         }
 
         // Drop the original sender so the channel closes once every component
@@ -110,35 +109,40 @@ impl PvPoolTelemetryTracker {
                 maybe_status = status_rx.recv() => {
                     match maybe_status {
                         Some(ComponentHealthStatus::Healthy(id, data)) => {
-                            healthy_inverters.insert(id, data);
-                            unhealthy_inverters.remove(&id);
+                            inverters.mark_healthy(id, data);
                         }
                         Some(ComponentHealthStatus::Unhealthy(id, data)) => {
-                            unhealthy_inverters.insert(id, data);
-                            healthy_inverters.remove(&id);
+                            inverters.mark_unhealthy(id, data);
                         }
                         // Every component tracker has exited and dropped its
-                        // sender, so no further updates will arrive. The
-                        // `interval.tick()` arm never disables, so the `select!`
-                        // `else` can never run; break here instead.
+                        // sender, so no further updates will ever arrive. The
+                        // `_ = interval.tick()` arm below is a catch-all that
+                        // never disables, so the `select!` `else` branch can
+                        // never run; break here instead.
                         None => break,
                     }
                 },
                 _ = interval.tick() => {
-                    // Skip sending if the partitioning hasn't changed.
-                    let unchanged = last_sent.as_ref().is_some_and(|s| {
-                        s.healthy_inverters == healthy_inverters
-                            && s.unhealthy_inverters == unhealthy_inverters
-                    });
+                    // The unchanged-skip below means a stable partition never
+                    // reaches `send()`, whose failure is otherwise the only
+                    // signal that every receiver has dropped. Check for that
+                    // here so the tracker still shuts down instead of leaking.
+                    if self.component_pool_status_tx.receiver_count() == 0 {
+                        break;
+                    }
+                    // Skip sending if the partitioning hasn't changed. Comparing
+                    // the whole partition (not field by field) means a future
+                    // field can't silently escape change detection.
+                    let unchanged = last_sent.as_ref().is_some_and(|s| s.inverters == inverters);
                     if unchanged {
                         continue;
                     }
                     let snapshot = PvPoolSnapshot {
-                        healthy_inverters: healthy_inverters.clone(),
-                        unhealthy_inverters: unhealthy_inverters.clone(),
+                        inverters: inverters.clone(),
                     };
-                    if let Err(e) = self.component_pool_status_tx.send(snapshot.clone()) {
-                        tracing::error!("Failed to send PV pool snapshot: {}", e);
+                    if self.component_pool_status_tx.send(snapshot.clone()).is_err() {
+                        // All receivers dropped between the check above and here;
+                        // a normal shutdown, recorded by the terminal log below.
                         break;
                     }
                     last_sent = Some(snapshot);
@@ -146,55 +150,25 @@ impl PvPoolTelemetryTracker {
             }
         }
 
-        let err = format!(
-            "PvPoolTelemetryTracker (component IDs {:?}) stopped receiving inverter telemetry updates.",
+        // Reaching here means every component tracker exited or every receiver
+        // dropped — a normal shutdown, not an error.
+        tracing::debug!(
+            "PvPoolTelemetryTracker (component IDs {:?}) stopped: all component trackers or receivers are gone.",
             self.component_ids
         );
-        tracing::error!("{}", err);
-        Err(Error::component_data_error(err))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeDelta;
-
-    use super::PvPoolSnapshot;
-    use crate::{
-        LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle,
-        client::{
-            proto::common::microgrid::electrical_components::ElectricalComponentStateCode,
-            test_utils::{MockComponent, MockMicrogridApiClient},
-        },
-        microgrid::pv_pool::PvPool,
-    };
+    use crate::client::proto::common::microgrid::electrical_components::ElectricalComponentStateCode;
+    use crate::client::test_utils::MockComponent;
+    use crate::microgrid::pv_pool::PvPool;
+    use crate::microgrid::test_support::{handles, last_snapshot};
 
     async fn new_pool(graph: MockComponent) -> PvPool {
-        let api = MockMicrogridApiClient::new(graph);
-        let client = MicrogridClientHandle::new_from_client(api);
-        let lm = LogicalMeterHandle::try_new(
-            client.clone(),
-            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap()),
-        )
-        .await
-        .unwrap();
+        let (client, lm) = handles(graph).await;
         PvPool::try_new(None, client, lm).unwrap()
-    }
-
-    /// Drains `rx` for up to `steps` * 100ms of simulated time, returning the
-    /// last snapshot seen.
-    async fn last_snapshot(
-        rx: &mut tokio::sync::broadcast::Receiver<PvPoolSnapshot>,
-        steps: u32,
-    ) -> PvPoolSnapshot {
-        let mut last = None;
-        for _ in 0..steps {
-            tokio::time::advance(std::time::Duration::from_millis(100)).await;
-            while let Ok(snap) = rx.try_recv() {
-                last = Some(snap);
-            }
-        }
-        last.expect("no snapshot received")
     }
 
     #[tokio::test(start_paused = true)]
@@ -210,8 +184,8 @@ mod tests {
         let mut rx = pool.telemetry_snapshots();
         let snap = last_snapshot(&mut rx, 10).await;
 
-        assert!(snap.healthy_inverters.contains_key(&3));
-        assert!(snap.unhealthy_inverters.is_empty());
+        assert!(snap.inverters.healthy.contains_key(&3));
+        assert!(snap.inverters.unhealthy.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
@@ -228,9 +202,9 @@ mod tests {
         let mut rx = pool.telemetry_snapshots();
         let snap = last_snapshot(&mut rx, 10).await;
 
-        assert!(snap.healthy_inverters.contains_key(&3));
-        assert!(snap.healthy_inverters.contains_key(&4));
-        assert!(snap.unhealthy_inverters.is_empty());
+        assert!(snap.inverters.healthy.contains_key(&3));
+        assert!(snap.inverters.healthy.contains_key(&4));
+        assert!(snap.inverters.unhealthy.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
@@ -274,7 +248,7 @@ mod tests {
         // First confirm the inverter reaches a healthy state.
         let healthy = last_snapshot(&mut rx, 10).await;
         assert!(
-            healthy.healthy_inverters.contains_key(&3),
+            healthy.inverters.healthy.contains_key(&3),
             "expected inverter to go healthy after initial samples, got {:?}",
             healthy
         );
@@ -285,11 +259,11 @@ mod tests {
         let unhealthy = last_snapshot(&mut rx, 5).await;
 
         assert!(
-            unhealthy.healthy_inverters.is_empty(),
+            unhealthy.inverters.healthy.is_empty(),
             "inverter should be unhealthy after data stops, got healthy set {:?}",
-            unhealthy.healthy_inverters.keys()
+            unhealthy.inverters.healthy.keys()
         );
-        assert!(unhealthy.unhealthy_inverters.contains_key(&3));
+        assert!(unhealthy.inverters.unhealthy.contains_key(&3));
     }
 
     #[tokio::test(start_paused = true)]
@@ -309,11 +283,11 @@ mod tests {
         let snap = last_snapshot(&mut rx, 10).await;
 
         assert!(
-            !snap.healthy_inverters.contains_key(&3),
+            !snap.inverters.healthy.contains_key(&3),
             "inverter with Error state should not be in healthy set"
         );
         assert!(
-            snap.unhealthy_inverters.contains_key(&3),
+            snap.inverters.unhealthy.contains_key(&3),
             "inverter with Error state should be in unhealthy set, got {:?}",
             snap
         );
