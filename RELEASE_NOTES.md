@@ -31,6 +31,10 @@
 
 - `ComponentGraphConfig` is now re-exported, so `LogicalMeterConfig::with_component_graph_config` can be called without depending on the component-graph crate directly.
 
+- Logical-meter formulas can now use meter subtraction and summation from the component graph. When a component has no reading of its own, its metric can be computed from the meters around it. For example, a battery's AC active power becomes `COALESCE(#8, #5 - #6, 0.0)`: its own reading, else the parent meter minus its sibling, else zero. The subtraction needs readings from all the meters involved; if one of them is also missing, the formula still falls back to zero. Before, such metrics fell back to zero in more topologies.
+
+- Category formulas (battery, PV, ...) now prefer the sum of the components' own readings over a shared meter. For example, a PV pool's power was `COALESCE(#3, ...)` (meter first) and is now `COALESCE(#5 + #4, #3, ...)` (inverter sum first). The meter is still used as a fallback when a component reading is missing.
+
 ## Bug Fixes
 
 - The pool, group, and component telemetry trackers no longer leak their tasks (while logging at error level every tick) once their consumers are gone; normal shutdown is now logged at debug.
