@@ -6,9 +6,8 @@
 use std::marker::PhantomData;
 
 use async_trait::async_trait;
-pub(crate) mod aggregation_formula;
 mod async_formula;
-pub(crate) mod coalesce_formula;
+pub(crate) mod graph_formula;
 pub(crate) mod graph_formula_provider;
 pub use async_formula::Formula;
 
