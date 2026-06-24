@@ -8,8 +8,7 @@ use crate::client::proto::common::microgrid::electrical_components::{
     ElectricalComponent, ElectricalComponentConnection,
 };
 use crate::logical_meter::formula::FormulaParams;
-use crate::logical_meter::formula::aggregation_formula::AggregationFormula;
-use crate::logical_meter::formula::coalesce_formula::CoalesceFormula;
+use crate::logical_meter::formula::graph_formula::{Aggregation, Coalesce, GraphFormula};
 use crate::logical_meter::logical_meter_actor;
 use crate::metric::Metric;
 
@@ -84,7 +83,7 @@ macro_rules! impl_graph_formula_provider {
     )+};
 }
 
-impl<M: Metric> GraphFormulaProvider for AggregationFormula<M> {
+impl<M: Metric> GraphFormulaProvider for GraphFormula<M, Aggregation> {
     type MetricType = M;
 
     impl_graph_formula_provider!(
@@ -99,7 +98,7 @@ impl<M: Metric> GraphFormulaProvider for AggregationFormula<M> {
     );
 }
 
-impl<M: Metric> GraphFormulaProvider for CoalesceFormula<M> {
+impl<M: Metric> GraphFormulaProvider for GraphFormula<M, Coalesce> {
     type MetricType = M;
 
     impl_graph_formula_provider!(

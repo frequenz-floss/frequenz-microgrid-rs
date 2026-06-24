@@ -639,6 +639,42 @@ mod tests {
         quantity::Power,
     };
 
+    /// The component-graph meter-minus-sibling subtraction formulas the actor
+    /// now receives (e.g. `COALESCE(#8, #5 - #6, 0.0)`) parse and evaluate
+    /// through the formula engine: the component's own reading wins, else the
+    /// parent meter minus its sibling, else zero.
+    #[test]
+    fn subtraction_formula_evaluates_through_engine() {
+        let engine = FormulaEngine::<f32>::try_new("COALESCE(#8, #5 - #6, 0.0)")
+            .expect("formula should parse");
+
+        // Own reading present: used directly.
+        assert_eq!(
+            engine
+                .calculate(&HashMap::from([
+                    (8, Some(7.0)),
+                    (5, Some(10.0)),
+                    (6, Some(3.0))
+                ]))
+                .unwrap(),
+            Some(7.0),
+        );
+        // Own reading missing: parent meter minus its sibling (10 - 3).
+        assert_eq!(
+            engine
+                .calculate(&HashMap::from([(8, None), (5, Some(10.0)), (6, Some(3.0))]))
+                .unwrap(),
+            Some(7.0),
+        );
+        // Own reading and meter missing: the difference is null, so zero wins.
+        assert_eq!(
+            engine
+                .calculate(&HashMap::from([(8, None), (5, None), (6, Some(3.0))]))
+                .unwrap(),
+            Some(0.0),
+        );
+    }
+
     async fn new_handle(
         meter: MockComponent,
         config: LogicalMeterConfig,

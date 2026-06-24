@@ -303,7 +303,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             formula.to_string(),
-            "METRIC_AC_POWER_ACTIVE::(COALESCE(#8, 0.0))"
+            "METRIC_AC_POWER_ACTIVE::(COALESCE(#8, #5 - #6, 0.0))"
         );
 
         let formula = lm
