@@ -5,7 +5,7 @@
 
 use std::marker::PhantomData;
 
-use super::{FormulaParams, FormulaSubscriber, GraphFormulaConnector};
+use super::{FormulaParams, FormulaSubscriber};
 use crate::{
     Error, Sample, logical_meter::logical_meter_actor, metric::Metric, quantity::Quantity,
 };
@@ -14,7 +14,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 #[derive(Clone)]
 pub struct CoalesceFormula<M: Metric> {
-    formula: frequenz_microgrid_component_graph::CoalesceFormula,
+    formula: frequenz_microgrid_component_graph::Formula,
     instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
     phantom: PhantomData<M>,
 }
@@ -23,10 +23,6 @@ impl<M: Metric> std::fmt::Display for CoalesceFormula<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}::({})", M::METRIC.as_str_name(), self.formula)
     }
-}
-
-impl<M: Metric> GraphFormulaConnector for CoalesceFormula<M> {
-    type GraphFormulaType = frequenz_microgrid_component_graph::CoalesceFormula;
 }
 
 #[async_trait]
@@ -54,8 +50,8 @@ impl<Q: Quantity + 'static, M: Metric<QuantityType = Q> + Sync + Send> FormulaSu
     }
 }
 
-impl<M: Metric> From<FormulaParams<CoalesceFormula<M>, M>> for CoalesceFormula<M> {
-    fn from(params: FormulaParams<CoalesceFormula<M>, M>) -> Self {
+impl<M: Metric> From<FormulaParams<M>> for CoalesceFormula<M> {
+    fn from(params: FormulaParams<M>) -> Self {
         Self {
             formula: params.formula,
             instructions_tx: params.instructions_tx,
@@ -64,7 +60,7 @@ impl<M: Metric> From<FormulaParams<CoalesceFormula<M>, M>> for CoalesceFormula<M
     }
 }
 
-impl<M: Metric> From<CoalesceFormula<M>> for FormulaParams<CoalesceFormula<M>, M> {
+impl<M: Metric> From<CoalesceFormula<M>> for FormulaParams<M> {
     fn from(formula: CoalesceFormula<M>) -> Self {
         FormulaParams {
             formula: formula.formula,
