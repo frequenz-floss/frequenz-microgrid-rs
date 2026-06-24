@@ -3,8 +3,7 @@
 
 //! Metrics supported by the logical meter.
 
-use crate::logical_meter::formula::aggregation_formula::AggregationFormula;
-use crate::logical_meter::formula::coalesce_formula::CoalesceFormula;
+use crate::logical_meter::formula::graph_formula::{AggregationFormula, CoalesceFormula};
 use crate::{
     client::proto::common::metrics::Metric as MetricPb, logical_meter::formula,
     logical_meter::formula::FormulaSubscriber,

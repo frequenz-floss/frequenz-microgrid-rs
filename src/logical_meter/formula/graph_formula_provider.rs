@@ -7,9 +7,7 @@ use crate::Error;
 use crate::client::proto::common::microgrid::electrical_components::{
     ElectricalComponent, ElectricalComponentConnection,
 };
-use crate::logical_meter::formula::FormulaParams;
-use crate::logical_meter::formula::aggregation_formula::AggregationFormula;
-use crate::logical_meter::formula::coalesce_formula::CoalesceFormula;
+use crate::logical_meter::formula::graph_formula::{AggregationFormula, CoalesceFormula};
 use crate::logical_meter::logical_meter_actor;
 use crate::metric::Metric;
 
@@ -77,7 +75,7 @@ macro_rules! impl_graph_formula_provider {
                     format!("Could not get {} formula: {e}", stringify!($fnname))
                 )
             })?;
-            Ok(FormulaParams::new(formula, instructions_tx).into())
+            Ok(Self::new(formula, instructions_tx))
         }
 
     )+};
