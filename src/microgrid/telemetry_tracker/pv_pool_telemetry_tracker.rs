@@ -41,7 +41,7 @@ pub struct PvPoolSnapshot {
 /// [`PvPoolSnapshot`] whenever any inverter's telemetry or health
 /// classification changes.
 #[derive(Clone)]
-pub struct PvPoolTelemetryTracker {
+pub(crate) struct PvPoolTelemetryTracker {
     component_ids: BTreeSet<u64>,
     component_pool_status_tx: broadcast::Sender<PvPoolSnapshot>,
     missing_data_tolerance: Duration,
@@ -66,7 +66,7 @@ impl PvPoolTelemetryTracker {
         }
     }
 
-    pub async fn run(self) {
+    pub(crate) async fn run(self) {
         if self.component_ids.is_empty() {
             tracing::error!("No component IDs provided for PvPoolTelemetryTracker");
             return;

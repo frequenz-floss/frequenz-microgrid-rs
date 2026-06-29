@@ -47,7 +47,7 @@ impl BatteryPoolSnapshot {
 /// a [`BatteryPoolSnapshot`] whenever any component's telemetry or health
 /// classification changes.
 #[derive(Clone)]
-pub struct BatteryPoolTelemetryTracker {
+pub(crate) struct BatteryPoolTelemetryTracker {
     component_ids: BTreeSet<u64>,
     component_pool_status_tx: tokio::sync::broadcast::Sender<BatteryPoolSnapshot>,
     missing_data_tolerance: Duration,
@@ -168,7 +168,7 @@ impl BatteryPoolTelemetryTracker {
         Ok(groups)
     }
 
-    pub async fn run(self) {
+    pub(crate) async fn run(self) {
         let mut inverter_battery_group_data = HashMap::new();
 
         // Errors are logged at source inside `get_inverter_battery_groups`.
