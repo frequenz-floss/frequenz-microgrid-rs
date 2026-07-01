@@ -37,7 +37,7 @@ use crate::{
             ReceiveElectricalComponentTelemetryStreamResponse,
         },
     },
-    quantity::{Current, Power, ReactivePower, Voltage},
+    quantity::{Current, Frequency, Power, ReactivePower, Voltage},
 };
 
 /// A mock implementation of the `MicrogridApiClient` trait for testing purposes.
@@ -70,6 +70,9 @@ pub struct MockComponent {
     pub component: ElectricalComponent,
     pub children: Vec<MockComponent>,
     pub metrics: Vec<MockMetricRow>,
+    /// AC frequency samples, one entry per telemetry frame (parallel to
+    /// `metrics`). Set via [`MockComponent::with_frequency`].
+    frequency: Vec<Option<Frequency>>,
     /// Overrides the state code reported in each telemetry sample. `None`
     /// defaults to `Ready`.
     state_code: Option<ElectricalComponentStateCode>,
@@ -255,6 +258,20 @@ impl MockComponent {
         self
     }
 
+    pub fn with_frequency(mut self, frequency: Vec<f32>) -> Self {
+        // Extend `metrics` so every frequency frame is still emitted even when
+        // no other metric is set for it (frequency lives in a parallel array).
+        if frequency.len() > self.metrics.len() {
+            self.metrics
+                .resize(frequency.len(), (None, None, None, None));
+        }
+        self.frequency = frequency
+            .iter()
+            .map(|f| Some(Frequency::from_hertz(*f)))
+            .collect();
+        self
+    }
+
     /// Overrides the state code reported in each telemetry sample.
     pub fn with_state(mut self, code: ElectricalComponentStateCode) -> Self {
         self.state_code = Some(code);
@@ -389,6 +406,7 @@ impl MicrogridApiClient for MockMicrogridApiClient {
             && !component.metrics.is_empty()
         {
             let metrics = component.metrics.clone();
+            let frequency = component.frequency.clone();
             let state_code = component
                 .state_code
                 .unwrap_or(ElectricalComponentStateCode::Ready);
@@ -399,7 +417,7 @@ impl MicrogridApiClient for MockMicrogridApiClient {
                 let mut interval = tokio::time::interval(dur);
                 let offset = chrono::TimeDelta::from_std(dur).unwrap_or_default();
 
-                for metrics in metrics.iter() {
+                for (frame, metrics) in metrics.iter().enumerate() {
                     interval.tick().await;
                     // `tokio::time::interval`'s first tick fires
                     // immediately, so `clock.wall_now()` is still the
@@ -480,6 +498,23 @@ impl MicrogridApiClient for MockMicrogridApiClient {
                                     metric_value_variant::MetricValueVariant::SimpleMetric(
                                         SimpleMetricValue {
                                             value: current.as_amperes(),
+                                        },
+                                    ),
+                                ),
+                            }),
+                            bounds: vec![],
+                            connection: None,
+                        });
+                    }
+                    if let Some(Some(frequency)) = frequency.get(frame) {
+                        metric_samples.push(MetricSample {
+                            sample_time: ts,
+                            metric: Metric::AcFrequency as i32,
+                            value: Some(MetricValueVariant {
+                                metric_value_variant: Some(
+                                    metric_value_variant::MetricValueVariant::SimpleMetric(
+                                        SimpleMetricValue {
+                                            value: frequency.as_hertz(),
                                         },
                                     ),
                                 ),
