@@ -405,4 +405,32 @@ mod tests {
             ]
         );
     }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_resubscribing_after_all_receivers_dropped_restarts_stream() {
+        let handle = new_client_handle();
+
+        let mut telemetry_rx = handle
+            .receive_electrical_component_telemetry_stream(2)
+            .await
+            .unwrap();
+        telemetry_rx.recv().await.unwrap();
+        drop(telemetry_rx);
+
+        // Let the stream task notice that all receivers are gone (it checks
+        // before each sample) and the actor process its Ended status, which
+        // must evict the cached sender.
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        // A fresh subscription must get a live stream again, not a
+        // subscription on the dead cached channel.
+        let mut telemetry_rx = handle
+            .receive_electrical_component_telemetry_stream(2)
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), telemetry_rx.recv())
+            .await
+            .expect("no telemetry after resubscribing; stale stream cache?")
+            .unwrap();
+    }
 }

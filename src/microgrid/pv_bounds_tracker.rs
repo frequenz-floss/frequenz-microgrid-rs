@@ -65,7 +65,9 @@ where
                     );
                 }
                 Err(broadcast::error::RecvError::Closed) => {
-                    tracing::error!(
+                    // The telemetry tracker upstream has shut down — a normal
+                    // teardown of the whole pool, not an error here.
+                    tracing::debug!(
                         "Pool status channel closed; {} PV bounds tracker shutting down.",
                         M::str_name(),
                     );

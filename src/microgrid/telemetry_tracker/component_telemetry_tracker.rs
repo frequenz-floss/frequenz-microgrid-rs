@@ -79,14 +79,25 @@ impl ComponentTelemetryTracker {
                             // Reset the interval timer on receiving valid data
                             interval.reset();
                             let status = self.state_from_data(data);
-                            if let Err(e) = self.component_status_tx.send(status).await {
-                                tracing::error!("Failed to send component status: {}", e);
+                            if self.component_status_tx.send(status).await.is_err() {
+                                // The pool tracker dropped its receiver; there is
+                                // nothing left to report to, so stop tracking
+                                // instead of looping and logging forever.
+                                tracing::debug!(
+                                    "Component {} telemetry tracker stopping: pool tracker dropped its receiver.",
+                                    self.component_id
+                                );
+                                break;
                             }
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => {
                             continue;
                         }
                         Err(broadcast::error::RecvError::Closed) => {
+                            tracing::debug!(
+                                "Component {} telemetry tracker stopping: telemetry stream closed.",
+                                self.component_id
+                            );
                             drop(self.component_status_tx);
                             break;
                         }
@@ -95,8 +106,13 @@ impl ComponentTelemetryTracker {
                 _ = interval.tick() => {
                     // If we reach here, it means no data was received within the tolerance period
                     let status = ComponentHealthStatus::Unhealthy(self.component_id, None);
-                    if let Err(e) = self.component_status_tx.send(status).await {
-                        tracing::error!("Failed to send component status: {}", e);
+                    if self.component_status_tx.send(status).await.is_err() {
+                        // The pool tracker dropped its receiver; stop tracking.
+                        tracing::debug!(
+                            "Component {} telemetry tracker stopping: pool tracker dropped its receiver.",
+                            self.component_id
+                        );
+                        break;
                     }
                 }
             }

@@ -15,7 +15,7 @@ use std::{
 use tokio::sync::{broadcast, mpsc};
 
 use crate::{
-    Error, MicrogridClientHandle,
+    MicrogridClientHandle,
     client::proto::common::microgrid::electrical_components::{
         ElectricalComponentStateCode, ElectricalComponentTelemetry,
     },
@@ -41,7 +41,7 @@ pub struct PvPoolSnapshot {
 /// [`PvPoolSnapshot`] whenever any inverter's telemetry or health
 /// classification changes.
 #[derive(Clone)]
-pub struct PvPoolTelemetryTracker {
+pub(crate) struct PvPoolTelemetryTracker {
     component_ids: BTreeSet<u64>,
     component_pool_status_tx: broadcast::Sender<PvPoolSnapshot>,
     missing_data_tolerance: Duration,
@@ -66,11 +66,10 @@ impl PvPoolTelemetryTracker {
         }
     }
 
-    pub async fn run(self) -> Result<(), Error> {
+    pub(crate) async fn run(self) {
         if self.component_ids.is_empty() {
-            let e = "No component IDs provided for PvPoolTelemetryTracker".to_string();
-            tracing::error!("{}", e);
-            return Err(Error::component_data_error(e));
+            tracing::error!("No component IDs provided for PvPoolTelemetryTracker");
+            return;
         }
 
         let mut healthy_inverters: HashMap<u64, ElectricalComponentTelemetry> = HashMap::new();
@@ -79,10 +78,19 @@ impl PvPoolTelemetryTracker {
 
         let (status_tx, mut status_rx) = mpsc::channel(100);
         for &inverter_id in &self.component_ids {
-            let component_data_stream = self
+            let component_data_stream = match self
                 .client
                 .receive_electrical_component_telemetry_stream(inverter_id)
-                .await?;
+                .await
+            {
+                Ok(stream) => stream,
+                Err(e) => {
+                    tracing::error!(
+                        "Internal error opening telemetry stream for inverter {inverter_id}: {e}; PV pool telemetry tracker aborting.",
+                    );
+                    return;
+                }
+            };
             let tracker = ComponentTelemetryTracker::new(
                 inverter_id,
                 self.missing_data_tolerance,
@@ -118,13 +126,21 @@ impl PvPoolTelemetryTracker {
                             healthy_inverters.remove(&id);
                         }
                         // Every component tracker has exited and dropped its
-                        // sender, so no further updates will arrive. The
-                        // `interval.tick()` arm never disables, so the `select!`
-                        // `else` can never run; break here instead.
+                        // sender, so no further updates will ever arrive. The
+                        // `_ = interval.tick()` arm below is a catch-all that
+                        // never disables, so the `select!` `else` branch can
+                        // never run; break here instead.
                         None => break,
                     }
                 },
                 _ = interval.tick() => {
+                    // The unchanged-skip below means a stable partition never
+                    // reaches `send()`, whose failure is otherwise the only
+                    // signal that every receiver has dropped. Check for that
+                    // here so the tracker still shuts down instead of leaking.
+                    if self.component_pool_status_tx.receiver_count() == 0 {
+                        break;
+                    }
                     // Skip sending if the partitioning hasn't changed.
                     let unchanged = last_sent.as_ref().is_some_and(|s| {
                         s.healthy_inverters == healthy_inverters
@@ -137,8 +153,9 @@ impl PvPoolTelemetryTracker {
                         healthy_inverters: healthy_inverters.clone(),
                         unhealthy_inverters: unhealthy_inverters.clone(),
                     };
-                    if let Err(e) = self.component_pool_status_tx.send(snapshot.clone()) {
-                        tracing::error!("Failed to send PV pool snapshot: {}", e);
+                    if self.component_pool_status_tx.send(snapshot.clone()).is_err() {
+                        // All receivers dropped between the check above and here;
+                        // a normal shutdown, recorded by the terminal log below.
                         break;
                     }
                     last_sent = Some(snapshot);
@@ -146,12 +163,12 @@ impl PvPoolTelemetryTracker {
             }
         }
 
-        let err = format!(
-            "PvPoolTelemetryTracker (component IDs {:?}) stopped receiving inverter telemetry updates.",
+        // Reaching here means every component tracker exited or every receiver
+        // dropped — a normal shutdown, not an error.
+        tracing::debug!(
+            "PvPoolTelemetryTracker (component IDs {:?}) stopped: all component trackers or receivers are gone.",
             self.component_ids
         );
-        tracing::error!("{}", err);
-        Err(Error::component_data_error(err))
     }
 }
 

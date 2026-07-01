@@ -15,7 +15,7 @@ use std::{
 use tokio::select;
 
 use crate::{
-    Error, MicrogridClientHandle,
+    MicrogridClientHandle,
     client::proto::common::microgrid::electrical_components::{
         ElectricalComponentStateCode, ElectricalComponentTelemetry,
     },
@@ -76,7 +76,7 @@ impl InverterBatteryGroupTelemetryTracker {
         }
     }
 
-    pub async fn run(self) -> Result<(), Error> {
+    pub async fn run(self) {
         let mut healthy_inverters = HashMap::new();
         let mut unhealthy_inverters = HashMap::new();
         let mut healthy_batteries = HashMap::new();
@@ -85,10 +85,19 @@ impl InverterBatteryGroupTelemetryTracker {
         let (inverter_status_tx, mut inverter_status_rx) = tokio::sync::mpsc::channel(100);
 
         for &inverter_id in &self.inverter_battery_group.inverter_ids {
-            let component_data_stream = self
+            let component_data_stream = match self
                 .client
                 .receive_electrical_component_telemetry_stream(inverter_id)
-                .await?;
+                .await
+            {
+                Ok(stream) => stream,
+                Err(e) => {
+                    tracing::error!(
+                        "Internal error opening telemetry stream for inverter {inverter_id}: {e}; inverter-battery group tracker aborting.",
+                    );
+                    return;
+                }
+            };
             let tracker = ComponentTelemetryTracker::new(
                 inverter_id,
                 self.missing_data_tolerance,
@@ -107,10 +116,19 @@ impl InverterBatteryGroupTelemetryTracker {
         let (battery_status_tx, mut battery_status_rx) = tokio::sync::mpsc::channel(100);
 
         for &battery_id in &self.inverter_battery_group.battery_ids {
-            let component_data_stream = self
+            let component_data_stream = match self
                 .client
                 .receive_electrical_component_telemetry_stream(battery_id)
-                .await?;
+                .await
+            {
+                Ok(stream) => stream,
+                Err(e) => {
+                    tracing::error!(
+                        "Internal error opening telemetry stream for battery {battery_id}: {e}; inverter-battery group tracker aborting.",
+                    );
+                    return;
+                }
+            };
             let tracker = ComponentTelemetryTracker::new(
                 battery_id,
                 self.missing_data_tolerance,
@@ -136,9 +154,13 @@ impl InverterBatteryGroupTelemetryTracker {
             select! {
                 inverter_status = inverter_status_rx.recv() => {
                     let Some(inverter_status) = inverter_status else {
-                        let e = String::from("Inverter telemetry tracker stopped receiving status updates.");
-                        tracing::error!("{}", e);
-                        return Err(Error::component_data_error(e));
+                        // Every inverter component tracker has exited and dropped
+                        // its sender — a normal shutdown, not an error.
+                        tracing::debug!(
+                            "Inverter-battery group tracker (inverters {:?}) stopping: all inverter component trackers have exited.",
+                            self.inverter_battery_group.inverter_ids
+                        );
+                        return;
                     };
                     match inverter_status {
                         ComponentHealthStatus::Healthy(component_id, data) => {
@@ -152,12 +174,14 @@ impl InverterBatteryGroupTelemetryTracker {
                     }
                 },
                 battery_status = battery_status_rx.recv() => {
-                    let Some(battery_status) =  battery_status  else {
-                        let e = String::from(
-                            "Battery telemetry tracker stopped receiving status updates."
+                    let Some(battery_status) = battery_status else {
+                        // Every battery component tracker has exited and dropped
+                        // its sender — a normal shutdown, not an error.
+                        tracing::debug!(
+                            "Inverter-battery group tracker (batteries {:?}) stopping: all battery component trackers have exited.",
+                            self.inverter_battery_group.battery_ids
                         );
-                        tracing::error!("{}", e);
-                        return Err(Error::component_data_error(e));
+                        return;
                     };
                     match battery_status {
                         ComponentHealthStatus::Healthy(component_id, data) => {
@@ -171,7 +195,7 @@ impl InverterBatteryGroupTelemetryTracker {
                     }
                 }
             }
-            if let Err(e) = self
+            if self
                 .status_tx
                 .send((
                     self.inverter_battery_group.clone(),
@@ -183,12 +207,14 @@ impl InverterBatteryGroupTelemetryTracker {
                     },
                 ))
                 .await
+                .is_err()
             {
-                tracing::error!("Failed to send inverter-battery group status: {}", e);
-                return Err(Error::component_data_error(format!(
-                    "Failed to send inverter-battery group status: {}",
-                    e
-                )));
+                // The pool tracker dropped its receiver — a normal shutdown.
+                tracing::debug!(
+                    "Inverter-battery group tracker {:?} stopping: the pool tracker dropped its receiver.",
+                    self.inverter_battery_group
+                );
+                return;
             }
         }
     }

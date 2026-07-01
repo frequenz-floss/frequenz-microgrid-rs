@@ -47,7 +47,7 @@ impl BatteryPoolSnapshot {
 /// a [`BatteryPoolSnapshot`] whenever any component's telemetry or health
 /// classification changes.
 #[derive(Clone)]
-pub struct BatteryPoolTelemetryTracker {
+pub(crate) struct BatteryPoolTelemetryTracker {
     component_ids: BTreeSet<u64>,
     component_pool_status_tx: tokio::sync::broadcast::Sender<BatteryPoolSnapshot>,
     missing_data_tolerance: Duration,
@@ -88,7 +88,11 @@ impl BatteryPoolTelemetryTracker {
 
         while let Some(battery_id) = unvisited_batteries.iter().next().cloned() {
             let group_inverters = graph
-                .predecessors(battery_id)?
+                .predecessors(battery_id)
+                .map_err(|e| {
+                    tracing::error!("Failed to query predecessors of battery {battery_id}: {e}");
+                    e
+                })?
                 .filter(|c| c.category() == crate::client::ElectricalComponentCategory::Inverter)
                 .map(|c| c.id)
                 .collect::<BTreeSet<_>>();
@@ -102,7 +106,13 @@ impl BatteryPoolTelemetryTracker {
             let mut group_batteries = BTreeSet::new();
             for inverter_id in &group_inverters {
                 let connected_batteries = graph
-                    .successors(*inverter_id)?
+                    .successors(*inverter_id)
+                    .map_err(|e| {
+                        tracing::error!(
+                            "Failed to query successors of inverter {inverter_id}: {e}"
+                        );
+                        e
+                    })?
                     .map(|c| c.id)
                     .collect::<BTreeSet<_>>();
 
@@ -129,7 +139,13 @@ impl BatteryPoolTelemetryTracker {
             // Ensure that group batteries are only connect to group inverters
             for battery_id in &group_batteries {
                 let connected_inverters = graph
-                    .predecessors(*battery_id)?
+                    .predecessors(*battery_id)
+                    .map_err(|e| {
+                        tracing::error!(
+                            "Failed to query predecessors of battery {battery_id}: {e}"
+                        );
+                        e
+                    })?
                     .filter(|c| {
                         c.category() == crate::client::ElectricalComponentCategory::Inverter
                     })
@@ -152,10 +168,13 @@ impl BatteryPoolTelemetryTracker {
         Ok(groups)
     }
 
-    pub async fn run(self) -> Result<(), Error> {
+    pub(crate) async fn run(self) {
         let mut inverter_battery_group_data = HashMap::new();
 
-        let inverter_battery_group_ids = self.get_inverter_battery_groups()?;
+        // Errors are logged at source inside `get_inverter_battery_groups`.
+        let Ok(inverter_battery_group_ids) = self.get_inverter_battery_groups() else {
+            return;
+        };
 
         let (component_status_tx, mut component_status_rx) = tokio::sync::mpsc::channel(100);
         for inverter_battery_group in inverter_battery_group_ids {
@@ -185,21 +204,31 @@ impl BatteryPoolTelemetryTracker {
                             inverter_battery_group_data.insert(group_ids, status);
                         }
                         // Every group tracker has exited and dropped its sender,
-                        // so no further updates will arrive. The `interval.tick()`
-                        // arm never disables, so the `select!` `else` can never
-                        // run; break here instead.
+                        // so no further updates will ever arrive. The `_ =
+                        // interval.tick()` arm below is a catch-all that never
+                        // disables, so the `select!` `else` branch can never run;
+                        // break here instead.
                         None => break,
                     }
                 },
                 _ = interval.tick() => {
+                    // The unchanged-skip below means a stable partition never
+                    // reaches `send()`, whose failure is otherwise the only
+                    // signal that every receiver has dropped. Check for that
+                    // here so the tracker still shuts down instead of leaking.
+                    if self.component_pool_status_tx.receiver_count() == 0 {
+                        break;
+                    }
                     if last_sent_status.as_ref() == Some(&inverter_battery_group_data) {
                         continue; // Skip sending if the status hasn't changed
                     }
-                    if let Err(e) = self.component_pool_status_tx.send(
-                        BatteryPoolSnapshot(inverter_battery_group_data.clone())
-                    )
+                    if self
+                        .component_pool_status_tx
+                        .send(BatteryPoolSnapshot(inverter_battery_group_data.clone()))
+                        .is_err()
                     {
-                        tracing::error!("Failed to send pool snapshot: {}", e);
+                        // All receivers dropped between the check above and here;
+                        // a normal shutdown, recorded by the terminal log below.
                         break;
                     }
                     last_sent_status = Some(inverter_battery_group_data.clone());
@@ -207,14 +236,12 @@ impl BatteryPoolTelemetryTracker {
             }
         }
 
-        let err = format!(
-            "BatteryPoolTelemetryTracker (component IDs {:?}) stopped receiving group telemetry updates.",
+        // Reaching here means every group tracker exited or every receiver
+        // dropped — a normal shutdown, not an error.
+        tracing::debug!(
+            "BatteryPoolTelemetryTracker (component IDs {:?}) stopped: all group trackers or receivers are gone.",
             self.component_ids
         );
-
-        tracing::error!("{}", err);
-
-        Err(Error::component_data_error(err))
     }
 }
 
