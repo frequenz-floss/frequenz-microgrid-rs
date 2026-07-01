@@ -1,6 +1,6 @@
 [package]
 name = "frequenz-microgrid"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 description = "A high-level interface to the Frequenz Microgrid API."
 repository = "https://github.com/frequenz-floss/frequenz-microgrid-rs"
