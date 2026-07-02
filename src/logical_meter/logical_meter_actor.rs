@@ -13,7 +13,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::ErrorKind;
 use crate::client::proto::common::metrics::{Metric, metric_value_variant::MetricValueVariant};
-use crate::quantity::{Current, Power, Quantity, ReactivePower, Voltage};
+use crate::quantity::{Current, Frequency, Power, Quantity, ReactivePower, Voltage};
 use crate::wall_clock_timer::{Clock, WallClockTimer};
 use crate::{
     Error, MicrogridClientHandle, Sample,
@@ -75,6 +75,7 @@ pub(crate) enum TypedFormulaResponseSender {
     Voltage(FormulaStreamSender<Voltage>),
     ReactivePower(FormulaStreamSender<ReactivePower>),
     Current(FormulaStreamSender<Current>),
+    Frequency(FormulaStreamSender<Frequency>),
 }
 
 impl<Q: Quantity + 'static> TryFrom<FormulaStreamSender<Q>> for TypedFormulaResponseSender {
@@ -95,8 +96,12 @@ impl<Q: Quantity + 'static> TryFrom<FormulaStreamSender<Q>> for TypedFormulaResp
             Ok(sender) => return Ok(TypedFormulaResponseSender::ReactivePower(*sender)),
             Err(sender) => sender,
         };
-        match sender.downcast::<FormulaStreamSender<Current>>() {
-            Ok(sender) => Ok(TypedFormulaResponseSender::Current(*sender)),
+        let sender = match sender.downcast::<FormulaStreamSender<Current>>() {
+            Ok(sender) => return Ok(TypedFormulaResponseSender::Current(*sender)),
+            Err(sender) => sender,
+        };
+        match sender.downcast::<FormulaStreamSender<Frequency>>() {
+            Ok(sender) => Ok(TypedFormulaResponseSender::Frequency(*sender)),
             _ => Err(Error::internal(format!(
                 "Can't create TypedFormulaResponseSender for `{}`",
                 std::any::type_name::<Q>()
@@ -128,6 +133,7 @@ struct Formulas {
     voltage: HashMap<(String, Metric), LogicalMeterFormula<Voltage>>,
     reactive_power: HashMap<(String, Metric), LogicalMeterFormula<ReactivePower>>,
     current: HashMap<(String, Metric), LogicalMeterFormula<Current>>,
+    frequency: HashMap<(String, Metric), LogicalMeterFormula<Frequency>>,
 }
 
 impl Formulas {
@@ -137,6 +143,7 @@ impl Formulas {
             || self.voltage.contains_key(key)
             || self.reactive_power.contains_key(key)
             || self.current.contains_key(key)
+            || self.frequency.contains_key(key)
     }
 
     /// Forwards a fresh subscription receiver for an existing formula.
@@ -155,6 +162,9 @@ impl Formulas {
                 Self::try_subscribe(&self.reactive_power, key, tx)
             }
             TypedFormulaResponseSender::Current(tx) => Self::try_subscribe(&self.current, key, tx),
+            TypedFormulaResponseSender::Frequency(tx) => {
+                Self::try_subscribe(&self.frequency, key, tx)
+            }
         }?;
         if !found {
             // The caller checked `contains_key` across all quantities before
@@ -214,6 +224,9 @@ impl Formulas {
             TypedFormulaResponseSender::Current(tx) => {
                 Self::insert_and_send(&mut self.current, formula_key, formula_engine, tx)?;
             }
+            TypedFormulaResponseSender::Frequency(tx) => {
+                Self::insert_and_send(&mut self.frequency, formula_key, formula_engine, tx)?;
+            }
         }
 
         Ok(components)
@@ -242,6 +255,7 @@ impl Formulas {
         Self::collect_keys(&self.voltage, &mut keys);
         Self::collect_keys(&self.reactive_power, &mut keys);
         Self::collect_keys(&self.current, &mut keys);
+        Self::collect_keys(&self.frequency, &mut keys);
         keys
     }
 
@@ -344,6 +358,9 @@ impl<C: Clock> LogicalMeterActor<C> {
                             &mut resampled,
                             &mut formulas.reactive_power,
                             ReactivePower::from_volt_amperes_reactive
+                        ).err())
+                        .or(self.evaluate_formulas(
+                            &mut resampled, &mut formulas.frequency, Frequency::from_hertz
                         ).err())
                     } {
                         if err.kind() == ErrorKind::DroppedUnusedFormulas {
@@ -636,7 +653,7 @@ mod tests {
         LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle,
         client::test_utils::{MockComponent, MockMicrogridApiClient, TokioSyncedClock},
         logical_meter::formula::Formula,
-        quantity::Power,
+        quantity::{Frequency, Power},
     };
 
     async fn new_handle(
@@ -770,6 +787,33 @@ mod tests {
             TimeDelta::try_seconds(1).unwrap(),
         );
         assert!(first.value().is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_actor_emits_samples_for_subscribed_frequency_formula() {
+        let meter = MockComponent::meter(2)
+            .with_frequency(vec![50.0, 50.1, 49.9, 50.0, 50.2, 49.8, 50.0, 50.1]);
+        let lm = new_handle(
+            meter,
+            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap()),
+            aligned_clock(),
+        )
+        .await;
+        let formula: Formula<Frequency> = lm.grid::<crate::metric::AcFrequency>().unwrap();
+        let rx = formula.subscribe().await.unwrap();
+        let mut stream = BroadcastStream::new(rx);
+
+        let first = loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), stream.next()).await {
+                Ok(Some(Ok(s))) => break s,
+                Ok(Some(Err(_))) => continue,
+                _ => panic!("no first frequency sample"),
+            }
+        };
+        assert!(
+            first.value().is_some(),
+            "expected a frequency value to be streamed for the grid",
+        );
     }
 
     #[tokio::test(start_paused = true)]
