@@ -21,8 +21,10 @@ use crate::{
     Bounds, Error, Formula, LogicalMeterHandle, MicrogridClientHandle,
     client::proto::common::microgrid::electrical_components::ElectricalComponentStateCode,
     metric,
+    metric::Metric,
     microgrid::{
-        pv_bounds_tracker::PvPoolBoundsTracker,
+        pool_bounds,
+        pool_bounds_tracker::PoolBoundsTracker,
         telemetry_tracker::pv_pool_telemetry_tracker::{PvPoolSnapshot, PvPoolTelemetryTracker},
     },
     quantity::Power,
@@ -156,7 +158,12 @@ impl PvPool {
         let snapshot_rx = self.telemetry_snapshots();
         let (tx, rx) = broadcast::channel(100);
         self.bounds_tx = Some(tx.downgrade());
-        let tracker = PvPoolBoundsTracker::<metric::AcPowerActive>::new(snapshot_rx, tx);
+        let tracker = PoolBoundsTracker::new(
+            snapshot_rx,
+            tx,
+            pool_bounds::compute_pv_pool_bounds::<metric::AcPowerActive>,
+            format!("{} PV", metric::AcPowerActive::str_name()),
+        );
         tokio::spawn(tracker.run());
         rx
     }

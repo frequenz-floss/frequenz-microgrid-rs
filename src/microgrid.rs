@@ -5,12 +5,11 @@
 
 mod bounds_aggregation;
 mod pool_bounds;
+mod pool_bounds_tracker;
 
-mod battery_bounds_tracker;
 mod battery_pool;
 pub use battery_pool::BatteryPool;
 
-mod pv_bounds_tracker;
 mod pv_pool;
 pub use pv_pool::PvPool;
 
