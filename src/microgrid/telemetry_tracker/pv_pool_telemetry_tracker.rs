@@ -215,11 +215,11 @@ mod tests {
         let mut rx1 = pool.telemetry_snapshots();
         let mut rx2 = pool.telemetry_snapshots();
 
-        // Advance so both receivers see at least one snapshot.
+        // Advance so the tracker publishes at least one snapshot.
         tokio::time::advance(std::time::Duration::from_millis(300)).await;
 
-        let snap1 = rx1.recv().await.unwrap();
-        let snap2 = rx2.recv().await.unwrap();
+        let snap1 = last_snapshot(&mut rx1, 0).await;
+        let snap2 = last_snapshot(&mut rx2, 0).await;
         assert_eq!(
             snap1, snap2,
             "both subscriptions should observe the same snapshot"

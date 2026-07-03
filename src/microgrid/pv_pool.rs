@@ -255,6 +255,81 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn late_subscriber_sees_latest_snapshot() {
+        let (client, lm) = handles(graph()).await;
+        let mut pool = PvPool::try_new(None, client, lm).unwrap();
+
+        // Drive the tracker so it has published a non-initial snapshot (the two
+        // PV inverters carry no telemetry, so they settle into the unhealthy
+        // set).
+        let mut early = pool.telemetry_snapshots();
+        let early_snap = last_snapshot(&mut early, 10).await;
+        assert_eq!(
+            early_snap.inverters.unhealthy.len(),
+            2,
+            "precondition: both inverters tracked"
+        );
+
+        // A subscriber joining after that publish must immediately observe the
+        // current snapshot — `subscribe` re-sends the cached value, so it neither
+        // blocks waiting for a change nor sees an empty stream.
+        let mut late = pool.telemetry_snapshots();
+        let late_snap = late
+            .try_recv()
+            .expect("late subscriber should be sent the cached snapshot at once");
+        assert_eq!(
+            late_snap, early_snap,
+            "late subscriber should see the latest snapshot, not an empty stream"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resubscribing_after_teardown_yields_a_current_valued_stream() {
+        let (client, lm) = handles(graph()).await;
+        let mut pool = PvPool::try_new(None, client, lm).unwrap();
+
+        // Subscribe, drive to a real snapshot, then drop the only consumer so
+        // the tracker stops (its next tick finds no receivers).
+        let mut rx = pool.telemetry_snapshots();
+        assert_eq!(
+            last_snapshot(&mut rx, 10).await.inverters.unhealthy.len(),
+            2
+        );
+        drop(rx);
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+
+        // Resubscribe: with the previous tracker stopped, the pool starts a fresh
+        // one, so the stream is immediately usable again — delivering the pool's
+        // current snapshot instead of hanging.
+        let mut rx = pool.telemetry_snapshots();
+        assert_eq!(
+            last_snapshot(&mut rx, 10).await.inverters.unhealthy.len(),
+            2,
+            "resubscribed stream should yield the pool's current snapshot"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn calling_power_bounds_twice_reuses_the_tracker() {
+        let (client, lm) = handles(graph()).await;
+        let mut pool = PvPool::try_new(None, client, lm).unwrap();
+
+        // First call starts the bounds tracker; drive it so it caches a value.
+        let mut rx1 = pool.power_bounds();
+        let bounds1 = last_snapshot(&mut rx1, 10).await;
+
+        // A second call while rx1 is still alive must reuse the running tracker
+        // (its weak sender upgrades and still has a receiver). Reuse re-sends the
+        // cached bounds at once; a freshly spawned tracker's cache would be empty
+        // until it ran, so an immediate `try_recv` succeeds only on the reuse path.
+        let mut rx2 = pool.power_bounds();
+        let bounds2 = rx2
+            .try_recv()
+            .expect("reused tracker should re-send its cached bounds immediately");
+        assert_eq!(bounds1, bounds2, "reused tracker shares the same bounds");
+    }
+
     #[tokio::test]
     async fn try_new_rejects_non_pv_component_ids() {
         let (client, lm) = handles(graph()).await;

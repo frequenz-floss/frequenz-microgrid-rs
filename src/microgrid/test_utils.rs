@@ -45,18 +45,23 @@ pub(crate) async fn handles(graph: MockComponent) -> (MicrogridClientHandle, Log
     (client, lm)
 }
 
-/// Drains `rx` for up to `steps` * 100ms of simulated time, returning the last
-/// value seen. Panics if no value arrives.
+/// Advances `steps` * 100ms of simulated time to let the producer task run,
+/// then returns the most recent value the broadcast channel has delivered.
 pub(crate) async fn last_snapshot<T: Clone>(
     rx: &mut tokio::sync::broadcast::Receiver<T>,
     steps: u32,
 ) -> T {
-    let mut last = None;
+    use tokio::sync::broadcast::error::TryRecvError;
     for _ in 0..steps {
         tokio::time::advance(std::time::Duration::from_millis(100)).await;
-        while let Ok(snap) = rx.try_recv() {
-            last = Some(snap);
+    }
+    let mut latest = None;
+    loop {
+        match rx.try_recv() {
+            Ok(value) => latest = Some(value),
+            Err(TryRecvError::Lagged(_)) => continue,
+            Err(TryRecvError::Empty | TryRecvError::Closed) => break,
         }
     }
-    last.expect("no snapshot received")
+    latest.expect("a value should have been published")
 }

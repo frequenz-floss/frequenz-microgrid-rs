@@ -78,8 +78,8 @@ impl<T: Clone> CachingSender<T> {
         self.tx.send(value.clone()).is_ok()
     }
 
-    /// The number of live consumer receivers (the manager and producers hold
-    /// senders, so they don't count).
+    /// The number of live consumer receivers (senders — held by the producer
+    /// and the pool — don't count).
     pub(crate) fn receiver_count(&self) -> usize {
         self.tx.receiver_count()
     }
@@ -129,5 +129,78 @@ impl<T> WeakCachingSender<T> {
             tx,
             last: Arc::clone(&self.last),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CachingSender;
+
+    #[test]
+    fn late_subscriber_is_re_sent_the_cached_value() {
+        let tx = CachingSender::new();
+        let _first = tx.subscribe_with_current();
+        assert!(tx.publish(7));
+
+        // A subscriber joining after the publish is re-sent the cached value
+        // at once, rather than waiting for the next publish.
+        let mut late = tx.subscribe_with_current();
+        assert_eq!(
+            late.try_recv().expect("cached value re-sent on subscribe"),
+            7
+        );
+    }
+
+    #[test]
+    fn publish_reports_whether_anyone_is_listening() {
+        let tx = CachingSender::new();
+        assert!(!tx.publish(1), "no receivers yet");
+        let _rx = tx.subscribe_with_current();
+        assert!(tx.publish(2), "a receiver is listening");
+    }
+
+    #[test]
+    fn publish_if_changed_does_not_resend_an_unchanged_value() {
+        let tx = CachingSender::new();
+        let mut rx = tx.subscribe_with_current();
+        assert!(tx.publish_if_changed(&5));
+        assert!(tx.publish_if_changed(&5), "still has a receiver");
+        assert!(tx.publish_if_changed(&6));
+
+        assert_eq!(rx.try_recv().unwrap(), 5);
+        assert_eq!(rx.try_recv().unwrap(), 6);
+        assert!(rx.try_recv().is_err(), "the unchanged 5 was not re-sent");
+    }
+
+    #[test]
+    fn weak_handle_upgrades_and_shares_the_cache_while_a_producer_lives() {
+        let tx = CachingSender::new();
+        let _rx = tx.subscribe_with_current();
+        assert!(tx.publish(11));
+        let weak = tx.downgrade();
+        // Stands in for the spawned tracker's strong sender; keep it alive.
+        let _producer = tx.clone();
+        drop(tx);
+
+        let upgraded = weak
+            .upgrade()
+            .expect("upgradable while a strong sender lives");
+        // The upgraded handle shares the same cache: a fresh subscriber sees 11.
+        let mut late = upgraded.subscribe_with_current();
+        assert_eq!(late.try_recv().expect("cached value re-sent"), 11);
+    }
+
+    #[test]
+    fn weak_handle_does_not_upgrade_after_the_producer_exits() {
+        let tx = CachingSender::<i32>::new();
+        let weak = tx.downgrade();
+        // A consumer receiver stays alive...
+        let _rx = tx.subscribe_with_current();
+        // ...but the producer (the sole strong sender) exits.
+        drop(tx);
+
+        // A live receiver no longer implies a live producer, so the pool's weak
+        // handle refuses to upgrade instead of reusing a dead channel.
+        assert!(weak.upgrade().is_none());
     }
 }
