@@ -4,6 +4,7 @@
 //! High-level interface for the Microgrid API.
 
 mod bounds_aggregation;
+mod caching_sender;
 mod pool_bounds;
 mod pool_bounds_tracker;
 mod pool_validation;

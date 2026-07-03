@@ -27,6 +27,8 @@
   - an explicit empty component set, or
   - `None` on a microgrid with no components of that kind.
 
+- A new subscriber to a pool's `telemetry_snapshots()` or `power_bounds()` is now sent the pool's current snapshot / bounds immediately, instead of blocking until the next update.
+
 ## Bug Fixes
 
 - The pool, group, and component telemetry trackers no longer leak their tasks (while logging at error level every tick) once their consumers are gone; normal shutdown is now logged at debug.

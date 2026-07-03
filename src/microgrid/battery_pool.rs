@@ -17,6 +17,7 @@ use crate::{
     metric,
     metric::Metric,
     microgrid::{
+        caching_sender::{CachingSender, WeakCachingSender},
         pool_bounds,
         pool_bounds_tracker::PoolBoundsTracker,
         pool_validation::validate_pool_ids,
@@ -32,8 +33,8 @@ pub struct BatteryPool {
     component_ids: Option<BTreeSet<u64>>,
     client: MicrogridClientHandle,
     logical_meter: LogicalMeterHandle,
-    snapshot_tx: Option<broadcast::WeakSender<BatteryPoolSnapshot>>,
-    bounds_tx: Option<broadcast::WeakSender<Vec<Bounds<Power>>>>,
+    snapshot_tx: Option<WeakCachingSender<BatteryPoolSnapshot>>,
+    bounds_tx: Option<WeakCachingSender<Vec<Bounds<Power>>>>,
 }
 
 impl BatteryPool {
@@ -90,20 +91,19 @@ impl BatteryPool {
     /// receivers; otherwise starts a new one (which also starts or reuses the
     /// underlying telemetry tracker).
     pub fn power_bounds(&mut self) -> broadcast::Receiver<Vec<Bounds<Power>>> {
-        if let Some(tx) = self
-            .bounds_tx
-            .as_ref()
-            .and_then(broadcast::WeakSender::upgrade)
+        if let Some(tx) = self.bounds_tx.as_ref().and_then(WeakCachingSender::upgrade)
             && tx.receiver_count() > 0
         {
-            return tx.subscribe();
+            return tx.subscribe_with_current();
         }
         let snapshot_rx = self.telemetry_snapshots();
-        let (tx, rx) = broadcast::channel(100);
-        self.bounds_tx = Some(tx.downgrade());
+        let tx = CachingSender::<Vec<Bounds<Power>>>::new();
+        // Subscribe before spawning so the tracker sees a receiver and doesn't
+        // stop before this consumer has read anything.
+        let rx = tx.subscribe_with_current();
         let tracker = PoolBoundsTracker::new(
             snapshot_rx,
-            tx,
+            tx.clone(),
             pool_bounds::compute_battery_pool_bounds::<metric::AcPowerActive, metric::DcPower>,
             format!(
                 "{}/{}",
@@ -112,6 +112,7 @@ impl BatteryPool {
             ),
         );
         tokio::spawn(tracker.run());
+        self.bounds_tx = Some(tx.downgrade());
         rx
     }
 
@@ -125,13 +126,15 @@ impl BatteryPool {
         if let Some(tx) = self
             .snapshot_tx
             .as_ref()
-            .and_then(broadcast::WeakSender::upgrade)
+            .and_then(WeakCachingSender::upgrade)
             && tx.receiver_count() > 0
         {
-            return tx.subscribe();
+            return tx.subscribe_with_current();
         }
-        let (tx, rx) = broadcast::channel(100);
-        self.snapshot_tx = Some(tx.downgrade());
+        let tx = CachingSender::<BatteryPoolSnapshot>::new();
+        // Subscribe before spawning so the tracker sees a receiver and doesn't
+        // stop before this consumer has read anything.
+        let rx = tx.subscribe_with_current();
         let tracker = BatteryPoolTelemetryTracker::new(
             self.get_battery_ids(),
             Duration::from_secs(10),
@@ -144,9 +147,10 @@ impl BatteryPool {
             ]),
             self.client.clone(),
             self.logical_meter.clone(),
-            tx,
+            tx.clone(),
         );
         tokio::spawn(tracker.run());
+        self.snapshot_tx = Some(tx.downgrade());
         rx
     }
 }
