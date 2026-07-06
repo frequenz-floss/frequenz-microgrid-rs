@@ -29,6 +29,8 @@
 
 - A new subscriber to a pool's `telemetry_snapshots()` or `power_bounds()` is now sent the pool's current snapshot / bounds immediately, instead of blocking until the next update.
 
+- `ComponentGraphConfig` is now re-exported, so `LogicalMeterConfig::with_component_graph_config` can be called without depending on the component-graph crate directly.
+
 ## Bug Fixes
 
 - The pool, group, and component telemetry trackers no longer leak their tasks (while logging at error level every tick) once their consumers are gone; normal shutdown is now logged at debug.
