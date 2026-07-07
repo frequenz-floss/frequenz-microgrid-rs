@@ -36,3 +36,5 @@
 - The pool, group, and component telemetry trackers no longer leak their tasks (while logging at error level every tick) once their consumers are gone; normal shutdown is now logged at debug.
 
 - The client now evicts ended per-component telemetry streams from its cache, so a pool recreated on the same client receives telemetry again instead of silently getting none.
+
+- Constructing a `BatteryPool` from a partial inverter-battery group (e.g. only one battery of a group that shares an inverter) is now rejected at construction with an error, instead of being accepted and later surfacing as an empty snapshot indistinguishable from a valid empty pool.

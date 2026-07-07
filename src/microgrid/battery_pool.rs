@@ -58,6 +58,14 @@ impl BatteryPool {
             "batteries",
         )
         .inspect_err(|e| tracing::error!("{e}"))?;
+        // Reject malformed or partial selections (e.g. only one battery of an
+        // inverter-battery group) at construction, rather than surfacing the
+        // error later from the spawned telemetry tracker as a closed stream.
+        // Errors are logged inside `inverter_battery_groups`.
+        BatteryPoolTelemetryTracker::inverter_battery_groups(
+            this.logical_meter.graph(),
+            &this.get_battery_ids(),
+        )?;
         Ok(this)
     }
 
@@ -193,6 +201,28 @@ mod tests {
         assert!(
             bounds.is_empty(),
             "empty pool should have empty power bounds"
+        );
+    }
+
+    /// grid → meter → battery_inverter(3) → [battery(4), battery(5)]
+    fn shared_inverter_graph() -> MockComponent {
+        MockComponent::grid(1).with_children(vec![MockComponent::meter(2).with_children(vec![
+                MockComponent::battery_inverter(3).with_children(vec![
+                    MockComponent::battery(4),
+                    MockComponent::battery(5),
+                ]),
+            ])])
+    }
+
+    #[tokio::test]
+    async fn try_new_rejects_partial_inverter_battery_group() {
+        // Battery 4 shares inverter 3 with battery 5, so selecting only 4 is a
+        // malformed selection. It must be rejected at construction rather than
+        // silently surfacing later as an empty snapshot/bounds value.
+        let (client, lm) = handles(shared_inverter_graph()).await;
+        assert!(
+            BatteryPool::try_new(Some([4].into()), client, lm).is_err(),
+            "a partial inverter-battery group must be rejected"
         );
     }
 }

@@ -8,9 +8,13 @@ use std::{
     time::Duration,
 };
 
+use frequenz_microgrid_component_graph::ComponentGraph;
+
 use crate::{
     Error, LogicalMeterHandle, MicrogridClientHandle,
-    client::proto::common::microgrid::electrical_components::ElectricalComponentStateCode,
+    client::proto::common::microgrid::electrical_components::{
+        ElectricalComponent, ElectricalComponentConnection, ElectricalComponentStateCode,
+    },
     microgrid::caching_sender::CachingSender,
     microgrid::telemetry_tracker::component_partition::ComponentHealthPartition,
     microgrid::telemetry_tracker::inverter_battery_group_telemetry_tracker::{
@@ -77,13 +81,19 @@ impl BatteryPoolTelemetryTracker {
         }
     }
 
-    pub(crate) fn get_inverter_battery_groups(&self) -> Result<Vec<InverterBatteryGroup>, Error> {
-        // An empty component set is a valid (empty) pool; the loop below visits
-        // no batteries and yields no groups.
-        let mut unvisited_batteries = self.component_ids.clone();
+    /// Walks the component graph to partition `component_ids` (battery IDs) into
+    /// inverter-battery groups, validating that the selection is complete: each
+    /// battery must reach only inverters whose other batteries are also in the
+    /// set. Returns an [`Error`] for a malformed or partial selection.
+    ///
+    /// An empty `component_ids` set is a valid (empty) pool: the loop visits no
+    /// batteries and yields no groups.
+    pub(crate) fn inverter_battery_groups(
+        graph: &ComponentGraph<ElectricalComponent, ElectricalComponentConnection>,
+        component_ids: &BTreeSet<u64>,
+    ) -> Result<Vec<InverterBatteryGroup>, Error> {
+        let mut unvisited_batteries = component_ids.clone();
         let mut groups = Vec::new();
-
-        let graph = self.logical_meter.graph();
 
         while let Some(battery_id) = unvisited_batteries.iter().next().cloned() {
             let group_inverters = graph
@@ -119,13 +129,13 @@ impl BatteryPoolTelemetryTracker {
             }
 
             // Ensure that all group batteries are part of the request.
-            if !group_batteries.is_subset(&self.component_ids) {
+            if !group_batteries.is_subset(component_ids) {
                 let e = format!(
                     concat!(
                         "Inverters {:?} are connected to batteries {:?} which are not all in ",
                         "the requested component IDs {:?}"
                     ),
-                    group_inverters, group_batteries, self.component_ids
+                    group_inverters, group_batteries, component_ids
                 );
 
                 tracing::error!("{}", e);
@@ -168,14 +178,15 @@ impl BatteryPoolTelemetryTracker {
     }
 
     pub(crate) async fn run(self) {
-        // Errors are logged at source inside `get_inverter_battery_groups`.
-        let Ok(inverter_battery_group_ids) = self.get_inverter_battery_groups() else {
-            // A malformed graph is a permanent, static condition — retrying
-            // can't fix it. Publish an empty snapshot so a subscriber gets a
-            // value instead of blocking on `recv`, then give up.
-            let _ = self
-                .component_pool_status_tx
-                .publish(BatteryPoolSnapshot::default());
+        // Errors are logged at source inside `inverter_battery_groups`.
+        let Ok(inverter_battery_group_ids) =
+            Self::inverter_battery_groups(self.logical_meter.graph(), &self.component_ids)
+        else {
+            // Construction (`BatteryPool::try_new`) already validated the
+            // topology, so this only fires on a transient graph-query failure.
+            // Return without publishing: dropping the sender closes the stream,
+            // which a subscriber can tell apart from a valid empty snapshot,
+            // instead of passing off a malformed pool as an empty one.
             return;
         };
 
