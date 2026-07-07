@@ -15,8 +15,12 @@ use crate::{
         proto::common::microgrid::electrical_components::ElectricalComponentStateCode,
     },
     metric,
+    metric::Metric,
     microgrid::{
-        battery_bounds_tracker::BatteryPoolBoundsTracker,
+        caching_sender::{CachingSender, WeakCachingSender},
+        pool_bounds,
+        pool_bounds_tracker::PoolBoundsTracker,
+        pool_validation::validate_pool_ids,
         telemetry_tracker::battery_pool_telemetry_tracker::{
             BatteryPoolSnapshot, BatteryPoolTelemetryTracker,
         },
@@ -29,8 +33,8 @@ pub struct BatteryPool {
     component_ids: Option<BTreeSet<u64>>,
     client: MicrogridClientHandle,
     logical_meter: LogicalMeterHandle,
-    snapshot_tx: Option<broadcast::WeakSender<BatteryPoolSnapshot>>,
-    bounds_tx: Option<broadcast::WeakSender<Vec<Bounds<Power>>>>,
+    snapshot_tx: Option<WeakCachingSender<BatteryPoolSnapshot>>,
+    bounds_tx: Option<WeakCachingSender<Vec<Bounds<Power>>>>,
 }
 
 impl BatteryPool {
@@ -48,19 +52,20 @@ impl BatteryPool {
             snapshot_tx: None,
             bounds_tx: None,
         };
-        if let Some(ids) = &this.component_ids {
-            if ids.is_empty() {
-                let e = "component_ids cannot be an empty set".to_string();
-                tracing::error!("{e}");
-                return Err(Error::invalid_component(e));
-            }
-            // Validate that all provided IDs correspond to batteries in the graph.
-            if !ids.is_subset(&this.get_all_battery_ids()) {
-                let e = format!("All component_ids {:?} must be batteries.", ids);
-                tracing::error!("{e}");
-                return Err(Error::invalid_component(e));
-            }
-        }
+        validate_pool_ids(
+            &this.component_ids,
+            &this.get_all_battery_ids(),
+            "batteries",
+        )
+        .inspect_err(|e| tracing::error!("{e}"))?;
+        // Reject malformed or partial selections (e.g. only one battery of an
+        // inverter-battery group) at construction, rather than surfacing the
+        // error later from the spawned telemetry tracker as a closed stream.
+        // Errors are logged inside `inverter_battery_groups`.
+        BatteryPoolTelemetryTracker::inverter_battery_groups(
+            this.logical_meter.graph(),
+            &this.get_battery_ids(),
+        )?;
         Ok(this)
     }
 
@@ -94,22 +99,28 @@ impl BatteryPool {
     /// receivers; otherwise starts a new one (which also starts or reuses the
     /// underlying telemetry tracker).
     pub fn power_bounds(&mut self) -> broadcast::Receiver<Vec<Bounds<Power>>> {
-        if let Some(tx) = self
-            .bounds_tx
-            .as_ref()
-            .and_then(broadcast::WeakSender::upgrade)
+        if let Some(tx) = self.bounds_tx.as_ref().and_then(WeakCachingSender::upgrade)
             && tx.receiver_count() > 0
         {
-            return tx.subscribe();
+            return tx.subscribe_with_current();
         }
         let snapshot_rx = self.telemetry_snapshots();
-        let (tx, rx) = broadcast::channel(100);
-        self.bounds_tx = Some(tx.downgrade());
-        let tracker = BatteryPoolBoundsTracker::<metric::AcPowerActive, metric::DcPower>::new(
+        let tx = CachingSender::<Vec<Bounds<Power>>>::new();
+        // Subscribe before spawning so the tracker sees a receiver and doesn't
+        // stop before this consumer has read anything.
+        let rx = tx.subscribe_with_current();
+        let tracker = PoolBoundsTracker::new(
             snapshot_rx,
-            tx,
+            tx.clone(),
+            pool_bounds::compute_battery_pool_bounds::<metric::AcPowerActive, metric::DcPower>,
+            format!(
+                "{}/{}",
+                metric::AcPowerActive::str_name(),
+                metric::DcPower::str_name()
+            ),
         );
         tokio::spawn(tracker.run());
+        self.bounds_tx = Some(tx.downgrade());
         rx
     }
 
@@ -123,13 +134,15 @@ impl BatteryPool {
         if let Some(tx) = self
             .snapshot_tx
             .as_ref()
-            .and_then(broadcast::WeakSender::upgrade)
+            .and_then(WeakCachingSender::upgrade)
             && tx.receiver_count() > 0
         {
-            return tx.subscribe();
+            return tx.subscribe_with_current();
         }
-        let (tx, rx) = broadcast::channel(100);
-        self.snapshot_tx = Some(tx.downgrade());
+        let tx = CachingSender::<BatteryPoolSnapshot>::new();
+        // Subscribe before spawning so the tracker sees a receiver and doesn't
+        // stop before this consumer has read anything.
+        let rx = tx.subscribe_with_current();
         let tracker = BatteryPoolTelemetryTracker::new(
             self.get_battery_ids(),
             Duration::from_secs(10),
@@ -142,9 +155,74 @@ impl BatteryPool {
             ]),
             self.client.clone(),
             self.logical_meter.clone(),
-            tx,
+            tx.clone(),
         );
         tokio::spawn(tracker.run());
+        self.snapshot_tx = Some(tx.downgrade());
         rx
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BatteryPool;
+    use crate::client::test_utils::MockComponent;
+    use crate::microgrid::test_utils::{handles, last_snapshot};
+
+    /// grid → meter, with no batteries anywhere.
+    fn battery_less_graph() -> MockComponent {
+        MockComponent::grid(1).with_children(vec![MockComponent::meter(2)])
+    }
+
+    #[tokio::test]
+    async fn try_new_none_constructs_an_empty_pool_without_batteries() {
+        let (client, lm) = handles(battery_less_graph()).await;
+        // A battery-less microgrid is a valid (empty) pool, not an error.
+        let mut pool = BatteryPool::try_new(None, client, lm)
+            .expect("a battery-less microgrid should yield an empty pool");
+        pool.power().expect("empty pool power formula");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn empty_pool_emits_empty_snapshot_and_bounds() {
+        let (client, lm) = handles(battery_less_graph()).await;
+        let mut pool = BatteryPool::try_new(None, client, lm).unwrap();
+
+        let mut snapshots = pool.telemetry_snapshots();
+        let mut bounds = pool.power_bounds();
+
+        let snapshot = last_snapshot(&mut snapshots, 5).await;
+        assert!(
+            snapshot.groups().is_empty(),
+            "empty pool snapshot should have no groups, got {snapshot:?}"
+        );
+
+        let bounds = last_snapshot(&mut bounds, 5).await;
+        assert!(
+            bounds.is_empty(),
+            "empty pool should have empty power bounds"
+        );
+    }
+
+    /// grid → meter → battery_inverter(3) → [battery(4), battery(5)]
+    fn shared_inverter_graph() -> MockComponent {
+        MockComponent::grid(1).with_children(vec![MockComponent::meter(2).with_children(vec![
+                MockComponent::battery_inverter(3).with_children(vec![
+                    MockComponent::battery(4),
+                    MockComponent::battery(5),
+                ]),
+            ])])
+    }
+
+    #[tokio::test]
+    async fn try_new_rejects_partial_inverter_battery_group() {
+        // Battery 4 shares inverter 3 with battery 5, so selecting only 4 is a
+        // malformed selection. It must be rejected at construction rather than
+        // silently surfacing later as an empty snapshot/bounds value.
+        let (client, lm) = handles(shared_inverter_graph()).await;
+        assert!(
+            BatteryPool::try_new(Some([4].into()), client, lm).is_err(),
+            "a partial inverter-battery group must be rejected"
+        );
     }
 }

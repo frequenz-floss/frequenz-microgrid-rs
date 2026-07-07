@@ -21,8 +21,12 @@ use crate::{
     Bounds, Error, Formula, LogicalMeterHandle, MicrogridClientHandle,
     client::proto::common::microgrid::electrical_components::ElectricalComponentStateCode,
     metric,
+    metric::Metric,
     microgrid::{
-        pv_bounds_tracker::PvPoolBoundsTracker,
+        caching_sender::{CachingSender, WeakCachingSender},
+        pool_bounds,
+        pool_bounds_tracker::PoolBoundsTracker,
+        pool_validation::validate_pool_ids,
         telemetry_tracker::pv_pool_telemetry_tracker::{PvPoolSnapshot, PvPoolTelemetryTracker},
     },
     quantity::Power,
@@ -75,8 +79,8 @@ pub struct PvPool {
     component_ids: Option<BTreeSet<u64>>,
     client: MicrogridClientHandle,
     logical_meter: LogicalMeterHandle,
-    snapshot_tx: Option<broadcast::WeakSender<PvPoolSnapshot>>,
-    bounds_tx: Option<broadcast::WeakSender<Vec<Bounds<Power>>>>,
+    snapshot_tx: Option<WeakCachingSender<PvPoolSnapshot>>,
+    bounds_tx: Option<WeakCachingSender<Vec<Bounds<Power>>>>,
 }
 
 impl PvPool {
@@ -98,20 +102,12 @@ impl PvPool {
             snapshot_tx: None,
             bounds_tx: None,
         };
-        if let Some(ids) = &this.component_ids {
-            if ids.is_empty() {
-                let e = "component_ids cannot be an empty set".to_string();
-                tracing::error!("{e}");
-                return Err(Error::invalid_component(e));
-            }
-            // Validate that all provided IDs correspond to PV inverters in the
-            // graph.
-            if !ids.is_subset(&this.get_all_pv_inverter_ids()) {
-                let e = format!("All component_ids {:?} must be PV inverters.", ids);
-                tracing::error!("{e}");
-                return Err(Error::invalid_component(e));
-            }
-        }
+        validate_pool_ids(
+            &this.component_ids,
+            &this.get_all_pv_inverter_ids(),
+            "PV inverters",
+        )
+        .inspect_err(|e| tracing::error!("{e}"))?;
         Ok(this)
     }
 
@@ -145,19 +141,24 @@ impl PvPool {
     /// receivers; otherwise starts a new one (which also starts or reuses the
     /// underlying telemetry tracker).
     pub fn power_bounds(&mut self) -> broadcast::Receiver<Vec<Bounds<Power>>> {
-        if let Some(tx) = self
-            .bounds_tx
-            .as_ref()
-            .and_then(broadcast::WeakSender::upgrade)
+        if let Some(tx) = self.bounds_tx.as_ref().and_then(WeakCachingSender::upgrade)
             && tx.receiver_count() > 0
         {
-            return tx.subscribe();
+            return tx.subscribe_with_current();
         }
         let snapshot_rx = self.telemetry_snapshots();
-        let (tx, rx) = broadcast::channel(100);
-        self.bounds_tx = Some(tx.downgrade());
-        let tracker = PvPoolBoundsTracker::<metric::AcPowerActive>::new(snapshot_rx, tx);
+        let tx = CachingSender::<Vec<Bounds<Power>>>::new();
+        // Subscribe before spawning so the tracker sees a receiver and doesn't
+        // stop before this consumer has read anything.
+        let rx = tx.subscribe_with_current();
+        let tracker = PoolBoundsTracker::new(
+            snapshot_rx,
+            tx.clone(),
+            pool_bounds::compute_pv_pool_bounds::<metric::AcPowerActive>,
+            format!("{} PV", metric::AcPowerActive::str_name()),
+        );
         tokio::spawn(tracker.run());
+        self.bounds_tx = Some(tx.downgrade());
         rx
     }
 
@@ -171,13 +172,15 @@ impl PvPool {
         if let Some(tx) = self
             .snapshot_tx
             .as_ref()
-            .and_then(broadcast::WeakSender::upgrade)
+            .and_then(WeakCachingSender::upgrade)
             && tx.receiver_count() > 0
         {
-            return tx.subscribe();
+            return tx.subscribe_with_current();
         }
-        let (tx, rx) = broadcast::channel(100);
-        self.snapshot_tx = Some(tx.downgrade());
+        let tx = CachingSender::<PvPoolSnapshot>::new();
+        // Subscribe before spawning so the tracker sees a receiver and doesn't
+        // stop before this consumer has read anything.
+        let rx = tx.subscribe_with_current();
         let tracker = PvPoolTelemetryTracker::new(
             self.get_pv_inverter_ids(),
             Duration::from_secs(10),
@@ -190,9 +193,10 @@ impl PvPool {
                 ElectricalComponentStateCode::Discharging,
             ]),
             self.client.clone(),
-            tx,
+            tx.clone(),
         );
         tokio::spawn(tracker.run());
+        self.snapshot_tx = Some(tx.downgrade());
         rx
     }
 }
@@ -201,26 +205,9 @@ impl PvPool {
 mod tests {
     use std::collections::BTreeSet;
 
-    use chrono::TimeDelta;
-
     use super::PvPool;
-    use crate::{
-        LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle,
-        client::test_utils::{MockComponent, MockMicrogridApiClient},
-    };
-
-    /// Builds client and logical-meter handles backed by the given mock graph.
-    async fn handles(graph: MockComponent) -> (MicrogridClientHandle, LogicalMeterHandle) {
-        let api = MockMicrogridApiClient::new(graph);
-        let client = MicrogridClientHandle::new_from_client(api);
-        let lm = LogicalMeterHandle::try_new(
-            client.clone(),
-            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap()),
-        )
-        .await
-        .unwrap();
-        (client, lm)
-    }
+    use crate::client::test_utils::MockComponent;
+    use crate::microgrid::test_utils::{handles, last_snapshot};
 
     /// grid → meter → [pv meter → pv_inverter(4), pv_inverter(5)],
     ///                 [battery meter → battery_inverter(7) → battery(8)]
@@ -237,12 +224,110 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn try_new_rejects_empty_component_ids() {
+    async fn try_new_accepts_empty_component_ids() {
         let (client, lm) = handles(graph()).await;
-        let err = PvPool::try_new(Some(BTreeSet::new()), client, lm)
-            .err()
-            .expect("empty component_ids should be rejected");
-        assert!(err.to_string().contains("empty"), "unexpected error: {err}");
+        // An explicit empty selection is a valid (empty) pool, not an error.
+        let mut pool = PvPool::try_new(Some(BTreeSet::new()), client, lm)
+            .expect("an empty component_ids set should yield an empty pool");
+        pool.power().expect("empty pool power formula");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn empty_pool_emits_empty_snapshot_and_bounds() {
+        // grid → meter, with no PV inverters anywhere.
+        let (client, lm) =
+            handles(MockComponent::grid(1).with_children(vec![MockComponent::meter(2)])).await;
+        let mut pool = PvPool::try_new(None, client, lm).unwrap();
+
+        let mut snapshots = pool.telemetry_snapshots();
+        let mut bounds = pool.power_bounds();
+
+        let snapshot = last_snapshot(&mut snapshots, 5).await;
+        assert!(
+            snapshot.inverters.healthy.is_empty() && snapshot.inverters.unhealthy.is_empty(),
+            "empty pool snapshot should have no inverters, got {snapshot:?}"
+        );
+
+        let bounds = last_snapshot(&mut bounds, 5).await;
+        assert!(
+            bounds.is_empty(),
+            "empty pool should have empty power bounds"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn late_subscriber_sees_latest_snapshot() {
+        let (client, lm) = handles(graph()).await;
+        let mut pool = PvPool::try_new(None, client, lm).unwrap();
+
+        // Drive the tracker so it has published a non-initial snapshot (the two
+        // PV inverters carry no telemetry, so they settle into the unhealthy
+        // set).
+        let mut early = pool.telemetry_snapshots();
+        let early_snap = last_snapshot(&mut early, 10).await;
+        assert_eq!(
+            early_snap.inverters.unhealthy.len(),
+            2,
+            "precondition: both inverters tracked"
+        );
+
+        // A subscriber joining after that publish must immediately observe the
+        // current snapshot — `subscribe` re-sends the cached value, so it neither
+        // blocks waiting for a change nor sees an empty stream.
+        let mut late = pool.telemetry_snapshots();
+        let late_snap = late
+            .try_recv()
+            .expect("late subscriber should be sent the cached snapshot at once");
+        assert_eq!(
+            late_snap, early_snap,
+            "late subscriber should see the latest snapshot, not an empty stream"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resubscribing_after_teardown_yields_a_current_valued_stream() {
+        let (client, lm) = handles(graph()).await;
+        let mut pool = PvPool::try_new(None, client, lm).unwrap();
+
+        // Subscribe, drive to a real snapshot, then drop the only consumer so
+        // the tracker stops (its next tick finds no receivers).
+        let mut rx = pool.telemetry_snapshots();
+        assert_eq!(
+            last_snapshot(&mut rx, 10).await.inverters.unhealthy.len(),
+            2
+        );
+        drop(rx);
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+
+        // Resubscribe: with the previous tracker stopped, the pool starts a fresh
+        // one, so the stream is immediately usable again — delivering the pool's
+        // current snapshot instead of hanging.
+        let mut rx = pool.telemetry_snapshots();
+        assert_eq!(
+            last_snapshot(&mut rx, 10).await.inverters.unhealthy.len(),
+            2,
+            "resubscribed stream should yield the pool's current snapshot"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn calling_power_bounds_twice_reuses_the_tracker() {
+        let (client, lm) = handles(graph()).await;
+        let mut pool = PvPool::try_new(None, client, lm).unwrap();
+
+        // First call starts the bounds tracker; drive it so it caches a value.
+        let mut rx1 = pool.power_bounds();
+        let bounds1 = last_snapshot(&mut rx1, 10).await;
+
+        // A second call while rx1 is still alive must reuse the running tracker
+        // (its weak sender upgrades and still has a receiver). Reuse re-sends the
+        // cached bounds at once; a freshly spawned tracker's cache would be empty
+        // until it ran, so an immediate `try_recv` succeeds only on the reuse path.
+        let mut rx2 = pool.power_bounds();
+        let bounds2 = rx2
+            .try_recv()
+            .expect("reused tracker should re-send its cached bounds immediately");
+        assert_eq!(bounds1, bounds2, "reused tracker shares the same bounds");
     }
 
     #[tokio::test]
