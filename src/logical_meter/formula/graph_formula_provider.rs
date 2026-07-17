@@ -7,9 +7,7 @@ use crate::Error;
 use crate::client::proto::common::microgrid::electrical_components::{
     ElectricalComponent, ElectricalComponentConnection,
 };
-use crate::logical_meter::formula::FormulaParams;
-use crate::logical_meter::formula::aggregation_formula::AggregationFormula;
-use crate::logical_meter::formula::coalesce_formula::CoalesceFormula;
+use crate::logical_meter::formula::graph_formula::{AggregationFormula, CoalesceFormula};
 use crate::logical_meter::logical_meter_actor;
 use crate::metric::Metric;
 
@@ -41,9 +39,8 @@ macro_rules! graph_formula_provider {
 /// Provides methods for generating corresponding formulas from the component
 /// graph.
 ///
-/// The component graph exposes methods to retrieve `AggregationFormula`s and
-/// `CoalesceFormula`s for each of these metrics.  This trait provides a
-/// way to generalize them.
+/// The component graph exposes methods that build a `Formula` for each
+/// supported category.  This trait provides a way to generalize them.
 pub(crate) trait GraphFormulaProvider: Sized {
     type MetricType: Metric;
 
@@ -78,7 +75,7 @@ macro_rules! impl_graph_formula_provider {
                     format!("Could not get {} formula: {e}", stringify!($fnname))
                 )
             })?;
-            Ok(FormulaParams::new(formula, instructions_tx).into())
+            Ok(Self::new(formula, instructions_tx))
         }
 
     )+};
