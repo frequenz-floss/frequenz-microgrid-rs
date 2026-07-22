@@ -2,7 +2,11 @@
 
 ## Summary
 
-<!-- Here goes a general summary of what this release is about -->
+- Adopts component-graph v0.6.0: logical-meter formulas can now have additional fallback sources from the surrounding meters, and category formulas prefer the sum of the components' own readings over a shared meter.
+
+- Pools can now be constructed empty, and new subscribers immediately receive the current snapshot and power bounds.
+
+- Breaking: the pool snapshot types now group their telemetry into shared healthy/unhealthy partitions (see Upgrading).
 
 ## Upgrading
 
