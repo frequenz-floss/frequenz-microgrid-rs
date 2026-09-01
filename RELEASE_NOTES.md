@@ -10,7 +10,9 @@
 
 ## New Features
 
-<!-- Here goes the main new features and examples or instructions on how to use them -->
+- `LogicalMeterHandle::steam_boiler::<M>()` streams a metric for a set of steam boilers.
+- `Microgrid::steam_boiler_pool()` returns a `SteamBoilerPool` with the pool's active power, aggregated active-power bounds and health-partitioned telemetry snapshots.
+- `test-utils`: `MockComponent::steam_boiler()` builds a steam boiler, and `MockComponent::add_power_bounds()` attaches bounds to a component's streamed active-power samples.
 
 ## Bug Fixes
 
