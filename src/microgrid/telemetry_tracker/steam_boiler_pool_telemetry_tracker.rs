@@ -154,3 +154,138 @@ impl SteamBoilerPoolTelemetryTracker {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::client::proto::common::microgrid::electrical_components::ElectricalComponentStateCode;
+    use crate::client::test_utils::MockComponent;
+    use crate::microgrid::steam_boiler_pool::SteamBoilerPool;
+    use crate::microgrid::test_utils::{handles, last_snapshot};
+
+    async fn new_pool(graph: MockComponent) -> SteamBoilerPool {
+        let (client, lm) = handles(graph).await;
+        SteamBoilerPool::try_new(None, client, lm).unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn single_boiler_reaches_healthy_state() {
+        // grid → meter → steam_boiler(3)
+        let mut pool = new_pool(MockComponent::grid(1).with_children(vec![
+            MockComponent::meter(2).with_children(vec![
+                MockComponent::steam_boiler(3).with_power(vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            ]),
+        ]))
+        .await;
+
+        let mut rx = pool.telemetry_snapshots();
+        let snap = last_snapshot(&mut rx, 10).await;
+
+        assert!(snap.boilers.healthy.contains_key(&3));
+        assert!(snap.boilers.unhealthy.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn two_boilers_both_appear_in_snapshot() {
+        // grid → meter → [steam_boiler(3), steam_boiler(4)]
+        let mut pool = new_pool(MockComponent::grid(1).with_children(vec![
+            MockComponent::meter(2).with_children(vec![
+                MockComponent::steam_boiler(3).with_power(vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                MockComponent::steam_boiler(4).with_power(vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            ]),
+        ]))
+        .await;
+
+        let mut rx = pool.telemetry_snapshots();
+        let snap = last_snapshot(&mut rx, 10).await;
+
+        assert!(snap.boilers.healthy.contains_key(&3));
+        assert!(snap.boilers.healthy.contains_key(&4));
+        assert!(snap.boilers.unhealthy.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn calling_telemetry_snapshots_twice_reuses_sender() {
+        let mut pool = new_pool(MockComponent::grid(1).with_children(vec![
+            MockComponent::meter(2).with_children(vec![
+                MockComponent::steam_boiler(3).with_power(vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            ]),
+        ]))
+        .await;
+
+        let mut rx1 = pool.telemetry_snapshots();
+        let mut rx2 = pool.telemetry_snapshots();
+
+        // Advance so the tracker publishes at least one snapshot.
+        tokio::time::advance(std::time::Duration::from_millis(300)).await;
+
+        let snap1 = last_snapshot(&mut rx1, 0).await;
+        let snap2 = last_snapshot(&mut rx2, 0).await;
+        assert_eq!(
+            snap1, snap2,
+            "both subscriptions should observe the same snapshot"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn boiler_becomes_unhealthy_when_data_stops() {
+        // A handful of samples then silence; the stream stays open so the
+        // client actor doesn't reconnect and resupply data.
+        let mut pool = new_pool(MockComponent::grid(1).with_children(vec![
+            MockComponent::meter(2).with_children(vec![
+                MockComponent::steam_boiler(3)
+                    .with_power(vec![0.0, 0.0, 0.0])
+                    .with_silence_after_metrics(),
+            ]),
+        ]))
+        .await;
+
+        let mut rx = pool.telemetry_snapshots();
+
+        // First confirm the boiler reaches a healthy state.
+        let healthy = last_snapshot(&mut rx, 10).await;
+        assert!(
+            healthy.boilers.healthy.contains_key(&3),
+            "expected boiler to go healthy after initial samples, got {:?}",
+            healthy
+        );
+
+        // Advance well past the 10s missing-data tolerance — the component
+        // tracker should fire its interval and reclassify the boiler.
+        tokio::time::advance(std::time::Duration::from_secs(15)).await;
+        let unhealthy = last_snapshot(&mut rx, 5).await;
+
+        assert!(
+            unhealthy.boilers.healthy.is_empty(),
+            "boiler should be unhealthy after data stops, got healthy set {:?}",
+            unhealthy.boilers.healthy.keys()
+        );
+        assert!(unhealthy.boilers.unhealthy.contains_key(&3));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn boiler_with_error_state_is_unhealthy() {
+        // Boiler reports an Error state — it must land in the unhealthy set
+        // even though samples keep arriving.
+        let mut pool = new_pool(MockComponent::grid(1).with_children(vec![
+            MockComponent::meter(2).with_children(vec![
+                MockComponent::steam_boiler(3)
+                    .with_power(vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                    .with_state(ElectricalComponentStateCode::Error),
+            ]),
+        ]))
+        .await;
+
+        let mut rx = pool.telemetry_snapshots();
+        let snap = last_snapshot(&mut rx, 10).await;
+
+        assert!(
+            !snap.boilers.healthy.contains_key(&3),
+            "boiler with Error state should not be in healthy set"
+        );
+        assert!(
+            snap.boilers.unhealthy.contains_key(&3),
+            "boiler with Error state should be in unhealthy set, got {:?}",
+            snap
+        );
+    }
+}

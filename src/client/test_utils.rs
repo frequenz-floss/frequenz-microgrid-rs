@@ -82,6 +82,9 @@ pub struct MockComponent {
     /// prevents the client actor from reconnecting and replaying the same
     /// data. Useful for testing missing-data timeouts.
     silence_after_metrics: bool,
+    /// Bounds attached to every streamed `AcPowerActive` sample. Set via
+    /// [`MockComponent::add_power_bounds`]; empty by default.
+    power_bounds: Vec<Bounds>,
 }
 
 impl MockComponent {
@@ -297,6 +300,14 @@ impl MockComponent {
         self
     }
 
+    /// Attaches bounds `lower..upper` to every streamed active-power
+    /// sample, so pool bounds trackers have something to aggregate. Call it
+    /// again to attach a second, disjoint range.
+    pub fn add_power_bounds(mut self, lower: Option<f32>, upper: Option<f32>) -> Self {
+        self.power_bounds.push(Bounds { lower, upper });
+        self
+    }
+
     /// Keeps the telemetry stream open and silent after the configured
     /// metrics are exhausted, so the client actor doesn't reconnect and
     /// replay the data. Useful for testing missing-data timeouts.
@@ -430,6 +441,7 @@ impl MicrogridApiClient for MockMicrogridApiClient {
                 .state_code
                 .unwrap_or(ElectricalComponentStateCode::Ready);
             let silence_after_metrics = component.silence_after_metrics;
+            let power_bounds = component.power_bounds.clone();
             let clock = self.clock.clone();
             tokio::spawn(async move {
                 let dur = std::time::Duration::from_millis(200);
@@ -470,7 +482,7 @@ impl MicrogridApiClient for MockMicrogridApiClient {
                                     ),
                                 ),
                             }),
-                            bounds: vec![],
+                            bounds: power_bounds.clone(),
                             connection: None,
                         });
                     }
