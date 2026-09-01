@@ -161,6 +161,9 @@ impl LogicalMeterHandle {
 
     /// Returns a receiver that streams samples for the given `metric` for the
     /// given component ID.
+    ///
+    /// For a component whose operational mode provides no telemetry
+    /// (`Inactive` or `ControlOnly`), the formula has no reading.
     pub fn component<M: metric::Metric>(
         &self,
         component_id: u64,
