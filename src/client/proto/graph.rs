@@ -121,6 +121,7 @@ impl frequenz_microgrid_component_graph::Node
             }
             pb::ElectricalComponentCategory::CapacitorBank => gr::ComponentCategory::CapacitorBank,
             pb::ElectricalComponentCategory::WindTurbine => gr::ComponentCategory::WindTurbine,
+            pb::ElectricalComponentCategory::SteamBoiler => gr::ComponentCategory::SteamBoiler,
         }
     }
 }
@@ -134,5 +135,23 @@ impl frequenz_microgrid_component_graph::Edge
 
     fn destination(&self) -> u64 {
         self.destination_electrical_component_id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::common::microgrid::electrical_components as pb;
+    use frequenz_microgrid_component_graph as gr;
+
+    #[test]
+    fn steam_boiler_category_maps_to_the_graph_category() {
+        let component = pb::ElectricalComponent {
+            category: pb::ElectricalComponentCategory::SteamBoiler as i32,
+            ..Default::default()
+        };
+        assert_eq!(
+            gr::Node::category(&component),
+            gr::ComponentCategory::SteamBoiler
+        );
     }
 }
