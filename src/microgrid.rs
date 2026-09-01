@@ -10,7 +10,7 @@ mod pool_bounds_tracker;
 mod pool_validation;
 
 #[cfg(test)]
-mod test_utils;
+pub(crate) mod test_utils;
 
 mod battery_pool;
 pub use battery_pool::BatteryPool;

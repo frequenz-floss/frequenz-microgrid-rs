@@ -1,7 +1,7 @@
 // License: MIT
 // Copyright © 2026 Frequenz Energy-as-a-Service GmbH
 
-//! Shared test helpers for the pool modules.
+//! Shared test helpers for the pool and logical-meter tests.
 
 use chrono::TimeDelta;
 

@@ -210,6 +210,7 @@ mod tests {
 
     use crate::{
         LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle, Sample,
+        client::proto::common::microgrid::electrical_components::ElectricalComponentOperationalMode,
         client::test_utils::{
             MockComponent,
             MockMicrogridApiClient, //
@@ -590,6 +591,82 @@ mod tests {
                 Some(14.75),
             ],
         )
+    }
+
+    /// `grid(1) -> meter(2) -> [meter(3) -> [pv_inverter(4), pv_inverter(5)]]`,
+    /// with `mode`, when set, applied to inverter 4.
+    fn pv_topology(mode: Option<ElectricalComponentOperationalMode>) -> MockComponent {
+        let mut inverter_4 = MockComponent::pv_inverter(4);
+        if let Some(mode) = mode {
+            inverter_4 = inverter_4.with_operational_mode(mode);
+        }
+        MockComponent::grid(1).with_children(vec![MockComponent::meter(2).with_children(vec![
+            MockComponent::meter(3).with_children(vec![inverter_4, MockComponent::pv_inverter(5)]),
+        ])])
+    }
+
+    /// Builds a logical-meter handle over [`pv_topology`] with the given
+    /// operational mode on inverter 4.
+    async fn pv_handle(mode: Option<ElectricalComponentOperationalMode>) -> LogicalMeterHandle {
+        crate::microgrid::test_utils::handles(pv_topology(mode))
+            .await
+            .1
+    }
+
+    #[tokio::test]
+    async fn test_non_telemetry_modes_are_not_measurement_sources() {
+        for mode in [
+            ElectricalComponentOperationalMode::Inactive,
+            ElectricalComponentOperationalMode::ControlOnly,
+        ] {
+            let lm = pv_handle(Some(mode)).await;
+
+            // The inactive inverter has no reading, so no child sum is exact;
+            // the graph keeps the meter as primary source and the remaining
+            // inverter as best-effort fallback.
+            assert_eq!(
+                lm.pv::<crate::metric::AcPowerActive>(None)
+                    .unwrap()
+                    .to_string(),
+                "METRIC_AC_POWER_ACTIVE::(COALESCE(#3, #5, 0.0))",
+                "{mode:?}"
+            );
+
+            assert_eq!(
+                lm.component::<crate::metric::AcPowerActive>(4)
+                    .unwrap()
+                    .to_string(),
+                "METRIC_AC_POWER_ACTIVE::(None)",
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_telemetry_providing_modes_keep_the_formula() {
+        let baseline = pv_handle(None)
+            .await
+            .pv::<crate::metric::AcPowerActive>(None)
+            .unwrap()
+            .to_string();
+        assert!(baseline.contains("#4"), "{baseline}");
+
+        for mode in [
+            // Explicit Unspecified equals the unset field (prost default 0).
+            ElectricalComponentOperationalMode::Unspecified,
+            ElectricalComponentOperationalMode::TelemetryOnly,
+            ElectricalComponentOperationalMode::ControlAndTelemetry,
+        ] {
+            assert_eq!(
+                pv_handle(Some(mode))
+                    .await
+                    .pv::<crate::metric::AcPowerActive>(None)
+                    .unwrap()
+                    .to_string(),
+                baseline,
+                "{mode:?}"
+            );
+        }
     }
 
     async fn fetch_samples<Q: Quantity>(formula: Formula<Q>, num_values: usize) -> Vec<Sample<Q>> {
