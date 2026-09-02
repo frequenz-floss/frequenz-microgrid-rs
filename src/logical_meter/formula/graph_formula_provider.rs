@@ -52,6 +52,7 @@ pub(crate) trait GraphFormulaProvider: Sized {
         (chp, ids: _chp_ids),
         (pv, ids: _pv_inverter_ids),
         (ev_charger, ids: _ev_charger_ids),
+        (steam_boiler, ids: _steam_boiler_ids),
         (component, id: _component_id),
     );
 }
@@ -92,6 +93,7 @@ impl<M: Metric> GraphFormulaProvider for AggregationFormula<M> {
         (chp, chp_formula, ids: chp_ids),
         (pv, pv_formula, ids: pv_inverter_ids),
         (ev_charger, ev_charger_formula, ids: ev_charger_ids),
+        (steam_boiler, steam_boiler_formula, ids: steam_boiler_ids),
         (component, component_formula, id: component_id),
     );
 }

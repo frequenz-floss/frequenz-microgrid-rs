@@ -1,19 +1,21 @@
 // License: MIT
 // Copyright © 2026 Frequenz Energy-as-a-Service GmbH
 
-//! Pool-level bounds aggregation for PV and battery pools.
+//! Pool-level bounds aggregation for PV, steam boiler and battery pools.
 //!
 //! Each pool's healthy components have their per-metric bounds combined into a
-//! single pool-level set. PV inverters in a pool are wired in parallel, so their
-//! bounds are simply added together. A battery pool aggregates following the
-//! physical topology of its inverter-battery groups (parallel within a side,
-//! series between the inverter and battery sides, parallel across groups).
+//! single pool-level set. The PV inverters or steam boilers in a pool are wired
+//! in parallel, so their bounds are simply added together. A battery pool
+//! aggregates following the physical topology of its inverter-battery groups
+//! (parallel within a side, series between the inverter and battery sides,
+//! parallel across groups).
 
 use crate::bounds::{combine_parallel_sets, intersect_bounds_sets};
 use crate::client::proto::common::metrics::Bounds as PbBounds;
 use crate::microgrid::bounds_aggregation::aggregate_parallel;
 use crate::microgrid::telemetry_tracker::battery_pool_telemetry_tracker::BatteryPoolSnapshot;
 use crate::microgrid::telemetry_tracker::pv_pool_telemetry_tracker::PvPoolSnapshot;
+use crate::microgrid::telemetry_tracker::steam_boiler_pool_telemetry_tracker::SteamBoilerPoolSnapshot;
 use crate::{Bounds, metric::Metric};
 
 /// Aggregates the bounds of every healthy PV inverter in the pool. The
@@ -27,6 +29,21 @@ where
     Bounds<M::QuantityType>: From<PbBounds>,
 {
     aggregate_parallel::<M>(&status.inverters.healthy)
+}
+
+/// Aggregates the bounds of every healthy steam boiler in the pool. The
+/// boilers are wired in parallel, so their bounds combine in parallel.
+///
+/// `M` is the metric used to read bounds from the steam boilers (e.g.
+/// `AcPowerActive`).
+pub(crate) fn compute_steam_boiler_pool_bounds<M>(
+    status: &SteamBoilerPoolSnapshot,
+) -> Vec<Bounds<M::QuantityType>>
+where
+    M: Metric,
+    Bounds<M::QuantityType>: From<PbBounds>,
+{
+    aggregate_parallel::<M>(&status.boilers.healthy)
 }
 
 /// Aggregates the power bounds of a battery pool following the physical

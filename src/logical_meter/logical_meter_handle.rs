@@ -142,6 +142,22 @@ impl LogicalMeterHandle {
     }
 
     /// Returns a receiver that streams samples for the given `metric` for the
+    /// given steam boiler IDs.
+    ///
+    /// When `component_ids` is `None`, all steam boilers in the microgrid are
+    /// used.
+    pub fn steam_boiler<M: metric::Metric>(
+        &self,
+        component_ids: Option<BTreeSet<u64>>,
+    ) -> Result<Formula<M::QuantityType>, Error> {
+        Ok(Formula::Subscriber(Box::new(M::FormulaType::steam_boiler(
+            &self.graph,
+            self.instructions_tx.clone(),
+            component_ids,
+        )?)))
+    }
+
+    /// Returns a receiver that streams samples for the given `metric` for the
     /// logical `consumer` in the microgrid.
     pub fn consumer<M: metric::Metric>(&self) -> Result<Formula<M::QuantityType>, Error> {
         Ok(Formula::Subscriber(Box::new(M::FormulaType::consumer(
@@ -266,6 +282,11 @@ mod tests {
                             MockComponent::ev_charger(14),
                             MockComponent::ev_charger(15),
                         ]),
+                        // Steam boiler meter
+                        MockComponent::meter(16).with_children(vec![
+                            // Steam boiler
+                            MockComponent::steam_boiler(17),
+                        ]),
                     ]),
             ]),
         );
@@ -339,6 +360,44 @@ mod tests {
             "METRIC_AC_CURRENT::(COALESCE(#15 + #14, #13, COALESCE(#15, 0.0) + COALESCE(#14, 0.0)))"
         );
 
+        let formula = lm
+            .steam_boiler::<crate::metric::AcPowerActive>(None)
+            .unwrap();
+        assert_eq!(
+            formula.to_string(),
+            "METRIC_AC_POWER_ACTIVE::(COALESCE(#17, #16, 0.0))"
+        );
+
+        let formula = lm
+            .steam_boiler::<crate::metric::AcPowerActive>(Some([17].into()))
+            .unwrap();
+        assert_eq!(
+            formula.to_string(),
+            "METRIC_AC_POWER_ACTIVE::(COALESCE(#17, #16, 0.0))"
+        );
+
+        // 16 is the steam boiler's meter, not a steam boiler.
+        let err = lm
+            .steam_boiler::<crate::metric::AcPowerActive>(Some([16].into()))
+            .err()
+            .expect("a non-steam-boiler ID must be rejected");
+        assert!(
+            err.to_string().contains("is not a steam boiler"),
+            "unexpected error: {err}"
+        );
+
+        // Only the aggregation path exists for steam boilers (as for CHP), so a
+        // coalesce metric is unsupported.
+        let err = lm
+            .steam_boiler::<crate::metric::AcVoltage>(None)
+            .err()
+            .expect("coalesce metrics are unsupported for steam boilers");
+        assert!(
+            err.to_string()
+                .contains("does not support steam_boiler formula generation"),
+            "unexpected error: {err}"
+        );
+
         let formula = lm.consumer::<crate::metric::AcCurrent>().unwrap();
         assert_eq!(
             formula.to_string(),
@@ -346,11 +405,13 @@ mod tests {
                 "METRIC_AC_CURRENT::(MAX(",
                 "#2 - COALESCE(#3, #4, 0.0) - COALESCE(#5, COALESCE(#8, 0.0) + COALESCE(#6, 0.0)) ",
                 "- #10 - COALESCE(#11, #12, 0.0)",
-                " - COALESCE(#13, COALESCE(#15, 0.0) + COALESCE(#14, 0.0)),",
+                " - COALESCE(#13, COALESCE(#15, 0.0) + COALESCE(#14, 0.0))",
+                " - COALESCE(#16, #17, 0.0),",
                 " 0.0)",
                 " + COALESCE(MAX(#3 - #4, 0.0), 0.0) + COALESCE(MAX(#5 - #6 - #8, 0.0), 0.0)",
                 " + MAX(#10, 0.0) + COALESCE(MAX(#11 - #12, 0.0), 0.0)",
                 " + COALESCE(MAX(#13 - #14 - #15, 0.0), 0.0)",
+                " + COALESCE(MAX(#16 - #17, 0.0), 0.0)",
                 ")"
             )
         );

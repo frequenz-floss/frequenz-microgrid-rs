@@ -1,12 +1,19 @@
 # Frequenz Microgrid Release Notes
 
+## Summary
+
+<!-- Here goes a general summary of what this release is about -->
+
 ## Upgrading
 
-- The bundled Microgrid API protos moved to `frequenz-api-microgrid` v0.19.0 (`frequenz-api-common` v0.8.4). The re-exported `client::ElectricalComponentCategory` gained the `SteamBoiler` variant; an exhaustive `match` on it needs a new arm.
-- `client::ElectricalComponent` gained the fields `operational_mode` and `model` (`manufacturer` and `model_name` are deprecated in favour of `model`); struct literals need `..Default::default()`.
+<!-- Here goes notes on how to upgrade from previous versions, including deprecations and what they should be replaced with -->
 
 ## New Features
 
-- Component operational modes are passed to the component graph. Formulas no longer read components whose mode is `Inactive` or `ControlOnly`; for such a component, `LogicalMeterHandle::component()` returns a formula with no reading.
-- The crate now requires `frequenz-microgrid-component-graph` 0.6.2 (was 0.6.0), which brings the operational-mode support and formula fixes; see its release notes.
-- `test-utils`: `MockComponent::with_operational_mode()` sets a mock component's operational mode.
+- `LogicalMeterHandle::steam_boiler::<M>()` streams a metric for a set of steam boilers.
+- `Microgrid::steam_boiler_pool()` returns a `SteamBoilerPool` with the pool's active power, aggregated active-power bounds and health-partitioned telemetry snapshots.
+- `test-utils`: `MockComponent::steam_boiler()` builds a steam boiler, and `MockComponent::add_power_bounds()` attaches bounds to a component's streamed active-power samples.
+
+## Bug Fixes
+
+<!-- Here goes notable bug fixes that are worth a special mention or explanation -->

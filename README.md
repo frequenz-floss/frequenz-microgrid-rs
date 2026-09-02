@@ -53,8 +53,8 @@ cargo add --dev frequenz-microgrid --features test-utils
 
 ## What's included
 
-- `Microgrid` / `LogicalMeterHandle`: typed formulas for grid, battery, pv, chp, ev_charger, consumer, producer, and individual components, parametrised over a metric.
-- `BatteryPool` and `PvPool`: aggregated active-power bounds and health-partitioned telemetry for a set of batteries or PV inverters.
+- `Microgrid` / `LogicalMeterHandle`: typed formulas for grid, battery, pv, chp, ev_charger, steam_boiler, consumer, producer, and individual components, parametrised over a metric.
+- `BatteryPool`, `PvPool` and `SteamBoilerPool`: aggregated active-power bounds and health-partitioned telemetry for a set of batteries, PV inverters or steam boilers.
 - `MicrogridClientHandle`: cloneable low-level gRPC handle with per-stream automatic reconnect.
 - Typed quantities — `Power`, `Current`, `Voltage`, `ReactivePower`, `Energy`, `Frequency`, `Percentage` — with unit conversions explicit at every API surface.
 

@@ -82,6 +82,9 @@ pub struct MockComponent {
     /// prevents the client actor from reconnecting and replaying the same
     /// data. Useful for testing missing-data timeouts.
     silence_after_metrics: bool,
+    /// Bounds attached to every streamed `AcPowerActive` sample. Set via
+    /// [`MockComponent::add_power_bounds`]; empty by default.
+    power_bounds: Vec<Bounds>,
 }
 
 impl MockComponent {
@@ -173,6 +176,18 @@ impl MockComponent {
                 id: component_id,
                 name: format!("CHP {}", component_id),
                 category: ElectricalComponentCategory::Chp as i32,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    pub fn steam_boiler(component_id: u64) -> Self {
+        Self {
+            component: ElectricalComponent {
+                id: component_id,
+                name: format!("Steam Boiler {}", component_id),
+                category: ElectricalComponentCategory::SteamBoiler as i32,
                 ..Default::default()
             },
             ..Default::default()
@@ -282,6 +297,14 @@ impl MockComponent {
     /// Sets the component's operational mode.
     pub fn with_operational_mode(mut self, mode: ElectricalComponentOperationalMode) -> Self {
         self.component.operational_mode = mode as i32;
+        self
+    }
+
+    /// Attaches bounds `lower..upper` to every streamed active-power
+    /// sample, so pool bounds trackers have something to aggregate. Call it
+    /// again to attach a second, disjoint range.
+    pub fn add_power_bounds(mut self, lower: Option<f32>, upper: Option<f32>) -> Self {
+        self.power_bounds.push(Bounds { lower, upper });
         self
     }
 
@@ -418,6 +441,7 @@ impl MicrogridApiClient for MockMicrogridApiClient {
                 .state_code
                 .unwrap_or(ElectricalComponentStateCode::Ready);
             let silence_after_metrics = component.silence_after_metrics;
+            let power_bounds = component.power_bounds.clone();
             let clock = self.clock.clone();
             tokio::spawn(async move {
                 let dur = std::time::Duration::from_millis(200);
@@ -458,7 +482,7 @@ impl MicrogridApiClient for MockMicrogridApiClient {
                                     ),
                                 ),
                             }),
-                            bounds: vec![],
+                            bounds: power_bounds.clone(),
                             connection: None,
                         });
                     }

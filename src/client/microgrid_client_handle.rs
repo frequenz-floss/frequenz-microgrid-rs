@@ -174,7 +174,7 @@ impl MicrogridClientHandle {
     /// which the bounds will stay in effect. If no duration is provided, then the
     /// bounds will be removed after a default duration of 5 seconds.
     ///
-    /// Inclusion bounds give the range that the system will try to keep the
+    /// The bounds give the range that the system will try to keep the
     /// metric within. If the metric goes outside of these bounds, the system will
     /// try to bring it back within the bounds.
     /// If the bounds for a metric are [\`lower_1`, `upper_1`],
@@ -183,7 +183,7 @@ impl MicrogridClientHandle {
     /// the constraints
     /// `lower_1 <= value <= upper_1` OR `lower_2 <= value <= upper_2`.
     ///
-    /// If multiple inclusion bounds have been provided for a metric, then the
+    /// If multiple bounds have been provided for a metric, then the
     /// overlapping bounds are merged into a single bound, and non-overlapping
     /// bounds are kept separate.
     /// E.g. if the bounds are [0, 10], [5, 15], [20, 30](<0, 10], [5, 15], [20, 30>), then the resulting
