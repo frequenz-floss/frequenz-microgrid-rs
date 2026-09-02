@@ -179,6 +179,18 @@ impl MockComponent {
         }
     }
 
+    pub fn steam_boiler(component_id: u64) -> Self {
+        Self {
+            component: ElectricalComponent {
+                id: component_id,
+                name: format!("Steam Boiler {}", component_id),
+                category: ElectricalComponentCategory::SteamBoiler as i32,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
     pub fn with_children(mut self, children: Vec<MockComponent>) -> Self {
         if self.component.category == ElectricalComponentCategory::Unspecified as i32 {
             panic!("Cannot add children to a hidden load component");
