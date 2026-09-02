@@ -23,8 +23,9 @@ use crate::{
             microgrid::electrical_components::{
                 ElectricalComponent, ElectricalComponentCategory,
                 ElectricalComponentCategorySpecificInfo, ElectricalComponentConnection,
-                ElectricalComponentStateCode, ElectricalComponentStateSnapshot,
-                ElectricalComponentTelemetry, Inverter, InverterType, MetricConfigBounds,
+                ElectricalComponentOperationalMode, ElectricalComponentStateCode,
+                ElectricalComponentStateSnapshot, ElectricalComponentTelemetry, Inverter,
+                InverterType, MetricConfigBounds,
                 electrical_component_category_specific_info::Kind,
             },
         },
@@ -275,6 +276,12 @@ impl MockComponent {
     /// Overrides the state code reported in each telemetry sample.
     pub fn with_state(mut self, code: ElectricalComponentStateCode) -> Self {
         self.state_code = Some(code);
+        self
+    }
+
+    /// Sets the component's operational mode.
+    pub fn with_operational_mode(mut self, mode: ElectricalComponentOperationalMode) -> Self {
+        self.component.operational_mode = mode as i32;
         self
     }
 

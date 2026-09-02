@@ -121,6 +121,33 @@ impl frequenz_microgrid_component_graph::Node
             }
             pb::ElectricalComponentCategory::CapacitorBank => gr::ComponentCategory::CapacitorBank,
             pb::ElectricalComponentCategory::WindTurbine => gr::ComponentCategory::WindTurbine,
+            pb::ElectricalComponentCategory::SteamBoiler => gr::ComponentCategory::SteamBoiler,
+        }
+    }
+
+    fn operational_mode(&self) -> frequenz_microgrid_component_graph::OperationalMode {
+        use super::common::microgrid::electrical_components as pb;
+        use frequenz_microgrid_component_graph as gr;
+
+        let mode = pb::ElectricalComponentOperationalMode::try_from(self.operational_mode)
+            .unwrap_or_else(|e| {
+                error!(
+                    "Error converting operational mode of component {}: {}",
+                    self.id, e
+                );
+                pb::ElectricalComponentOperationalMode::Unspecified
+            });
+
+        match mode {
+            pb::ElectricalComponentOperationalMode::Unspecified => gr::OperationalMode::Unspecified,
+            pb::ElectricalComponentOperationalMode::Inactive => gr::OperationalMode::Inactive,
+            pb::ElectricalComponentOperationalMode::TelemetryOnly => {
+                gr::OperationalMode::TelemetryOnly
+            }
+            pb::ElectricalComponentOperationalMode::ControlOnly => gr::OperationalMode::ControlOnly,
+            pb::ElectricalComponentOperationalMode::ControlAndTelemetry => {
+                gr::OperationalMode::ControlAndTelemetry
+            }
         }
     }
 }
@@ -134,5 +161,73 @@ impl frequenz_microgrid_component_graph::Edge
 
     fn destination(&self) -> u64 {
         self.destination_electrical_component_id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::common::microgrid::electrical_components as pb;
+    use frequenz_microgrid_component_graph as gr;
+
+    #[test]
+    fn steam_boiler_category_maps_to_the_graph_category() {
+        let component = pb::ElectricalComponent {
+            category: pb::ElectricalComponentCategory::SteamBoiler as i32,
+            ..Default::default()
+        };
+        assert_eq!(
+            gr::Node::category(&component),
+            gr::ComponentCategory::SteamBoiler
+        );
+    }
+
+    #[test]
+    fn operational_modes_map_to_the_graph_modes() {
+        let cases = [
+            (
+                pb::ElectricalComponentOperationalMode::Unspecified,
+                gr::OperationalMode::Unspecified,
+            ),
+            (
+                pb::ElectricalComponentOperationalMode::Inactive,
+                gr::OperationalMode::Inactive,
+            ),
+            (
+                pb::ElectricalComponentOperationalMode::TelemetryOnly,
+                gr::OperationalMode::TelemetryOnly,
+            ),
+            (
+                pb::ElectricalComponentOperationalMode::ControlOnly,
+                gr::OperationalMode::ControlOnly,
+            ),
+            (
+                pb::ElectricalComponentOperationalMode::ControlAndTelemetry,
+                gr::OperationalMode::ControlAndTelemetry,
+            ),
+        ];
+
+        for (mode, expected) in cases {
+            let component = pb::ElectricalComponent {
+                operational_mode: mode as i32,
+                ..Default::default()
+            };
+            assert_eq!(
+                gr::Node::operational_mode(&component),
+                expected,
+                "unexpected mapping for {mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_operational_mode_maps_to_unspecified() {
+        let component = pb::ElectricalComponent {
+            operational_mode: 99,
+            ..Default::default()
+        };
+        assert_eq!(
+            gr::Node::operational_mode(&component),
+            gr::OperationalMode::Unspecified
+        );
     }
 }
