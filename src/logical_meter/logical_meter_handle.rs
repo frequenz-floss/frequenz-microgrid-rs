@@ -749,6 +749,43 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_builder_display() {
+        let lm = new_logical_meter_handle(None).await;
+        let grid = lm.grid::<crate::metric::AcPowerActive>().unwrap();
+
+        assert_eq!(
+            (grid.clone() * crate::quantity::Percentage::from_percentage(50.0)).to_string(),
+            "#2:AC_POWER_ACTIVE * 0.5"
+        );
+        assert_eq!(
+            grid.clone()
+                .avg(Vec::<Formula<crate::quantity::Power>>::new())
+                .to_string(),
+            "AVG(#2:AC_POWER_ACTIVE)"
+        );
+        assert_eq!(
+            (grid.clone() - crate::quantity::Power::from_watts(1.0)).to_string(),
+            "#2:AC_POWER_ACTIVE - 1"
+        );
+        assert_eq!(
+            grid.clone().max(grid.clone()).to_string(),
+            "MAX(#2:AC_POWER_ACTIVE, #2:AC_POWER_ACTIVE)"
+        );
+        // Chained coalesce flattens into a single node.
+        assert_eq!(
+            grid.clone()
+                .coalesce(crate::quantity::Power::from_watts(0.0))
+                .coalesce(grid.clone())
+                .to_string(),
+            "COALESCE(#2:AC_POWER_ACTIVE, 0, #2:AC_POWER_ACTIVE)"
+        );
+        assert_eq!(
+            ((grid.clone() + grid.clone()) / 2.0).to_string(),
+            "(#2:AC_POWER_ACTIVE + #2:AC_POWER_ACTIVE) / 2"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn test_composed_formula_tracks_its_operands() {
         let lm = new_logical_meter_handle(None).await;

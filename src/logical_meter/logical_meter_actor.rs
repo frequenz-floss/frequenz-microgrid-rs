@@ -415,6 +415,8 @@ impl<C: Clock> LogicalMeterActor<C> {
 mod tests {
     use super::*;
     use chrono::TimeDelta;
+    use frequenz_microgrid_formula_engine::parse;
+    use std::sync::{Arc, Mutex};
     use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 
     use crate::{
@@ -423,6 +425,174 @@ mod tests {
         logical_meter::formula::Formula,
         quantity::{Frequency, Power},
     };
+
+    /// What a [`RecordingSink`] was sent, shared with the test.
+    type Recorded = Arc<Mutex<Vec<(DateTime<Utc>, Option<f32>)>>>;
+
+    /// A sink whose subscriber is still listening; records what it is sent.
+    struct RecordingSink {
+        recorded: Recorded,
+    }
+
+    impl FormulaSink for RecordingSink {
+        fn send(&self, timestamp: DateTime<Utc>, value: Option<f32>) -> bool {
+            self.recorded.lock().unwrap().push((timestamp, value));
+            true
+        }
+    }
+
+    /// A sink whose subscriber is gone: every send fails.
+    struct DeadSink;
+
+    impl FormulaSink for DeadSink {
+        fn send(&self, _timestamp: DateTime<Utc>, _value: Option<f32>) -> bool {
+            false
+        }
+    }
+
+    fn recording_sink() -> (Box<dyn FormulaSink>, Recorded) {
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        (
+            Box::new(RecordingSink {
+                recorded: recorded.clone(),
+            }),
+            recorded,
+        )
+    }
+
+    /// An actor that is never run, for exercising its per-tick bookkeeping
+    /// methods directly.
+    fn bare_actor() -> LogicalMeterActor<TokioSyncedClock> {
+        bare_actor_with(LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap()))
+    }
+
+    fn bare_actor_with(config: LogicalMeterConfig) -> LogicalMeterActor<TokioSyncedClock> {
+        let api_client = MockMicrogridApiClient::new(MockComponent::grid(1));
+        let (_tx, rx) = mpsc::channel(1);
+        LogicalMeterActor::try_new(
+            rx,
+            MicrogridClientHandle::new_from_client(api_client),
+            config,
+            TokioSyncedClock::new(),
+        )
+        .unwrap()
+    }
+
+    fn active_power_key(component_id: u64) -> Key {
+        Key {
+            metric: Metric::AcPowerActive,
+            component_id,
+        }
+    }
+
+    fn formula_entry(formula: &str, sinks: Vec<Box<dyn FormulaSink>>) -> FormulaEntry {
+        let expr = parse::<f32>(formula)
+            .unwrap()
+            .map_components(active_power_key);
+        FormulaEntry {
+            engine: FormulaEngine::from_expr(expr),
+            sinks,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_formulas_sends_to_live_sinks_and_prunes_dead_ones() {
+        let actor = bare_actor();
+        let (live, recorded) = recording_sink();
+        let mut formulas = HashMap::from([(
+            "#2".to_string(),
+            formula_entry("#2", vec![live, Box::new(DeadSink)]),
+        )]);
+
+        let snapshot = HashMap::from([(active_power_key(2), Some(7.5))]);
+        actor.evaluate_formulas(&snapshot, &mut formulas);
+
+        assert_eq!(
+            formulas["#2"].sinks.len(),
+            1,
+            "the dead sink should be gone"
+        );
+        assert_eq!(
+            *recorded.lock().unwrap(),
+            vec![(actor.resampler_ts, Some(7.5))],
+        );
+
+        // A key that is not in the snapshot reads as undecided, which the
+        // sink sees as `None`.
+        actor.evaluate_formulas(&HashMap::new(), &mut formulas);
+        assert_eq!(
+            *recorded.lock().unwrap(),
+            vec![(actor.resampler_ts, Some(7.5)), (actor.resampler_ts, None)],
+        );
+        assert_eq!(formulas["#2"].sinks.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_formulas_needs_every_operand() {
+        let actor = bare_actor();
+        let snapshot = HashMap::from([
+            (active_power_key(2), Some(1.0)),
+            (active_power_key(3), None),
+        ]);
+        for (formula, expected) in [
+            ("AVG(#2, #3)", None),
+            ("MIN(#2, #3)", None),
+            ("#2 + #3", None),
+            ("COALESCE(#3, #2)", Some(1.0)),
+        ] {
+            let (sink, recorded) = recording_sink();
+            let mut formulas =
+                HashMap::from([(formula.to_string(), formula_entry(formula, vec![sink]))]);
+            actor.evaluate_formulas(&snapshot, &mut formulas);
+            assert_eq!(recorded.lock().unwrap()[0].1, expected, "{formula}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_formulas_drops_entries_that_lost_their_last_sink() {
+        let actor = bare_actor();
+        let mut formulas = HashMap::from([(
+            "#2".to_string(),
+            formula_entry("#2", vec![Box::new(DeadSink)]),
+        )]);
+
+        actor.evaluate_formulas(
+            &HashMap::from([(active_power_key(2), Some(1.0))]),
+            &mut formulas,
+        );
+
+        assert!(
+            formulas.is_empty(),
+            "the entry should go with its last sink"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_drop_unused_resamplers_keeps_only_referenced_keys() {
+        let actor = bare_actor();
+        let mut resamplers = HashMap::new();
+        for component_id in [2, 3] {
+            let key = active_power_key(component_id);
+            let (_tx, receiver) = broadcast::channel(1);
+            resamplers.insert(
+                key,
+                ComponentDataResampler {
+                    key,
+                    resampler: actor.build_resampler(key.metric, actor.resampler_ts),
+                    receiver,
+                },
+            );
+        }
+        let formulas = HashMap::from([(
+            "#2".to_string(),
+            formula_entry("#2", vec![Box::new(DeadSink)]),
+        )]);
+
+        LogicalMeterActor::<TokioSyncedClock>::drop_unused_resamplers(&formulas, &mut resamplers);
+
+        assert_eq!(resamplers.len(), 1);
+        assert!(resamplers.contains_key(&active_power_key(2)));
+    }
 
     async fn new_handle(
         meter: MockComponent,
