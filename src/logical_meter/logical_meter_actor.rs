@@ -262,6 +262,11 @@ impl<C: Clock> LogicalMeterActor<C> {
     }
 
     /// Resamples every component and returns this tick's values by key.
+    ///
+    /// A component whose telemetry subscription is still in flight is left out
+    /// of the snapshot, so its key reads as [`Reading::Unknown`]. Its resampler
+    /// is still advanced: one that falls behind returns several values on its
+    /// next call.
     fn resample(
         &self,
         subscriptions: &mut HashMap<Key, ComponentSubscription>,
@@ -280,7 +285,9 @@ impl<C: Clock> LogicalMeterActor<C> {
                     resampled.len()
                 )));
             }
-            snapshot.insert(*key, resampled[0].clone().value());
+            if subscription.receiver.is_some() {
+                snapshot.insert(*key, resampled[0].clone().value());
+            }
         }
         Ok(snapshot)
     }
@@ -374,11 +381,12 @@ impl<C: Clock> LogicalMeterActor<C> {
         }
     }
 
-    /// Registers a subscriber for `engine_formula`. On first sight of an
-    /// expression, evaluates it against the last snapshot to learn which
-    /// components it needs right now and starts those subscriptions
-    /// immediately, so the first data still arrives one tick after
-    /// subscribing.
+    /// Registers a subscriber for `engine_formula`, creating the formula on
+    /// first sight of the expression and pushing the sink onto it otherwise.
+    ///
+    /// Every subscription re-seeds demand: the expression is evaluated against
+    /// the last snapshot only to find the components it needs; any not yet
+    /// subscribed are subscribed at once. Nothing is sent to the sinks.
     fn handle_subscribe_formula(
         &self,
         engine_formula: engine::Formula<f32, Key>,
@@ -721,6 +729,58 @@ mod tests {
             pending.is_empty(),
             "no subscription should start for an already-resampled key"
         );
+    }
+
+    #[tokio::test]
+    async fn test_pending_subscription_reads_as_unknown() {
+        let mut actor = bare_actor();
+        let start = actor.resampler_ts - actor.config.resampling_interval;
+        let pending_key = active_power_key(2);
+        let attached_key = active_power_key(3);
+        let (_tx, receiver) = broadcast::channel(1);
+        let mut subscriptions = HashMap::from([
+            // The pending key's subscription is still in flight.
+            (pending_key, subscription(&actor, pending_key, start, None)),
+            (
+                attached_key,
+                subscription(&actor, attached_key, start, Some(receiver)),
+            ),
+        ]);
+
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+
+        assert_eq!(
+            snapshot.keys().copied().collect::<HashSet<_>>(),
+            HashSet::from([attached_key]),
+            "a pending subscription must stay out of the snapshot so it reads unknown",
+        );
+
+        let (sink, recorded) = recording_sink();
+        let mut formulas = HashMap::from([(
+            "COALESCE(#2, #3)".to_string(),
+            subscribed_formula("COALESCE(#2, #3)", vec![sink]),
+        )]);
+
+        let used = actor.evaluate_formulas(&snapshot, &mut formulas);
+
+        assert_eq!(
+            *recorded.lock().unwrap(),
+            vec![(actor.resampler_ts, None)],
+            "an unknown primary makes the whole coalesce unknown, sent as None",
+        );
+        assert_eq!(
+            used,
+            HashSet::from([pending_key]),
+            "COALESCE stops at the unknown key and demands nothing beyond it",
+        );
+
+        // The pending subscription's resampler kept advancing, so the first
+        // resample after its receiver attaches yields exactly one value for it.
+        let (_tx, receiver) = broadcast::channel(1);
+        subscriptions.get_mut(&pending_key).unwrap().receiver = Some(receiver);
+        actor.resampler_ts += actor.config.resampling_interval;
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        assert!(snapshot.contains_key(&pending_key));
     }
 
     #[tokio::test]
