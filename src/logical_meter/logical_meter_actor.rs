@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use frequenz_microgrid_formula_engine::{FormulaEngine, Reading, ValueSource};
 use frequenz_resampling::ResamplingFunction;
 use futures::stream::{FuturesUnordered, StreamExt};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::future::Future;
 use std::pin::Pin;
 use tokio::sync::{broadcast, mpsc};
@@ -200,18 +200,7 @@ impl<C: Clock> LogicalMeterActor<C> {
                     self.reconcile_subscriptions(&used, &mut resamplers, &mut pending);
                 }
                 Some((key, result)) = pending.next(), if !pending.is_empty() => {
-                    match result {
-                        Ok(receiver) => match resamplers.get_mut(&key) {
-                            Some(entry) => entry.receiver = Some(receiver),
-                            None => tracing::debug!(
-                                "Subscription for {key} completed after it was dropped"
-                            ),
-                        },
-                        Err(err) => {
-                            tracing::warn!("Subscribing to {key} failed, will retry: {err}");
-                            resamplers.remove(&key);
-                        }
-                    }
+                    self.attach_subscription(key, result, &mut resamplers);
                 }
                 instruction = self.instructions_rx.recv() => {
                     match instruction {
@@ -388,6 +377,37 @@ impl<C: Clock> LogicalMeterActor<C> {
                     .await;
                 (key, result)
             }));
+        }
+    }
+
+    /// Attaches a completed subscription's result to its resampler entry.
+    ///
+    /// A pending future is not cancelled when its entry ages out, so its
+    /// result can arrive after the key was re-demanded and a new entry
+    /// attached. Only an entry still waiting for a receiver is touched.
+    fn attach_subscription(
+        &self,
+        key: Key,
+        result: Result<broadcast::Receiver<ElectricalComponentTelemetry>, Error>,
+        resamplers: &mut HashMap<Key, ComponentDataResampler>,
+    ) {
+        let Entry::Occupied(entry) = resamplers.entry(key) else {
+            tracing::debug!("Subscription for {key} completed after it was dropped");
+            return;
+        };
+        if entry.get().receiver.is_some() {
+            tracing::debug!("Subscription for {key} completed after it was re-attached");
+            return;
+        }
+        match result {
+            Ok(receiver) => {
+                tracing::debug!("Subscribed to {key}");
+                entry.into_mut().receiver = Some(receiver);
+            }
+            Err(err) => {
+                tracing::warn!("Subscribing to {key} failed, will retry: {err}");
+                entry.remove();
+            }
         }
     }
 
@@ -807,6 +827,83 @@ mod tests {
             "the receiver attaches only once the subscription completes"
         );
         assert_eq!(pending.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_attach_subscription_keeps_a_live_entry_on_a_stale_error() {
+        let actor = bare_actor();
+        let key = active_power_key(2);
+        let (_tx, live_receiver) = broadcast::channel(1);
+        let mut resamplers = HashMap::from([(
+            key,
+            entry(&actor, key, actor.resampler_ts, Some(live_receiver)),
+        )]);
+
+        // A pending future is not cancelled when its entry ages out and is
+        // re-demanded; its stale `Err` must not remove the new, already
+        // attached entry.
+        actor.attach_subscription(
+            key,
+            Err(Error::connection_failure("stale failure")),
+            &mut resamplers,
+        );
+
+        assert!(
+            resamplers
+                .get(&key)
+                .is_some_and(|entry| entry.receiver.is_some()),
+            "a live entry must survive a stale subscription's error"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_attach_subscription_removes_a_still_pending_entry_on_error() {
+        let actor = bare_actor();
+        let key = active_power_key(2);
+        let mut resamplers = HashMap::from([(key, entry(&actor, key, actor.resampler_ts, None))]);
+
+        actor.attach_subscription(
+            key,
+            Err(Error::connection_failure("subscription failed")),
+            &mut resamplers,
+        );
+
+        assert!(
+            !resamplers.contains_key(&key),
+            "an entry still waiting on its only subscription must be removed on error"
+        );
+
+        // The next tick that reads the key subscribes to it again.
+        let mut pending = FuturesUnordered::new();
+        actor.reconcile_subscriptions(&HashSet::from([key]), &mut resamplers, &mut pending);
+        assert!(resamplers[&key].receiver.is_none());
+        assert_eq!(pending.len(), 1, "the failed subscription is retried");
+    }
+
+    #[tokio::test]
+    async fn test_attach_subscription_does_not_overwrite_a_live_receiver() {
+        let actor = bare_actor();
+        let key = active_power_key(2);
+        let (live_tx, live_receiver) = broadcast::channel(1);
+        let mut resamplers = HashMap::from([(
+            key,
+            entry(&actor, key, actor.resampler_ts, Some(live_receiver)),
+        )]);
+
+        // A stale `Ok` completing after the entry was re-attached must not
+        // clobber the live receiver.
+        let (_stale_tx, stale_receiver) = broadcast::channel(1);
+        actor.attach_subscription(key, Ok(stale_receiver), &mut resamplers);
+
+        // Only the live receiver sees what the live sender sends.
+        live_tx
+            .send(ElectricalComponentTelemetry::default())
+            .unwrap();
+        let receiver = resamplers.get_mut(&key).unwrap().receiver.as_mut().unwrap();
+        assert!(
+            receiver.try_recv().is_ok(),
+            "the live receiver must not be overwritten by a stale completion"
+        );
     }
 
     async fn new_handle(
