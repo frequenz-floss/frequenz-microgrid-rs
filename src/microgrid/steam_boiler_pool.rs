@@ -268,7 +268,10 @@ mod tests {
         let mut pool = SteamBoilerPool::try_new(None, client, lm).unwrap();
         assert_eq!(
             pool.power().unwrap().to_string(),
-            "METRIC_AC_POWER_ACTIVE::(COALESCE(#5 + #4, #3, COALESCE(#5, 0.0) + COALESCE(#4, 0.0)))"
+            concat!(
+                "COALESCE(#5:AC_POWER_ACTIVE + #4:AC_POWER_ACTIVE, #3:AC_POWER_ACTIVE, ",
+                "COALESCE(#5:AC_POWER_ACTIVE, 0) + COALESCE(#4:AC_POWER_ACTIVE, 0))"
+            )
         );
     }
 
@@ -278,7 +281,7 @@ mod tests {
         let mut pool = SteamBoilerPool::try_new(Some([4].into()), client, lm).unwrap();
         assert_eq!(
             pool.power().unwrap().to_string(),
-            "METRIC_AC_POWER_ACTIVE::(COALESCE(#4, #3 - #5, 0.0))"
+            "COALESCE(#4:AC_POWER_ACTIVE, #3:AC_POWER_ACTIVE - #5:AC_POWER_ACTIVE, 0)"
         );
     }
 
