@@ -415,3 +415,63 @@ async fn run_electrical_component_telemetry_stream(
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use crate::{
+        MicrogridClientHandle,
+        client::test_utils::{MockComponent, MockMicrogridApiClient, wait_for_open_streams},
+    };
+
+    /// Opens the stream of `meter`, reads one message, drops the receiver, and
+    /// waits until the mock reports no open stream.
+    async fn assert_stream_closes_when_receiver_drops(meter: MockComponent) {
+        let id = meter.component.id;
+        let api = MockMicrogridApiClient::new(MockComponent::grid(1).with_children(vec![meter]));
+        let open = api.open_telemetry_streams();
+        let client = MicrogridClientHandle::new_from_client(api);
+
+        let mut rx = client
+            .receive_electrical_component_telemetry_stream(id)
+            .await
+            .unwrap();
+        let _ = rx.recv().await.unwrap();
+        assert_eq!(open.lock().unwrap().ids(), BTreeSet::from([id]));
+
+        drop(rx);
+        wait_for_open_streams(
+            &open,
+            BTreeSet::new(),
+            std::time::Duration::from_millis(200),
+            10,
+        )
+        .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_mock_tracks_open_telemetry_streams() {
+        // Enough samples to outlast the wait, so the stream can only close
+        // because the receiver went away. The client actor closes the stream
+        // when the next message arrives after the last receiver went away.
+        assert_stream_closes_when_receiver_drops(
+            MockComponent::meter(2).with_power(vec![1.0; 400]),
+        )
+        .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_mock_closes_a_silent_components_stream_when_its_receiver_drops() {
+        // Enough samples to outlast the wait, so the receiver is dropped while
+        // the component still has samples to send. The client actor drops the
+        // stream on the next message. The send then fails, and the task must
+        // end even though the component would go silent.
+        assert_stream_closes_when_receiver_drops(
+            MockComponent::meter(2)
+                .with_power(vec![1.0; 400])
+                .with_silence_after_metrics(),
+        )
+        .await;
+    }
+}
