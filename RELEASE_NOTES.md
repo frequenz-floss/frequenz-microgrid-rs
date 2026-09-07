@@ -1,12 +1,25 @@
 # Frequenz Microgrid Release Notes
 
+## Summary
+
+Formulas are now evaluated by the logical-meter actor against resampled snapshots, so composition no longer subscribes eagerly and can freely mix metrics.
+
 ## Upgrading
 
-- The bundled Microgrid API protos moved to `frequenz-api-microgrid` v0.19.0 (`frequenz-api-common` v0.8.4). The re-exported `client::ElectricalComponentCategory` gained the `SteamBoiler` variant; an exhaustive `match` on it needs a new arm.
-- `client::ElectricalComponent` gained the fields `operational_mode` and `model` (`manufacturer` and `model_name` are deprecated in favour of `model`); struct literals need `..Default::default()`.
+- `Formula<Q>` is now a struct wrapping a formula-engine expression; its enum variants, `FormulaOperand`, `FormulaSubscriber`, `GraphFormula`, `AggregationFormula`, `CoalesceFormula` and `GraphFormulaProvider` are gone. Composition (`coalesce`, `min`, `max`, `avg`) no longer returns `Result`: drop the `?`.
+- `Metric::FormulaType` is replaced by `Metric::KIND: FormulaKind`.
+- `Formula`'s `Display` output changed: every component leaf now carries its metric, e.g. `#2:AC_POWER_ACTIVE`, nested operators are parenthesised and `0.0` renders as `0`.
+- `ErrorKind::DroppedUnusedFormulas` is removed; the actor no longer uses an error to drive cleanup.
+- `frequenz-microgrid-formula-engine` 0.2 is required.
 
 ## New Features
 
-- Component operational modes are passed to the component graph. Formulas no longer read components whose mode is `Inactive` or `ControlOnly`; for such a component, `LogicalMeterHandle::component()` returns a formula with no reading.
-- The crate now requires `frequenz-microgrid-component-graph` 0.6.2 (was 0.6.0), which brings the operational-mode support and formula fixes; see its release notes.
-- `test-utils`: `MockComponent::with_operational_mode()` sets a mock component's operational mode.
+- Formulas are evaluated by the logical-meter actor against one resampled snapshot per tick, so composed formulas never need timestamp synchronisation and can mix metrics.
+- The logical meter subscribes to component telemetry on demand: only components an evaluation reads are subscribed, `COALESCE` fallbacks stay unsubscribed while the primary delivers, and unread components are dropped after `LogicalMeterConfig::with_unsubscribe_after_intervals` ticks (default 3).
+- `quantity::ApparentPower` and `metric::AcPowerApparent`.
+- `Key` and `FormulaExpr` expose a formula's expression; `Formula::expr()` returns it, and `Expr` is re-exported so callers can name the type behind them.
+- `test-utils`: `MockMicrogridApiClient::open_telemetry_streams()` reports which components have an open telemetry stream.
+
+## Bug Fixes
+
+<!-- Here goes notable bug fixes that are worth a special mention or explanation -->
