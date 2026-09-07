@@ -39,8 +39,9 @@ pub use logical_meter::{
 pub use frequenz_microgrid_component_graph::ComponentGraphConfig;
 
 // Re-exported so callers can name the type behind [`FormulaExpr`] and
-// [`Formula::expr`] without depending on the formula-engine crate directly.
-pub use frequenz_microgrid_formula_engine::Expr;
+// [`Formula::expr`], including its variant payloads, without depending on
+// the formula-engine crate directly.
+pub use frequenz_microgrid_formula_engine::{Expr, Function, Op};
 
 pub mod metric;
 
