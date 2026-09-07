@@ -72,8 +72,8 @@ async fn main() -> Result<(), Error> {
         logical_meter.grid::<metric::AcVoltagePhase1N>()?.avg(vec![
             logical_meter.grid::<metric::AcVoltagePhase2N>()?,
             logical_meter.grid::<metric::AcVoltagePhase3N>()?,
-        ])? * 3.0_f32.sqrt(),
-    )?;
+        ]) * 3.0_f32.sqrt(),
+    );
 
     tracing::info!("formula_grid_voltage: {}", formula_grid_voltage);
     let mut grid_voltage_rx = formula_grid_voltage.subscribe().await?;

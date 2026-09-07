@@ -5,7 +5,6 @@
 
 /// Conversion between a quantity and its base-unit `f32`, used to move
 /// values between typed samples and the untyped formula engine.
-#[allow(dead_code)]
 pub(crate) trait BaseValue: Sized {
     /// The value in the quantity's base unit (watts, volts, amperes, ...).
     fn base_value(self) -> f32;
