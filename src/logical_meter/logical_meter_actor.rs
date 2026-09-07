@@ -6,7 +6,7 @@
 //! data to subscribers.
 
 use chrono::{DateTime, Utc};
-use frequenz_microgrid_formula_engine::FormulaEngine;
+use frequenz_microgrid_formula_engine::{FormulaEngine, Reading};
 use frequenz_resampling::ResamplingFunction;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -487,12 +487,13 @@ impl<C: Clock> LogicalMeterActor<C> {
     ) -> Result<(), Error> {
         let mut formulas_to_drop = vec![];
         for (formula_key, formula) in formulas.iter_mut() {
-            let result = formula
-                .formula
-                .calculate(resampled_metrics.entry(formula_key.1).or_default())
-                .map_err(|e| {
-                    Error::formula_engine_error(format!("Failed to evaluate formula: {e}"))
-                })?;
+            let values = resampled_metrics.entry(formula_key.1).or_default();
+            let result = match formula.formula.evaluate(values).map_err(|e| {
+                Error::formula_engine_error(format!("Failed to evaluate formula: {e}"))
+            })? {
+                Reading::Value(value) => value,
+                Reading::Undecided => None,
+            };
 
             if let Err(e) = formula
                 .sender
