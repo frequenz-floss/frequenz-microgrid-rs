@@ -491,7 +491,11 @@ mod tests {
             samples,
             |q| q.as_volt_amperes_reactive(),
             TimeDelta::try_seconds(1).unwrap(),
+            // The PV inverter is the coalesce's primary and reports no
+            // reactive power, so the first tick is spent learning that and
+            // subscribing to the PV meter fallback: it reads `None`.
             vec![
+                None,
                 Some(-1.4),
                 Some(-0.5),
                 Some(-0.5),
@@ -501,7 +505,6 @@ mod tests {
                 Some(-0.5),
                 Some(4.0),
                 Some(-1.4),
-                Some(-0.5),
             ],
         )
     }
@@ -518,7 +521,11 @@ mod tests {
             samples,
             |q| q.as_volts(),
             TimeDelta::try_seconds(1).unwrap(),
+            // The battery meter is the coalesce's primary and reports no
+            // voltage, so the first tick is spent subscribing to the
+            // inverter fallback: it reads `None`.
             vec![
+                None,
                 Some(398.0),
                 Some(397.67),
                 Some(397.67),
@@ -528,7 +535,6 @@ mod tests {
                 Some(397.67),
                 Some(396.0),
                 Some(398.0),
-                Some(397.67),
             ],
         )
     }
@@ -548,7 +554,11 @@ mod tests {
             samples,
             |q| q.as_volts(),
             TimeDelta::try_milliseconds(200).unwrap(),
+            // As in `test_battery_voltage_formula`, the first tick is the
+            // one that pulls the inverter fallback into the subscription
+            // set, so it reads `None`.
             vec![
+                None,
                 Some(400.0),
                 Some(400.0),
                 Some(398.0),
@@ -557,7 +567,6 @@ mod tests {
                 Some(396.0),
                 Some(396.0),
                 Some(396.0),
-                None,
                 None,
             ],
         );
@@ -830,10 +839,24 @@ mod tests {
         assert!(v.starts_with("COALESCE(#"), "{v}");
         assert_eq!(averaged.to_string(), format!("(AVG({v}, {v}) / 2) + 0"));
         let (base, averaged) = tokio::join!(fetch_samples(voltage, 4), fetch_samples(averaged, 4));
+        let mut compared = 0;
         for i in 0..4 {
-            let b = base[i].value().unwrap().as_volts();
-            assert!((averaged[i].value().unwrap().as_volts() - b / 2.0).abs() < 1e-3);
+            match (base[i].value(), averaged[i].value()) {
+                // The first tick is the one that pulls the coalesce's
+                // fallback into the subscription set, so both formulas,
+                // which share the same components, read `None` for it.
+                (None, None) => {}
+                (Some(b), Some(a)) => {
+                    assert!((a.as_volts() - b.as_volts() / 2.0).abs() < 1e-3);
+                    compared += 1;
+                }
+                (b, a) => panic!("item {i}: base {b:?}, averaged {a:?}"),
+            }
         }
+        assert_eq!(
+            compared, 3,
+            "expected three valued samples after the seed tick"
+        );
     }
 
     /// Renders a graph formula the way the handle does, for wiring checks

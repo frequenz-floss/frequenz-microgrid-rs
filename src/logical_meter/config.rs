@@ -20,6 +20,9 @@ pub struct LogicalMeterConfig {
     /// The maximum age of samples to be considered for resampling, in number of
     /// intervals.
     pub(crate) max_age_in_intervals: u32,
+    /// The number of consecutive resampling intervals a component may go
+    /// unread by every formula before its telemetry subscription is dropped.
+    pub(crate) unsubscribe_after_intervals: u32,
     /// Configuration forwarded to the underlying [`ComponentGraph`][cg]. Defaults
     /// to [`ComponentGraphConfig::default()`].
     ///
@@ -35,6 +38,7 @@ impl LogicalMeterConfig {
             resampling_function: None,
             resampling_overrides: HashMap::new(),
             max_age_in_intervals: 3,
+            unsubscribe_after_intervals: 3,
             component_graph_config: ComponentGraphConfig::default(),
         }
     }
@@ -80,6 +84,16 @@ impl LogicalMeterConfig {
         self
     }
 
+    /// Sets how many consecutive resampling intervals a component may go
+    /// unread by every formula before its telemetry subscription is dropped.
+    ///
+    /// Must be at least 1; smaller values are clamped to 1. If not set,
+    /// the default value is 3.
+    pub fn with_unsubscribe_after_intervals(mut self, intervals: u32) -> Self {
+        self.unsubscribe_after_intervals = intervals.max(1);
+        self
+    }
+
     /// Sets the [`ComponentGraphConfig`] forwarded to the underlying graph
     /// when [`LogicalMeterHandle::try_new`][lm] (and therefore
     /// [`Microgrid::try_new`][mg]) builds it. If not set, the graph crate's
@@ -90,5 +104,19 @@ impl LogicalMeterConfig {
     pub fn with_component_graph_config(mut self, config: ComponentGraphConfig) -> Self {
         self.component_graph_config = config;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_interval_counts_are_at_least_one() {
+        let config = LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap())
+            .with_max_age_in_intervals(0)
+            .with_unsubscribe_after_intervals(0);
+        assert_eq!(config.max_age_in_intervals, 1);
+        assert_eq!(config.unsubscribe_after_intervals, 1);
     }
 }
