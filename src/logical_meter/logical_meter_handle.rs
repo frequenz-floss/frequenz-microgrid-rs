@@ -828,7 +828,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_mixed_metric_formula() {
+    async fn test_avg_and_scalar_composition() {
         let lm = new_logical_meter_handle(None).await;
         let voltage = lm.battery::<crate::metric::AcVoltage>(None).unwrap();
         let averaged = voltage.clone().avg(vec![voltage.clone()]) / 2.0
@@ -856,6 +856,31 @@ mod tests {
         assert_eq!(
             compared, 3,
             "expected three valued samples after the seed tick"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mixed_metric_formula_display() {
+        let lm = new_logical_meter_handle(None).await;
+        let mixed = lm
+            .grid::<crate::metric::AcVoltage>()
+            .unwrap()
+            .coalesce(lm.grid::<crate::metric::AcVoltagePhase1N>().unwrap());
+        let shown = mixed.to_string();
+        assert!(
+            shown.contains(":AC_VOLTAGE,") || shown.contains(":AC_VOLTAGE)"),
+            "{shown}"
+        );
+        assert!(shown.contains(":AC_VOLTAGE_PHASE_1_N"), "{shown}");
+        assert_eq!(
+            mixed.expr().components().len(),
+            2 * lm
+                .grid::<crate::metric::AcVoltage>()
+                .unwrap()
+                .expr()
+                .components()
+                .len(),
+            "each component appears once per metric: {shown}"
         );
     }
 
