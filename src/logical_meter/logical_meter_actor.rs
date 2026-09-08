@@ -906,6 +906,60 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_handle_subscribe_formula_shares_one_entry_per_expression() {
+        let actor = bare_actor();
+        let mut formulas = HashMap::new();
+        let mut resamplers = HashMap::new();
+        let mut pending = FuturesUnordered::new();
+
+        let expr = parse::<f32>("#2").unwrap().map_components(active_power_key);
+        let (sink_a, _) = recording_sink();
+        let (sink_b, _) = recording_sink();
+        actor.handle_subscribe_formula(
+            expr.clone(),
+            sink_a,
+            &mut formulas,
+            &mut resamplers,
+            &mut pending,
+        );
+        actor.handle_subscribe_formula(
+            expr.clone(),
+            sink_b,
+            &mut formulas,
+            &mut resamplers,
+            &mut pending,
+        );
+
+        assert_eq!(
+            formulas.len(),
+            1,
+            "two subscriptions to the same expression must share one entry"
+        );
+        assert_eq!(
+            formulas[&expr.to_string()].sinks.len(),
+            2,
+            "both sinks must be attached to the shared entry"
+        );
+
+        let other_expr = parse::<f32>("#3").unwrap().map_components(active_power_key);
+        let (sink_c, _) = recording_sink();
+        actor.handle_subscribe_formula(
+            other_expr.clone(),
+            sink_c,
+            &mut formulas,
+            &mut resamplers,
+            &mut pending,
+        );
+
+        assert_eq!(
+            formulas.len(),
+            2,
+            "a different expression must get its own entry"
+        );
+        assert_eq!(formulas[&other_expr.to_string()].sinks.len(), 1);
+    }
+
     async fn new_handle(
         meter: MockComponent,
         config: LogicalMeterConfig,
