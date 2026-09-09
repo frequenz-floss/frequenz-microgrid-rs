@@ -29,12 +29,19 @@ mod sample;
 pub use sample::Sample;
 
 mod logical_meter;
-pub use logical_meter::{Formula, FormulaSubscriber, LogicalMeterConfig, LogicalMeterHandle};
+pub use logical_meter::{
+    Formula, FormulaExpr, Key, LogicalMeterConfig, LogicalMeterHandle, Operand,
+};
 
 // Re-exported so callers can build the config accepted by
 // [`LogicalMeterConfig::with_component_graph_config`] without depending on the
 // component-graph crate directly.
 pub use frequenz_microgrid_component_graph::ComponentGraphConfig;
+
+// Re-exported so callers can name the type behind [`FormulaExpr`] and
+// [`Formula::expr`], including its variant payloads, without depending on
+// the formula-engine crate directly.
+pub use frequenz_microgrid_formula_engine::{Expr, Function, Op};
 
 pub mod metric;
 

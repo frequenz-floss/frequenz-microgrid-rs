@@ -14,7 +14,7 @@ path = "src/lib.rs"
 async-trait = "0.1.89"
 chrono = "0.4"
 frequenz-microgrid-component-graph = "0.6.2"
-frequenz-microgrid-formula-engine = "0.1.0"
+frequenz-microgrid-formula-engine = { git = "https://github.com/shsms/frequenz-microgrid-formula-engine-rs", branch = "evaluate-with-value-source" }
 frequenz-resampling = "0.2"
 futures = "0.3.31"
 prost = "0.14"

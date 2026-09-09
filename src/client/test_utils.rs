@@ -6,6 +6,7 @@
 mod tokio_synced_clock;
 pub use tokio_synced_clock::TokioSyncedClock;
 
+use std::collections::BTreeSet;
 use std::sync::Mutex;
 use std::{sync::Arc, time::SystemTime};
 use tokio_stream::wrappers::ReceiverStream;
@@ -54,6 +55,33 @@ pub struct MockMicrogridApiClient {
     /// [`MockMicrogridApiClient::new_with_clock`].
     clock: TokioSyncedClock,
     pub augment_bounds_calls: Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>>,
+    /// Component ids with a running telemetry-stream task.
+    open_streams: Arc<Mutex<BTreeSet<u64>>>,
+}
+
+/// Removes a component id from the open-stream set when dropped.
+struct OpenStreamGuard {
+    set: Arc<Mutex<BTreeSet<u64>>>,
+    id: u64,
+}
+
+impl OpenStreamGuard {
+    /// Adds `id` to the open-stream set; dropping the guard removes it.
+    fn open(set: &Arc<Mutex<BTreeSet<u64>>>, id: u64) -> Self {
+        set.lock().unwrap().insert(id);
+        Self {
+            set: set.clone(),
+            id,
+        }
+    }
+}
+
+impl Drop for OpenStreamGuard {
+    fn drop(&mut self) {
+        if let Ok(mut set) = self.set.lock() {
+            set.remove(&self.id);
+        }
+    }
 }
 
 /// One row per emitted telemetry frame: `(power, reactive_power, voltage,
@@ -329,6 +357,7 @@ impl MockMicrogridApiClient {
             connections: vec![],
             clock,
             augment_bounds_calls: Arc::new(Mutex::new(Vec::new())),
+            open_streams: Arc::new(Mutex::new(BTreeSet::new())),
         };
 
         fn traverse(node: &MockComponent, client: &mut MockMicrogridApiClient) {
@@ -353,6 +382,41 @@ impl MockMicrogridApiClient {
     ) -> Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>> {
         self.augment_bounds_calls.clone()
     }
+
+    /// The set of component ids whose telemetry stream is currently open.
+    ///
+    /// An id joins the set when the mock starts streaming it and leaves
+    /// when that stream task ends: when the receiver is dropped, or when
+    /// the component's samples run out. A `with_silence_after_metrics`
+    /// component never runs out, so only a dropped receiver closes it. A
+    /// reconnect adds the id back at once, even while the previous stream
+    /// task has not yet noticed that its receiver is gone; when that task
+    /// ends it removes the id again, so the set can briefly miss an open
+    /// stream.
+    pub fn open_telemetry_streams(&self) -> Arc<Mutex<BTreeSet<u64>>> {
+        self.open_streams.clone()
+    }
+}
+
+/// Polls `open` (from [`MockMicrogridApiClient::open_telemetry_streams`])
+/// until it equals `expected`, sleeping `step` between attempts. Panics
+/// after `attempts` tries.
+pub async fn wait_for_open_streams(
+    open: &Arc<Mutex<BTreeSet<u64>>>,
+    expected: BTreeSet<u64>,
+    step: std::time::Duration,
+    attempts: u32,
+) {
+    for _ in 0..attempts {
+        if *open.lock().unwrap() == expected {
+            return;
+        }
+        tokio::time::sleep(step).await;
+    }
+    panic!(
+        "open streams {:?}, expected {expected:?}",
+        open.lock().unwrap()
+    );
 }
 
 #[async_trait::async_trait]
@@ -419,7 +483,9 @@ impl MicrogridApiClient for MockMicrogridApiClient {
                 .unwrap_or(ElectricalComponentStateCode::Ready);
             let silence_after_metrics = component.silence_after_metrics;
             let clock = self.clock.clone();
+            let guard = OpenStreamGuard::open(&self.open_streams, comp_id);
             tokio::spawn(async move {
+                let _guard = guard;
                 let dur = std::time::Duration::from_millis(200);
                 let mut interval = tokio::time::interval(dur);
                 let offset = chrono::TimeDelta::from_std(dur).unwrap_or_default();
@@ -549,10 +615,10 @@ impl MicrogridApiClient for MockMicrogridApiClient {
                     }
                 }
                 if silence_after_metrics {
-                    // Hold the sender open indefinitely so the client
-                    // actor doesn't see the stream end and reconnect.
-                    let _keep_open = tx;
-                    std::future::pending::<()>().await;
+                    // Hold the sender open so the client actor doesn't see
+                    // the stream end and reconnect; finish when it drops
+                    // the receiver.
+                    tx.closed().await;
                 }
             });
         }

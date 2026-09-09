@@ -56,7 +56,21 @@ cargo add --dev frequenz-microgrid --features test-utils
 - `Microgrid` / `LogicalMeterHandle`: typed formulas for grid, battery, pv, chp, ev_charger, consumer, producer, and individual components, parametrised over a metric.
 - `BatteryPool` and `PvPool`: aggregated active-power bounds and health-partitioned telemetry for a set of batteries or PV inverters.
 - `MicrogridClientHandle`: cloneable low-level gRPC handle with per-stream automatic reconnect.
-- Typed quantities — `Power`, `Current`, `Voltage`, `ReactivePower`, `Energy`, `Frequency`, `Percentage` — with unit conversions explicit at every API surface.
+- Typed quantities — `Power`, `Current`, `Voltage`, `ReactivePower`, `ApparentPower`, `Energy`, `Frequency`, `Percentage` — with unit conversions explicit at every API surface.
+
+Formulas compose without subscribing: `+`, `-`, `* f32`, `/ f32`,
+`* Percentage`, `coalesce`, `min`, `max` and `avg` build a single
+expression that the logical meter evaluates once per resampling tick, so
+operands of different metrics are always sampled together. Only the
+components an evaluation actually reads are subscribed to, and `COALESCE`
+fallbacks stay unsubscribed while the primary delivers.
+
+```rust , ignore
+let net = logical_meter.grid::<metric::AcPowerActive>()?
+    - logical_meter.pv::<metric::AcPowerActive>(None)?
+    + Power::from_kilowatts(100.0);
+let mut rx = net.subscribe().await?;
+```
 
 See the [API documentation](https://docs.rs/frequenz-microgrid) for the full surface.
 

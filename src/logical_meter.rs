@@ -5,7 +5,7 @@
 
 mod config;
 pub(crate) mod formula;
-pub use formula::{Formula, FormulaSubscriber};
+pub use formula::{Formula, FormulaExpr, Key, Operand};
 
 mod logical_meter_actor;
 mod logical_meter_handle;
