@@ -415,3 +415,42 @@ async fn run_electrical_component_telemetry_stream(
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use crate::{
+        MicrogridClientHandle,
+        client::test_utils::{MockComponent, MockMicrogridApiClient, wait_for_open_streams},
+    };
+
+    #[tokio::test(start_paused = true)]
+    async fn test_mock_tracks_open_telemetry_streams() {
+        let api = MockMicrogridApiClient::new(MockComponent::grid(1).with_children(vec![
+            // Enough samples to outlast the wait below, so the stream can
+            // only close because the receiver went away.
+            MockComponent::meter(2).with_power(vec![1.0; 400]),
+        ]));
+        let open = api.open_telemetry_streams();
+        let client = MicrogridClientHandle::new_from_client(api);
+
+        let mut rx = client
+            .receive_electrical_component_telemetry_stream(2)
+            .await
+            .unwrap();
+        let _ = rx.recv().await.unwrap();
+        assert_eq!(*open.lock().unwrap(), BTreeSet::from([2]));
+
+        drop(rx);
+        // The client actor closes the stream when the next message arrives
+        // after the last receiver went away.
+        wait_for_open_streams(
+            &open,
+            BTreeSet::new(),
+            std::time::Duration::from_millis(200),
+            10,
+        )
+        .await;
+    }
+}

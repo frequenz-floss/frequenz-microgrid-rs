@@ -3,44 +3,51 @@
 
 //! Metrics supported by the logical meter.
 
-use crate::logical_meter::formula::graph_formula::{AggregationFormula, CoalesceFormula};
-use crate::{
-    client::proto::common::metrics::Metric as MetricPb, logical_meter::formula,
-    logical_meter::formula::FormulaSubscriber,
-};
+use crate::client::proto::common::metrics::Metric as MetricPb;
 
+/// Which family of component-graph formula generators a metric uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormulaKind {
+    /// Sums and differences over components, for power and current.
+    Aggregation,
+    /// The first available source, for voltage and frequency.
+    Coalesce,
+}
+
+/// A metric the logical meter can stream, with its quantity type and the
+/// kind of graph formula that computes it.
 pub trait Metric:
     std::fmt::Display + std::fmt::Debug + Clone + Copy + PartialEq + Eq + Sync + 'static
 {
-    #[expect(private_bounds)]
-    type FormulaType: FormulaSubscriber<QuantityType = Self::QuantityType>
-        + formula::graph_formula_provider::GraphFormulaProvider<MetricType = Self>
-        + 'static;
-
+    /// The quantity streamed for this metric.
     type QuantityType: crate::quantity::Quantity;
 
+    /// The protobuf metric read from components.
     const METRIC: MetricPb;
 
+    /// The graph formula family used to compute this metric.
+    const KIND: FormulaKind;
+
+    /// The metric's name, e.g. `AcPowerActive`.
     fn str_name() -> &'static str;
 }
 
 macro_rules! define_metric {
     ($({
         name: $metric_name:ident,
-        formula: $formula:ident,
+        kind: $kind:ident,
         quantity: $quantity:ident
     }),+ $(,)?) => {
         $(
-            // Define a metric
+            #[doc = concat!("The `", stringify!($metric_name), "` metric.")]
             #[derive(Debug, Clone, Copy, PartialEq, Eq)]
             pub struct $metric_name;
 
-            // Implement the AcMetric trait for the metric
             impl Metric for $metric_name {
-                type FormulaType = $formula<$metric_name>;
                 type QuantityType = crate::quantity::$quantity;
 
                 const METRIC: MetricPb = MetricPb::$metric_name;
+                const KIND: FormulaKind = FormulaKind::$kind;
 
                 fn str_name() -> &'static str {
                     stringify!($metric_name)
@@ -57,21 +64,34 @@ macro_rules! define_metric {
 }
 
 define_metric! {
-    { name: DcPower,               formula: AggregationFormula, quantity: Power },
-    { name: AcPowerActive,         formula: AggregationFormula, quantity: Power },
-    { name: AcPowerReactive,       formula: AggregationFormula, quantity: ReactivePower },
-    { name: AcCurrent,             formula: AggregationFormula, quantity: Current },
-    { name: AcCurrentPhase1,       formula: AggregationFormula, quantity: Current },
-    { name: AcCurrentPhase2,       formula: AggregationFormula, quantity: Current },
-    { name: AcCurrentPhase3,       formula: AggregationFormula, quantity: Current },
+    { name: DcPower,               kind: Aggregation, quantity: Power },
+    { name: AcPowerActive,         kind: Aggregation, quantity: Power },
+    { name: AcPowerReactive,       kind: Aggregation, quantity: ReactivePower },
+    { name: AcPowerApparent,       kind: Aggregation, quantity: ApparentPower },
+    { name: AcCurrent,             kind: Aggregation, quantity: Current },
+    { name: AcCurrentPhase1,       kind: Aggregation, quantity: Current },
+    { name: AcCurrentPhase2,       kind: Aggregation, quantity: Current },
+    { name: AcCurrentPhase3,       kind: Aggregation, quantity: Current },
 
-    { name: AcVoltage,             formula: CoalesceFormula,    quantity: Voltage },
-    { name: AcVoltagePhase1N,      formula: CoalesceFormula,    quantity: Voltage },
-    { name: AcVoltagePhase2N,      formula: CoalesceFormula,    quantity: Voltage },
-    { name: AcVoltagePhase3N,      formula: CoalesceFormula,    quantity: Voltage },
-    { name: AcVoltagePhase1Phase2, formula: CoalesceFormula,    quantity: Voltage },
-    { name: AcVoltagePhase2Phase3, formula: CoalesceFormula,    quantity: Voltage },
-    { name: AcVoltagePhase3Phase1, formula: CoalesceFormula,    quantity: Voltage },
+    { name: AcVoltage,             kind: Coalesce,    quantity: Voltage },
+    { name: AcVoltagePhase1N,      kind: Coalesce,    quantity: Voltage },
+    { name: AcVoltagePhase2N,      kind: Coalesce,    quantity: Voltage },
+    { name: AcVoltagePhase3N,      kind: Coalesce,    quantity: Voltage },
+    { name: AcVoltagePhase1Phase2, kind: Coalesce,    quantity: Voltage },
+    { name: AcVoltagePhase2Phase3, kind: Coalesce,    quantity: Voltage },
+    { name: AcVoltagePhase3Phase1, kind: Coalesce,    quantity: Voltage },
 
-    { name: AcFrequency,           formula: CoalesceFormula,    quantity: Frequency },
+    { name: AcFrequency,           kind: Coalesce,    quantity: Frequency },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AcPowerApparent, FormulaKind, Metric, MetricPb};
+
+    #[test]
+    fn test_ac_power_apparent_metric() {
+        assert_eq!(AcPowerApparent::METRIC, MetricPb::AcPowerApparent);
+        assert_eq!(AcPowerApparent::KIND, FormulaKind::Aggregation);
+        assert_eq!(AcPowerApparent::str_name(), "AcPowerApparent");
+    }
 }

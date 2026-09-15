@@ -33,12 +33,18 @@ pub(crate) fn telem_with_power_bounds(
 }
 
 /// Builds client and logical-meter handles backed by the given mock graph.
+///
+/// The logical meter reads the mock's clock, so under paused time its
+/// resampling ticks and the mock's telemetry timestamps share one
+/// timeline.
 pub(crate) async fn handles(graph: MockComponent) -> (MicrogridClientHandle, LogicalMeterHandle) {
     let api = MockMicrogridApiClient::new(graph);
+    let clock = api.clock();
     let client = MicrogridClientHandle::new_from_client(api);
-    let lm = LogicalMeterHandle::try_new(
+    let lm = LogicalMeterHandle::try_new_with_clock(
         client.clone(),
         LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap()),
+        clock,
     )
     .await
     .unwrap();

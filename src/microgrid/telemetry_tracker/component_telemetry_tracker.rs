@@ -15,6 +15,7 @@ use tokio::{
 use crate::client::proto::common::microgrid::electrical_components::{
     ElectricalComponentStateCode, ElectricalComponentTelemetry,
 };
+use crate::health::{Health, health};
 
 pub(crate) struct ComponentTelemetryTracker {
     component_id: u64,
@@ -48,25 +49,18 @@ impl ComponentTelemetryTracker {
     }
 
     fn state_from_data(&self, data: ElectricalComponentTelemetry) -> ComponentHealthStatus {
-        for state in data.state_snapshots.iter() {
-            if !state.errors.is_empty() {
-                return ComponentHealthStatus::Unhealthy(self.component_id, Some(data));
-            }
-            for state in state.states.iter() {
-                let Ok(state) = ElectricalComponentStateCode::try_from(*state) else {
-                    tracing::warn!(
-                        "Component {} has an invalid state code: {}",
-                        self.component_id,
-                        state
-                    );
-                    return ComponentHealthStatus::Unhealthy(self.component_id, Some(data));
-                };
-                if !self.healthy_state_codes.contains(&state) {
-                    return ComponentHealthStatus::Unhealthy(self.component_id, Some(data));
-                }
+        match health(&data, &self.healthy_state_codes) {
+            Health::Healthy => ComponentHealthStatus::Healthy(data.electrical_component_id, data),
+            Health::Unhealthy => ComponentHealthStatus::Unhealthy(self.component_id, Some(data)),
+            Health::UnknownStateCode(code) => {
+                tracing::warn!(
+                    component_id = self.component_id,
+                    code,
+                    "Component reports an unknown state code"
+                );
+                ComponentHealthStatus::Unhealthy(self.component_id, Some(data))
             }
         }
-        ComponentHealthStatus::Healthy(data.electrical_component_id, data)
     }
 
     pub async fn run(mut self) {

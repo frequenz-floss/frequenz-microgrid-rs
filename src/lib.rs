@@ -29,15 +29,25 @@ mod sample;
 pub use sample::Sample;
 
 mod logical_meter;
-pub use logical_meter::{Formula, FormulaSubscriber, LogicalMeterConfig, LogicalMeterHandle};
+pub use logical_meter::{
+    Formula, FormulaExpr, Key, LogicalMeterConfig, LogicalMeterHandle, Operand, Source,
+};
 
 // Re-exported so callers can build the config accepted by
 // [`LogicalMeterConfig::with_component_graph_config`] without depending on the
 // component-graph crate directly.
 pub use frequenz_microgrid_component_graph::ComponentGraphConfig;
 
+// Re-exported so callers can name the type behind [`FormulaExpr`] and
+// [`Formula::expr`], including its variant payloads, without depending on
+// the formula-engine crate directly. The engine calls its expression tree
+// `Formula`; it is re-exported as `Expr` so it does not collide with this
+// crate's [`Formula`].
+pub use frequenz_microgrid_formula_engine::{Formula as Expr, Function, Op};
+
 pub mod metric;
 
+pub(crate) mod health;
 pub(crate) mod wall_clock_timer;
 
 mod microgrid;

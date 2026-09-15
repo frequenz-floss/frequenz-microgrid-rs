@@ -15,6 +15,8 @@ pub(crate) mod test_utils;
 mod battery_pool;
 pub use battery_pool::BatteryPool;
 
+mod battery_pool_formulas;
+
 mod pv_pool;
 pub use pv_pool::PvPool;
 

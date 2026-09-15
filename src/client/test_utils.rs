@@ -6,6 +6,7 @@
 mod tokio_synced_clock;
 pub use tokio_synced_clock::TokioSyncedClock;
 
+use std::collections::BTreeSet;
 use std::sync::Mutex;
 use std::{sync::Arc, time::SystemTime};
 use tokio_stream::wrappers::ReceiverStream;
@@ -38,7 +39,7 @@ use crate::{
             ReceiveElectricalComponentTelemetryStreamResponse,
         },
     },
-    quantity::{Current, Frequency, Power, ReactivePower, Voltage},
+    quantity::{Current, Energy, Frequency, Percentage, Power, ReactivePower, Voltage},
 };
 
 /// A mock implementation of the `MicrogridApiClient` trait for testing purposes.
@@ -54,6 +55,53 @@ pub struct MockMicrogridApiClient {
     /// [`MockMicrogridApiClient::new_with_clock`].
     clock: TokioSyncedClock,
     pub augment_bounds_calls: Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>>,
+    /// Component ids with a running telemetry-stream task.
+    open_streams: Arc<Mutex<BTreeSet<u64>>>,
+}
+
+/// Removes a component id from the open-stream set when dropped.
+struct OpenStreamGuard {
+    set: Arc<Mutex<BTreeSet<u64>>>,
+    id: u64,
+}
+
+impl OpenStreamGuard {
+    /// Adds `id` to the open-stream set; dropping the guard removes it.
+    fn open(set: &Arc<Mutex<BTreeSet<u64>>>, id: u64) -> Self {
+        set.lock().unwrap().insert(id);
+        Self {
+            set: set.clone(),
+            id,
+        }
+    }
+}
+
+impl Drop for OpenStreamGuard {
+    fn drop(&mut self) {
+        if let Ok(mut set) = self.set.lock() {
+            set.remove(&self.id);
+        }
+    }
+}
+
+/// A sample of `metric` at `ts` with a simple `value` and `bounds`.
+fn simple_sample(
+    ts: Option<protobuf::Timestamp>,
+    metric: Metric,
+    value: f32,
+    bounds: Vec<Bounds>,
+) -> MetricSample {
+    MetricSample {
+        sample_time: ts,
+        metric: metric as i32,
+        value: Some(MetricValueVariant {
+            metric_value_variant: Some(metric_value_variant::MetricValueVariant::SimpleMetric(
+                SimpleMetricValue { value },
+            )),
+        }),
+        bounds,
+        connection: None,
+    }
 }
 
 /// One row per emitted telemetry frame: `(power, reactive_power, voltage,
@@ -74,6 +122,15 @@ pub struct MockComponent {
     /// AC frequency samples, one entry per telemetry frame (parallel to
     /// `metrics`). Set via [`MockComponent::with_frequency`].
     frequency: Vec<Option<Frequency>>,
+    /// Battery SoC samples in percent, one entry per telemetry frame
+    /// (parallel to `metrics`). Set via [`MockComponent::with_soc`].
+    soc: Vec<Option<Percentage>>,
+    /// The `(lower, upper)` SoC bounds in percent attached to every SoC
+    /// sample.
+    soc_bounds: Option<(Percentage, Percentage)>,
+    /// Battery capacity samples, one entry per telemetry frame (parallel
+    /// to `metrics`). Set via [`MockComponent::with_capacity`].
+    capacity: Vec<Option<Energy>>,
     /// Overrides the state code reported in each telemetry sample. `None`
     /// defaults to `Ready`.
     state_code: Option<ElectricalComponentStateCode>,
@@ -273,6 +330,36 @@ impl MockComponent {
         self
     }
 
+    /// Sets the battery SoC samples in percent, all carrying the
+    /// `(lower, upper)` SoC bounds in percent.
+    pub fn with_soc(mut self, soc: Vec<f32>, lower: f32, upper: f32) -> Self {
+        if soc.len() > self.metrics.len() {
+            self.metrics.resize(soc.len(), (None, None, None, None));
+        }
+        self.soc = soc
+            .iter()
+            .map(|s| Some(Percentage::from_percentage(*s)))
+            .collect();
+        self.soc_bounds = Some((
+            Percentage::from_percentage(lower),
+            Percentage::from_percentage(upper),
+        ));
+        self
+    }
+
+    /// Sets the battery capacity samples in watt-hours.
+    pub fn with_capacity(mut self, capacity: Vec<f32>) -> Self {
+        if capacity.len() > self.metrics.len() {
+            self.metrics
+                .resize(capacity.len(), (None, None, None, None));
+        }
+        self.capacity = capacity
+            .iter()
+            .map(|c| Some(Energy::from_watthours(*c)))
+            .collect();
+        self
+    }
+
     /// Overrides the state code reported in each telemetry sample.
     pub fn with_state(mut self, code: ElectricalComponentStateCode) -> Self {
         self.state_code = Some(code);
@@ -329,6 +416,7 @@ impl MockMicrogridApiClient {
             connections: vec![],
             clock,
             augment_bounds_calls: Arc::new(Mutex::new(Vec::new())),
+            open_streams: Arc::new(Mutex::new(BTreeSet::new())),
         };
 
         fn traverse(node: &MockComponent, client: &mut MockMicrogridApiClient) {
@@ -353,6 +441,41 @@ impl MockMicrogridApiClient {
     ) -> Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>> {
         self.augment_bounds_calls.clone()
     }
+
+    /// The set of component ids whose telemetry stream is currently open.
+    ///
+    /// An id joins the set when the mock starts streaming it and leaves
+    /// when that stream task ends: when the receiver is dropped, or when
+    /// the component's samples run out. A `with_silence_after_metrics`
+    /// component never runs out, so only a dropped receiver closes it. A
+    /// reconnect adds the id back at once, even while the previous stream
+    /// task has not yet noticed that its receiver is gone; when that task
+    /// ends it removes the id again, so the set can briefly miss an open
+    /// stream.
+    pub fn open_telemetry_streams(&self) -> Arc<Mutex<BTreeSet<u64>>> {
+        self.open_streams.clone()
+    }
+}
+
+/// Polls `open` (from [`MockMicrogridApiClient::open_telemetry_streams`])
+/// until it equals `expected`, sleeping `step` between attempts. Panics
+/// after `attempts` tries.
+pub async fn wait_for_open_streams(
+    open: &Arc<Mutex<BTreeSet<u64>>>,
+    expected: BTreeSet<u64>,
+    step: std::time::Duration,
+    attempts: u32,
+) {
+    for _ in 0..attempts {
+        if *open.lock().unwrap() == expected {
+            return;
+        }
+        tokio::time::sleep(step).await;
+    }
+    panic!(
+        "open streams {:?}, expected {expected:?}",
+        open.lock().unwrap()
+    );
 }
 
 #[async_trait::async_trait]
@@ -414,12 +537,17 @@ impl MicrogridApiClient for MockMicrogridApiClient {
         {
             let metrics = component.metrics.clone();
             let frequency = component.frequency.clone();
+            let soc = component.soc.clone();
+            let soc_bounds = component.soc_bounds;
+            let capacity = component.capacity.clone();
             let state_code = component
                 .state_code
                 .unwrap_or(ElectricalComponentStateCode::Ready);
             let silence_after_metrics = component.silence_after_metrics;
             let clock = self.clock.clone();
+            let guard = OpenStreamGuard::open(&self.open_streams, comp_id);
             tokio::spawn(async move {
+                let _guard = guard;
                 let dur = std::time::Duration::from_millis(200);
                 let mut interval = tokio::time::interval(dur);
                 let offset = chrono::TimeDelta::from_std(dur).unwrap_or_default();
@@ -446,89 +574,67 @@ impl MicrogridApiClient for MockMicrogridApiClient {
                     });
                     let mut metric_samples = vec![];
                     if let Some(power) = metrics.0 {
-                        metric_samples.push(MetricSample {
-                            sample_time: ts,
-                            metric: Metric::AcPowerActive as i32,
-                            value: Some(MetricValueVariant {
-                                metric_value_variant: Some(
-                                    metric_value_variant::MetricValueVariant::SimpleMetric(
-                                        SimpleMetricValue {
-                                            value: power.as_watts(),
-                                        },
-                                    ),
-                                ),
-                            }),
-                            bounds: vec![],
-                            connection: None,
-                        });
+                        metric_samples.push(simple_sample(
+                            ts,
+                            Metric::AcPowerActive,
+                            power.as_watts(),
+                            vec![],
+                        ));
                     }
                     if let Some(reactive_power) = metrics.1 {
-                        metric_samples.push(MetricSample {
-                            sample_time: ts,
-                            metric: Metric::AcPowerReactive as i32,
-                            value: Some(MetricValueVariant {
-                                metric_value_variant: Some(
-                                    metric_value_variant::MetricValueVariant::SimpleMetric(
-                                        SimpleMetricValue {
-                                            value: reactive_power.as_volt_amperes_reactive(),
-                                        },
-                                    ),
-                                ),
-                            }),
-                            bounds: vec![],
-                            connection: None,
-                        });
+                        metric_samples.push(simple_sample(
+                            ts,
+                            Metric::AcPowerReactive,
+                            reactive_power.as_volt_amperes_reactive(),
+                            vec![],
+                        ));
                     }
                     if let Some(voltage) = metrics.2 {
-                        metric_samples.push(MetricSample {
-                            sample_time: ts,
-                            metric: Metric::AcVoltage as i32,
-                            value: Some(MetricValueVariant {
-                                metric_value_variant: Some(
-                                    metric_value_variant::MetricValueVariant::SimpleMetric(
-                                        SimpleMetricValue {
-                                            value: voltage.as_volts(),
-                                        },
-                                    ),
-                                ),
-                            }),
-                            bounds: vec![],
-                            connection: None,
-                        });
+                        metric_samples.push(simple_sample(
+                            ts,
+                            Metric::AcVoltage,
+                            voltage.as_volts(),
+                            vec![],
+                        ));
                     }
                     if let Some(current) = metrics.3 {
-                        metric_samples.push(MetricSample {
-                            sample_time: ts,
-                            metric: Metric::AcCurrent as i32,
-                            value: Some(MetricValueVariant {
-                                metric_value_variant: Some(
-                                    metric_value_variant::MetricValueVariant::SimpleMetric(
-                                        SimpleMetricValue {
-                                            value: current.as_amperes(),
-                                        },
-                                    ),
-                                ),
-                            }),
-                            bounds: vec![],
-                            connection: None,
-                        });
+                        metric_samples.push(simple_sample(
+                            ts,
+                            Metric::AcCurrent,
+                            current.as_amperes(),
+                            vec![],
+                        ));
                     }
                     if let Some(Some(frequency)) = frequency.get(frame) {
-                        metric_samples.push(MetricSample {
-                            sample_time: ts,
-                            metric: Metric::AcFrequency as i32,
-                            value: Some(MetricValueVariant {
-                                metric_value_variant: Some(
-                                    metric_value_variant::MetricValueVariant::SimpleMetric(
-                                        SimpleMetricValue {
-                                            value: frequency.as_hertz(),
-                                        },
-                                    ),
-                                ),
-                            }),
-                            bounds: vec![],
-                            connection: None,
-                        });
+                        metric_samples.push(simple_sample(
+                            ts,
+                            Metric::AcFrequency,
+                            frequency.as_hertz(),
+                            vec![],
+                        ));
+                    }
+                    if let Some(Some(soc)) = soc.get(frame) {
+                        metric_samples.push(simple_sample(
+                            ts,
+                            Metric::BatterySocPct,
+                            soc.as_percentage(),
+                            soc_bounds
+                                .map(|(lower, upper)| {
+                                    vec![Bounds {
+                                        lower: Some(lower.as_percentage()),
+                                        upper: Some(upper.as_percentage()),
+                                    }]
+                                })
+                                .unwrap_or_default(),
+                        ));
+                    }
+                    if let Some(Some(capacity)) = capacity.get(frame) {
+                        metric_samples.push(simple_sample(
+                            ts,
+                            Metric::BatteryCapacity,
+                            capacity.as_watthours(),
+                            vec![],
+                        ));
                     }
 
                     let resp = ReceiveElectricalComponentTelemetryStreamResponse {
@@ -549,10 +655,10 @@ impl MicrogridApiClient for MockMicrogridApiClient {
                     }
                 }
                 if silence_after_metrics {
-                    // Hold the sender open indefinitely so the client
-                    // actor doesn't see the stream end and reconnect.
-                    let _keep_open = tx;
-                    std::future::pending::<()>().await;
+                    // Hold the sender open so the client actor doesn't see
+                    // the stream end and reconnect; finish when it drops
+                    // the receiver.
+                    tx.closed().await;
                 }
             });
         }

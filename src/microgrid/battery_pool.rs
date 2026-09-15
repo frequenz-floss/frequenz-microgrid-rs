@@ -17,15 +17,16 @@ use crate::{
     metric,
     metric::Metric,
     microgrid::{
+        battery_pool_formulas,
         caching_sender::{CachingSender, WeakCachingSender},
         pool_bounds,
         pool_bounds_tracker::PoolBoundsTracker,
         pool_validation::validate_pool_ids,
         telemetry_tracker::battery_pool_telemetry_tracker::{
-            BatteryPoolSnapshot, BatteryPoolTelemetryTracker,
+            BatteryPoolSnapshot, BatteryPoolTelemetryTracker, InverterBatteryGroup,
         },
     },
-    quantity::Power,
+    quantity::{Energy, Percentage, Power},
 };
 
 /// An interface for abstracting over a pool of batteries in the microgrid.
@@ -33,6 +34,8 @@ pub struct BatteryPool {
     component_ids: Option<BTreeSet<u64>>,
     client: MicrogridClientHandle,
     logical_meter: LogicalMeterHandle,
+    /// The pool's batteries grouped with the inverters they sit behind.
+    groups: Vec<InverterBatteryGroup>,
     snapshot_tx: Option<WeakCachingSender<BatteryPoolSnapshot>>,
     bounds_tx: Option<WeakCachingSender<Vec<Bounds<Power>>>>,
 }
@@ -45,32 +48,29 @@ impl BatteryPool {
         client: MicrogridClientHandle,
         logical_meter: LogicalMeterHandle,
     ) -> Result<Self, Error> {
-        let this = Self {
+        let all_battery_ids = Self::battery_ids_in(&logical_meter);
+        validate_pool_ids(&component_ids, &all_battery_ids, "batteries")
+            .inspect_err(|e| tracing::error!("{e}"))?;
+        let battery_ids = component_ids.clone().unwrap_or(all_battery_ids);
+        // A malformed or partial selection (e.g. only one battery of an
+        // inverter-battery group) is rejected here, before any tracker
+        // is spawned. Errors are logged inside `inverter_battery_groups`.
+        let groups = BatteryPoolTelemetryTracker::inverter_battery_groups(
+            logical_meter.graph(),
+            &battery_ids,
+        )?;
+        Ok(Self {
             component_ids,
             client,
             logical_meter,
+            groups,
             snapshot_tx: None,
             bounds_tx: None,
-        };
-        validate_pool_ids(
-            &this.component_ids,
-            &this.get_all_battery_ids(),
-            "batteries",
-        )
-        .inspect_err(|e| tracing::error!("{e}"))?;
-        // Reject malformed or partial selections (e.g. only one battery of an
-        // inverter-battery group) at construction, rather than surfacing the
-        // error later from the spawned telemetry tracker as a closed stream.
-        // Errors are logged inside `inverter_battery_groups`.
-        BatteryPoolTelemetryTracker::inverter_battery_groups(
-            this.logical_meter.graph(),
-            &this.get_battery_ids(),
-        )?;
-        Ok(this)
+        })
     }
 
-    fn get_all_battery_ids(&self) -> BTreeSet<u64> {
-        self.logical_meter
+    fn battery_ids_in(logical_meter: &LogicalMeterHandle) -> BTreeSet<u64> {
+        logical_meter
             .graph()
             .components()
             .filter(|c| c.category() == ElectricalComponentCategory::Battery)
@@ -78,18 +78,47 @@ impl BatteryPool {
             .collect()
     }
 
+    /// The ids of the pool's batteries: the union of its groups' batteries.
     pub(crate) fn get_battery_ids(&self) -> BTreeSet<u64> {
-        if let Some(ids) = &self.component_ids {
-            ids.clone()
-        } else {
-            self.get_all_battery_ids()
-        }
+        self.groups
+            .iter()
+            .flat_map(|group| group.battery_ids.iter().copied())
+            .collect()
     }
 
     /// Returns a formula for the active power of the battery pool.
     pub fn power(&mut self) -> Result<Formula<Power>, Error> {
         self.logical_meter
             .battery::<metric::AcPowerActive>(self.component_ids.clone())
+    }
+
+    /// Returns a formula for the usable capacity of the pool: the sum over
+    /// its batteries of the capacity between the battery's SoC bounds.
+    ///
+    /// A battery contributes nothing while its capacity or SoC bounds are
+    /// missing, while it is unhealthy, or while an inverter of its group is
+    /// unhealthy or has sent nothing for `max_age_in_intervals` intervals. A
+    /// battery whose bounds are equal or inverted contributes 0. The
+    /// formula reads `None` when no battery contributes, and while any
+    /// component of the pool is still being subscribed.
+    pub fn capacity(&self) -> Formula<Energy> {
+        self.logical_meter
+            .formula_from_expr(battery_pool_formulas::usable_capacity(&self.groups))
+    }
+
+    /// Returns a formula for the state of charge of the pool: each
+    /// battery's SoC, normalised to its SoC bounds and clamped to 0-100 %,
+    /// weighted by the battery's usable capacity.
+    ///
+    /// A battery contributes nothing while its capacity, SoC or SoC bounds
+    /// are missing, while it is unhealthy, or while an inverter of its group
+    /// is unhealthy or has sent nothing for `max_age_in_intervals` intervals.
+    /// A battery whose bounds are equal or inverted has no weight. The
+    /// formula reads `None` when no battery contributes, and while any
+    /// component of the pool is still being subscribed.
+    pub fn soc(&self) -> Formula<Percentage> {
+        self.logical_meter
+            .formula_from_expr(battery_pool_formulas::soc(&self.groups))
     }
 
     /// Returns a receiver for the aggregated active-power bounds of the pool,
@@ -166,8 +195,11 @@ impl BatteryPool {
 #[cfg(test)]
 mod tests {
     use super::BatteryPool;
+    use crate::client::proto::common::microgrid::electrical_components::ElectricalComponentStateCode;
     use crate::client::test_utils::MockComponent;
     use crate::microgrid::test_utils::{handles, last_snapshot};
+    use crate::{Formula, Sample, quantity::Quantity};
+    use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 
     /// grid → meter, with no batteries anywhere.
     fn battery_less_graph() -> MockComponent {
@@ -224,5 +256,68 @@ mod tests {
             BatteryPool::try_new(Some([4].into()), client, lm).is_err(),
             "a partial inverter-battery group must be rejected"
         );
+    }
+
+    /// grid → meter → battery_inverter(3) → [battery(4), battery(5)], with
+    /// 20 frames of telemetry: 4 at 1000 Wh, bounds 10..90 %, SoC 50 %;
+    /// 5 at 2000 Wh, bounds 20..100 %, SoC 100 %.
+    fn soc_graph(inverter_state: ElectricalComponentStateCode) -> MockComponent {
+        MockComponent::grid(1).with_children(vec![MockComponent::meter(2).with_children(vec![
+            MockComponent::battery_inverter(3)
+                .with_power(vec![0.0; 20])
+                .with_state(inverter_state)
+                .with_children(vec![
+                    MockComponent::battery(4)
+                        .with_capacity(vec![1000.0; 20])
+                        .with_soc(vec![50.0; 20], 10.0, 90.0),
+                    MockComponent::battery(5)
+                        .with_capacity(vec![2000.0; 20])
+                        .with_soc(vec![100.0; 20], 20.0, 100.0),
+                ]),
+        ])])
+    }
+
+    /// The last of `count` samples the formula delivers. The first samples
+    /// of a subscription may be `None` while components are still being
+    /// subscribed, so tests read a few and keep the last.
+    async fn last_sample<Q: Quantity + 'static>(formula: Formula<Q>, count: usize) -> Sample<Q> {
+        let rx = formula.subscribe().await.unwrap();
+        BroadcastStream::new(rx)
+            .take(count)
+            .map(|sample| sample.unwrap())
+            .collect::<Vec<_>>()
+            .await
+            .pop()
+            .unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn capacity_sums_the_usable_capacity_of_healthy_batteries() {
+        let (client, lm) = handles(soc_graph(ElectricalComponentStateCode::Ready)).await;
+        let pool = BatteryPool::try_new(None, client, lm).unwrap();
+        let sample = last_sample(pool.capacity(), 4).await;
+        assert_eq!(
+            sample.value().map(|c| c.as_watthours()),
+            Some(800.0 + 1600.0),
+            "{}",
+            pool.capacity()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn soc_is_weighted_by_usable_capacity() {
+        let (client, lm) = handles(soc_graph(ElectricalComponentStateCode::Ready)).await;
+        let pool = BatteryPool::try_new(None, client, lm).unwrap();
+        let sample = last_sample(pool.soc(), 4).await;
+        let soc = sample.value().map(|s| s.as_percentage()).unwrap();
+        assert!((soc - 83.333336).abs() < 1e-3, "{soc}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn soc_is_none_while_the_inverter_is_unhealthy() {
+        let (client, lm) = handles(soc_graph(ElectricalComponentStateCode::Error)).await;
+        let pool = BatteryPool::try_new(None, client, lm).unwrap();
+        let sample = last_sample(pool.soc(), 4).await;
+        assert_eq!(sample.value(), None);
     }
 }
