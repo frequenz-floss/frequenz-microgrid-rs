@@ -35,7 +35,8 @@ use crate::{
             ListElectricalComponentConnectionsRequest, ListElectricalComponentConnectionsResponse,
             ListElectricalComponentsRequest, ListElectricalComponentsResponse,
             ReceiveElectricalComponentTelemetryStreamRequest,
-            ReceiveElectricalComponentTelemetryStreamResponse,
+            ReceiveElectricalComponentTelemetryStreamResponse, SetElectricalComponentPowerRequest,
+            SetElectricalComponentPowerRequestStatus, SetElectricalComponentPowerResponse,
         },
     },
     quantity::{Current, Frequency, Power, ReactivePower, Voltage},
@@ -54,6 +55,7 @@ pub struct MockMicrogridApiClient {
     /// [`MockMicrogridApiClient::new_with_clock`].
     clock: TokioSyncedClock,
     pub augment_bounds_calls: Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>>,
+    pub set_power_calls: Arc<Mutex<Vec<SetElectricalComponentPowerRequest>>>,
 }
 
 /// One row per emitted telemetry frame: `(power, reactive_power, voltage,
@@ -85,6 +87,10 @@ pub struct MockComponent {
     /// Bounds attached to every streamed `AcPowerActive` sample. Set via
     /// [`MockComponent::add_sample_power_bounds`]; empty by default.
     sample_power_bounds: Vec<Bounds>,
+    /// Statuses streamed back for each set-power request. Set via
+    /// [`MockComponent::with_set_power_statuses`]; empty defaults to
+    /// `[Accepted, Success]`.
+    set_power_statuses: Vec<SetElectricalComponentPowerRequestStatus>,
 }
 
 impl MockComponent {
@@ -308,6 +314,15 @@ impl MockComponent {
         self
     }
 
+    /// Sets the statuses streamed back for each set-power request.
+    pub fn with_set_power_statuses(
+        mut self,
+        statuses: Vec<SetElectricalComponentPowerRequestStatus>,
+    ) -> Self {
+        self.set_power_statuses = statuses;
+        self
+    }
+
     /// Keeps the telemetry stream open and silent after the configured
     /// metrics are exhausted, so the client actor doesn't reconnect and
     /// replay the data. Useful for testing missing-data timeouts.
@@ -352,6 +367,7 @@ impl MockMicrogridApiClient {
             connections: vec![],
             clock,
             augment_bounds_calls: Arc::new(Mutex::new(Vec::new())),
+            set_power_calls: Arc::new(Mutex::new(Vec::new())),
         };
 
         fn traverse(node: &MockComponent, client: &mut MockMicrogridApiClient) {
@@ -375,6 +391,11 @@ impl MockMicrogridApiClient {
         &self,
     ) -> Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>> {
         self.augment_bounds_calls.clone()
+    }
+
+    /// Return a handle to captured set power requests.
+    pub fn set_power_calls_handle(&self) -> Arc<Mutex<Vec<SetElectricalComponentPowerRequest>>> {
+        self.set_power_calls.clone()
     }
 }
 
@@ -597,6 +618,38 @@ impl MicrogridApiClient for MockMicrogridApiClient {
         Ok(Response::new(AugmentElectricalComponentBoundsResponse {
             valid_until_time: None,
         }))
+    }
+
+    type SetPowerStream =
+        ReceiverStream<std::result::Result<SetElectricalComponentPowerResponse, tonic::Status>>;
+
+    async fn set_electrical_component_power(
+        &mut self,
+        request: impl tonic::IntoRequest<SetElectricalComponentPowerRequest> + Send,
+    ) -> std::result::Result<tonic::Response<Self::SetPowerStream>, tonic::Status> {
+        let req = request.into_request().into_inner();
+        let comp_id = req.electrical_component_id;
+        self.set_power_calls.lock().unwrap().push(req);
+
+        // Unknown ids get an empty stream, like the telemetry mock.
+        let statuses = match self.components.iter().find(|c| c.component.id == comp_id) {
+            Some(c) if c.set_power_statuses.is_empty() => vec![
+                SetElectricalComponentPowerRequestStatus::Accepted,
+                SetElectricalComponentPowerRequestStatus::Success,
+            ],
+            Some(c) => c.set_power_statuses.clone(),
+            None => vec![],
+        };
+
+        // Sized to hold every status, so the stream ends once `tx` drops.
+        let (tx, rx) = tokio::sync::mpsc::channel(statuses.len().max(1));
+        for status in statuses {
+            let _ = tx.try_send(Ok(SetElectricalComponentPowerResponse {
+                valid_until_time: None,
+                status: status as i32,
+            }));
+        }
+        Ok(Response::new(ReceiverStream::new(rx)))
     }
 }
 
