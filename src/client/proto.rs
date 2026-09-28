@@ -19,6 +19,7 @@ pub use pb::frequenz::api::common::v1alpha8 as common;
 pub use pb::frequenz::api::microgrid::v1alpha18 as microgrid;
 #[cfg(any(test, feature = "test-utils"))]
 pub use pb::google;
+pub(crate) use pb::google::protobuf::Timestamp;
 
 mod electrical_component;
 mod graph;

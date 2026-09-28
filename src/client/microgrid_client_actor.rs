@@ -6,6 +6,7 @@
 use crate::client::{
     MicrogridApiClient,
     instruction::Instruction,
+    proto::Timestamp,
     proto::common::microgrid::electrical_components::ElectricalComponentTelemetry,
     proto::microgrid::{
         ListElectricalComponentConnectionsRequest, ListElectricalComponentsRequest,
@@ -14,7 +15,7 @@ use crate::client::{
     },
     retry_tracker::RetryTracker,
 };
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
 use futures::{Stream, StreamExt};
 use std::collections::HashMap;
 use tokio::{
@@ -232,21 +233,9 @@ async fn handle_instruction<T: MicrogridApiClient>(
                     ))
                 })
                 .map(|r| {
-                    r.into_inner().valid_until_time.and_then(|t| {
-                        match DateTime::from_timestamp(t.seconds, t.nanos as u32) {
-                            dt @ Some(_) => dt,
-                            None => {
-                                tracing::error!(
-                                    concat!(
-                                        "Received invalid valid_until_time in ",
-                                        "AugmentElectricalComponentBoundsResponse: {:?}"
-                                    ),
-                                    t
-                                );
-                                None
-                            }
-                        }
-                    })
+                    r.into_inner()
+                        .valid_until_time
+                        .and_then(from_proto_timestamp)
                 });
 
             response_tx
@@ -257,6 +246,17 @@ async fn handle_instruction<T: MicrogridApiClient>(
     }
 
     Ok(())
+}
+
+/// Converts a timestamp received from the API, logging it if invalid.
+fn from_proto_timestamp(t: Timestamp) -> Option<DateTime<Utc>> {
+    u32::try_from(t.nanos)
+        .ok()
+        .and_then(|nanos| DateTime::from_timestamp(t.seconds, nanos))
+        .or_else(|| {
+            tracing::error!("Received invalid timestamp from the API: {t:?}");
+            None
+        })
 }
 
 /// Handles the retry timer, checking if the data streams for any components
