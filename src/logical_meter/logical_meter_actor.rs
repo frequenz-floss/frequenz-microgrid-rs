@@ -46,8 +46,20 @@ struct SubscribedFormula {
 enum Feed {
     /// The subscribe request is still in flight, or it failed.
     Pending,
-    /// Attached to the component's telemetry stream.
+    /// Attached, but no message has arrived and no resample has run since.
+    Fresh(broadcast::Receiver<ElectricalComponentTelemetry>),
+    /// Attached, and past its first message or its first resample.
     Live(broadcast::Receiver<ElectricalComponentTelemetry>),
+}
+
+impl Feed {
+    /// Turns a `Fresh` feed into a `Live` one. Other states are left as is.
+    fn promote(&mut self) {
+        *self = match std::mem::replace(self, Feed::Pending) {
+            Feed::Fresh(receiver) => Feed::Live(receiver),
+            feed => feed,
+        };
+    }
 }
 
 struct ComponentSubscription {
@@ -69,9 +81,10 @@ type SubscribeRequest = BoxFuture<
 >;
 
 /// Reads a tick's resampled values and records every key read. A key that is
-/// not in the snapshot is unknown: a key with no subscription or a
-/// [`Feed::Pending`] one, and every key on the first tick after a wall-clock
-/// jump, whose snapshot is empty.
+/// not in the snapshot is unknown: a key with no subscription, a
+/// [`Feed::Pending`] one, a [`Feed::Fresh`] one with no message on this tick,
+/// and every key on the first tick after a wall-clock jump, whose snapshot is
+/// empty.
 struct RecordingSource<'a> {
     snapshot: &'a HashMap<Key, Option<f32>>,
     reads: &'a mut HashSet<Key>,
@@ -283,16 +296,24 @@ impl<C: Clock> LogicalMeterActor<C> {
     /// A [`Feed::Pending`] subscription is left out of the snapshot, so its key
     /// reads as [`Reading::Unknown`]. Its resampler is still advanced: one that
     /// falls behind returns several values on its next call.
+    ///
+    /// A [`Feed::Fresh`] subscription becomes [`Feed::Live`]. If no message
+    /// arrived, it is left out of this one snapshot.
     fn resample(
         &self,
         subscriptions: &mut HashMap<Key, ComponentSubscription>,
     ) -> Result<HashMap<Key, Option<f32>>, Error> {
         let mut snapshot = HashMap::with_capacity(subscriptions.len());
         for (key, subscription) in subscriptions.iter_mut() {
-            if let Feed::Live(receiver) = &mut subscription.feed {
+            let mut received = false;
+            if let Feed::Fresh(receiver) | Feed::Live(receiver) = &mut subscription.feed {
                 while let Some(data) = poll_telemetry(receiver, key.component_id) {
+                    received = true;
                     Self::push_to_resampler(&mut subscription.resampler, *key, data);
                 }
+            }
+            if received {
+                subscription.feed.promote();
             }
             let resampled = subscription.resampler.resample(self.resampler_ts);
             if resampled.len() != 1 {
@@ -301,8 +322,13 @@ impl<C: Clock> LogicalMeterActor<C> {
                     resampled.len()
                 )));
             }
-            if matches!(subscription.feed, Feed::Live(_)) {
-                snapshot.insert(*key, resampled[0].clone().value());
+            match subscription.feed {
+                Feed::Pending => {}
+                // No message yet: read as unknown for this one tick.
+                Feed::Fresh(_) => subscription.feed.promote(),
+                Feed::Live(_) => {
+                    snapshot.insert(*key, resampled[0].clone().value());
+                }
             }
         }
         Ok(snapshot)
@@ -421,7 +447,7 @@ impl<C: Clock> LogicalMeterActor<C> {
         match result {
             Ok(receiver) => {
                 tracing::debug!("Subscribed to {key}");
-                subscription.feed = Feed::Live(receiver);
+                subscription.feed = Feed::Fresh(receiver);
             }
             Err(err) => tracing::error!("Subscribing to {key} failed, not retrying: {err}"),
         }
@@ -476,8 +502,15 @@ impl<C: Clock> LogicalMeterActor<C> {
             // Drain any samples that were queued during the jump window;
             // they are timestamped on the old wall-clock frame and would
             // pollute the freshly-aligned resampler.
-            if let Feed::Live(receiver) = &mut subscription.feed {
-                while poll_telemetry(receiver, key.component_id).is_some() {}
+            let mut drained = false;
+            if let Feed::Fresh(receiver) | Feed::Live(receiver) = &mut subscription.feed {
+                while poll_telemetry(receiver, key.component_id).is_some() {
+                    drained = true;
+                }
+            }
+            // A drained message counts as the first one.
+            if drained {
+                subscription.feed.promote();
             }
             subscription.resampler = self.build_resampler(key.metric, start);
         }
@@ -871,12 +904,108 @@ mod tests {
         );
 
         // The pending subscription's resampler kept advancing, so the first
-        // resample after its receiver attaches yields exactly one value for it.
+        // resample with a receiver yields exactly one value for it. The feed is
+        // set to `Live` directly here, skipping the first-message wait.
         let (_tx, receiver) = broadcast::channel(1);
         subscriptions.get_mut(&pending_key).unwrap().feed = Feed::Live(receiver);
         actor.resampler_ts += actor.config.resampling_interval;
         let snapshot = actor.resample(&mut subscriptions).unwrap();
         assert!(snapshot.contains_key(&pending_key));
+    }
+
+    #[tokio::test]
+    async fn test_new_subscription_reads_unknown_until_its_first_message() {
+        let actor = bare_actor();
+        let interval = actor.config.resampling_interval;
+        let start = actor.resampler_ts - interval;
+        let primary = active_power_key(4);
+        let fallback = active_power_key(3);
+        let (_primary_tx, primary_receiver) = broadcast::channel(1);
+        let mut subscriptions = HashMap::from([
+            // The primary is attached but silent, so it reads as missing.
+            (
+                primary,
+                subscription(&actor, primary, start, Feed::Live(primary_receiver)),
+            ),
+            (
+                fallback,
+                subscription(&actor, fallback, start, Feed::Pending),
+            ),
+        ]);
+        let (_fallback_tx, fallback_receiver) = broadcast::channel(1);
+        actor.attach_subscription(fallback, Ok(fallback_receiver), &mut subscriptions);
+
+        let (sink, recorded) = recording_sink();
+        let mut formulas = HashMap::from([(
+            "COALESCE(#4, #3, 0)".to_string(),
+            subscribed_formula("COALESCE(#4, #3, 0)", vec![sink]),
+        )]);
+
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        actor.evaluate_formulas(&snapshot, &mut formulas);
+        assert_eq!(
+            *recorded.lock().unwrap(),
+            vec![(actor.resampler_ts, None)],
+            "the coalesce must wait for the new fallback, not fall through to 0",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_new_subscription_is_read_once_its_first_message_arrives() {
+        let actor = bare_actor();
+        let key = active_power_key(3);
+        let start = actor.resampler_ts - actor.config.resampling_interval;
+        let mut subscriptions =
+            HashMap::from([(key, subscription(&actor, key, start, Feed::Pending))]);
+        let (tx, receiver) = broadcast::channel(1);
+        actor.attach_subscription(key, Ok(receiver), &mut subscriptions);
+
+        // A message without the metric settles the key on the same tick.
+        tx.send(ElectricalComponentTelemetry::default()).unwrap();
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        assert_eq!(snapshot.get(&key), Some(&None));
+    }
+
+    #[tokio::test]
+    async fn test_message_drained_after_a_jump_counts_as_the_first() {
+        let actor = bare_actor();
+        let key = active_power_key(3);
+        let start = actor.resampler_ts - actor.config.resampling_interval;
+        let mut subscriptions =
+            HashMap::from([(key, subscription(&actor, key, start, Feed::Pending))]);
+        let (tx, receiver) = broadcast::channel(1);
+        actor.attach_subscription(key, Ok(receiver), &mut subscriptions);
+        tx.send(ElectricalComponentTelemetry::default()).unwrap();
+
+        actor.rebuild_resamplers_after_jump(&mut subscriptions, start);
+        assert!(matches!(subscriptions[&key].feed, Feed::Live(_)));
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        assert_eq!(snapshot.get(&key), Some(&None));
+    }
+
+    #[tokio::test]
+    async fn test_silent_new_subscription_reads_missing_after_one_tick() {
+        let mut actor = bare_actor();
+        let interval = actor.config.resampling_interval;
+        let key = active_power_key(3);
+        let mut subscriptions = HashMap::from([(
+            key,
+            subscription(&actor, key, actor.resampler_ts - interval, Feed::Pending),
+        )]);
+        let (_tx, receiver) = broadcast::channel(1);
+        actor.attach_subscription(key, Ok(receiver), &mut subscriptions);
+        assert!(matches!(subscriptions[&key].feed, Feed::Fresh(_)));
+
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        assert!(!snapshot.contains_key(&key));
+        assert!(matches!(subscriptions[&key].feed, Feed::Live(_)));
+        actor.resampler_ts += interval;
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        assert_eq!(
+            snapshot.get(&key),
+            Some(&None),
+            "a stream that never sends must end up missing",
+        );
     }
 
     #[tokio::test]

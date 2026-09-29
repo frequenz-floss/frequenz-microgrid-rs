@@ -56,12 +56,14 @@ impl std::fmt::Display for Key {
 ///
 /// # Values that are not known yet
 ///
-/// A component's value is not known yet until its subscription completes. If
-/// the subscription fails because the microgrid client stopped, the value is
-/// never known. Every component's value is also not known on the first tick
-/// after a wall-clock jump. This is not the same as a missing value. A formula
-/// that reads a component whose value is not known yet emits `None`, and
-/// [`coalesce`](Self::coalesce) does not move past it.
+/// A component's value is not known yet until its subscription completes. It is
+/// also not known on the first tick after the subscription completes, if the
+/// component has sent nothing yet. If the subscription fails because the
+/// microgrid client stopped, the value is never known. Every component's value
+/// is also not known on the first tick after a wall-clock jump. This is not the
+/// same as a missing value. A formula that reads a component whose value is not
+/// known yet emits `None`, and [`coalesce`](Self::coalesce) does not move past
+/// it.
 #[derive(Clone)]
 pub struct Formula<Q: Quantity> {
     engine_formula: engine::Formula<f32, Key>,
