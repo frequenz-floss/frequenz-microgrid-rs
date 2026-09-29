@@ -49,6 +49,10 @@ struct ComponentSubscription {
     receiver: Option<broadcast::Receiver<ElectricalComponentTelemetry>>,
     /// Consecutive ticks on which no formula read this component.
     idle_ticks: u32,
+    /// Set when the receiver attaches; cleared by its first message or by the
+    /// next resample. A resample that clears it without a message leaves the
+    /// key unknown.
+    awaiting_first_message: bool,
 }
 
 /// An in-flight telemetry subscription, yielding the key it was started for
@@ -65,7 +69,8 @@ type PendingSubscription = Pin<
 >;
 
 /// Reads a tick's resampled values and records every key read. A key that is
-/// not in the snapshot (unsubscribed, or subscription pending) is unknown.
+/// not in the snapshot (unsubscribed, subscription pending, or attached since
+/// the last tick with no message yet) is unknown.
 struct RecordingSource<'a> {
     snapshot: &'a HashMap<Key, Option<f32>>,
     reads: &'a mut HashSet<Key>,
@@ -255,7 +260,8 @@ impl<C: Clock> LogicalMeterActor<C> {
     /// A component whose telemetry subscription is still in flight is left out
     /// of the snapshot, so its key reads as [`Reading::Unknown`]. Its resampler
     /// is still advanced: one that falls behind returns several values on its
-    /// next call.
+    /// next call. A newly attached subscription with no message yet is also
+    /// left out, for that one resample.
     fn resample(
         &self,
         subscriptions: &mut HashMap<Key, ComponentSubscription>,
@@ -264,6 +270,7 @@ impl<C: Clock> LogicalMeterActor<C> {
         for (key, subscription) in subscriptions.iter_mut() {
             if let Some(receiver) = subscription.receiver.as_mut() {
                 while let Some(data) = poll_telemetry(receiver, key.component_id) {
+                    subscription.awaiting_first_message = false;
                     Self::push_to_resampler(&mut subscription.resampler, *key, data);
                 }
             }
@@ -275,7 +282,11 @@ impl<C: Clock> LogicalMeterActor<C> {
                 )));
             }
             if subscription.receiver.is_some() {
-                snapshot.insert(*key, resampled[0].clone().value());
+                if subscription.awaiting_first_message {
+                    subscription.awaiting_first_message = false;
+                } else {
+                    snapshot.insert(*key, resampled[0].clone().value());
+                }
             }
         }
         Ok(snapshot)
@@ -358,6 +369,7 @@ impl<C: Clock> LogicalMeterActor<C> {
                 resampler: self.build_resampler(key.metric, self.resampler_ts),
                 receiver: None,
                 idle_ticks: 0,
+                awaiting_first_message: false,
             });
             tracing::debug!("Subscribing to {key}");
             let client = self.client.clone();
@@ -394,7 +406,9 @@ impl<C: Clock> LogicalMeterActor<C> {
         match result {
             Ok(receiver) => {
                 tracing::debug!("Subscribed to {key}");
-                entry.into_mut().receiver = Some(receiver);
+                let subscription = entry.into_mut();
+                subscription.receiver = Some(receiver);
+                subscription.awaiting_first_message = true;
             }
             Err(err) => {
                 tracing::warn!("Subscribing to {key} failed, will retry: {err}");
@@ -453,7 +467,9 @@ impl<C: Clock> LogicalMeterActor<C> {
             // they are timestamped on the old wall-clock frame and would
             // pollute the freshly-aligned resampler.
             if let Some(receiver) = subscription.receiver.as_mut() {
-                while poll_telemetry(receiver, key.component_id).is_some() {}
+                while poll_telemetry(receiver, key.component_id).is_some() {
+                    subscription.awaiting_first_message = false;
+                }
             }
             subscription.resampler = self.build_resampler(key.metric, start);
         }
@@ -592,6 +608,7 @@ mod tests {
             resampler: actor.build_resampler(key.metric, start),
             receiver,
             idle_ticks: 0,
+            awaiting_first_message: false,
         }
     }
 
@@ -800,12 +817,100 @@ mod tests {
         );
 
         // The pending subscription's resampler kept advancing, so the first
-        // resample after its receiver attaches yields exactly one value for it.
+        // resample with a receiver yields exactly one value for it. The
+        // receiver is set directly here, skipping the first-message wait.
         let (_tx, receiver) = broadcast::channel(1);
         subscriptions.get_mut(&pending_key).unwrap().receiver = Some(receiver);
         actor.resampler_ts += actor.config.resampling_interval;
         let snapshot = actor.resample(&mut subscriptions).unwrap();
         assert!(snapshot.contains_key(&pending_key));
+    }
+
+    #[tokio::test]
+    async fn test_new_subscription_reads_unknown_until_its_first_message() {
+        let actor = bare_actor();
+        let interval = actor.config.resampling_interval;
+        let start = actor.resampler_ts - interval;
+        let primary = active_power_key(4);
+        let fallback = active_power_key(3);
+        let (_primary_tx, primary_receiver) = broadcast::channel(1);
+        let mut subscriptions = HashMap::from([
+            // The primary is attached but silent, so it reads as missing.
+            (
+                primary,
+                subscription(&actor, primary, start, Some(primary_receiver)),
+            ),
+            (fallback, subscription(&actor, fallback, start, None)),
+        ]);
+        let (_fallback_tx, fallback_receiver) = broadcast::channel(1);
+        actor.attach_subscription(fallback, Ok(fallback_receiver), &mut subscriptions);
+
+        let (sink, recorded) = recording_sink();
+        let mut formulas = HashMap::from([(
+            "COALESCE(#4, #3, 0)".to_string(),
+            subscribed_formula("COALESCE(#4, #3, 0)", vec![sink]),
+        )]);
+
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        actor.evaluate_formulas(&snapshot, &mut formulas);
+        assert_eq!(
+            *recorded.lock().unwrap(),
+            vec![(actor.resampler_ts, None)],
+            "the coalesce must wait for the new fallback, not fall through to 0",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_new_subscription_is_read_once_its_first_message_arrives() {
+        let actor = bare_actor();
+        let key = active_power_key(3);
+        let start = actor.resampler_ts - actor.config.resampling_interval;
+        let mut subscriptions = HashMap::from([(key, subscription(&actor, key, start, None))]);
+        let (tx, receiver) = broadcast::channel(1);
+        actor.attach_subscription(key, Ok(receiver), &mut subscriptions);
+
+        // A message without the metric settles the key on the same tick.
+        tx.send(ElectricalComponentTelemetry::default()).unwrap();
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        assert_eq!(snapshot.get(&key), Some(&None));
+    }
+
+    #[tokio::test]
+    async fn test_message_drained_after_a_jump_counts_as_the_first() {
+        let actor = bare_actor();
+        let key = active_power_key(3);
+        let start = actor.resampler_ts - actor.config.resampling_interval;
+        let mut subscriptions = HashMap::from([(key, subscription(&actor, key, start, None))]);
+        let (tx, receiver) = broadcast::channel(1);
+        actor.attach_subscription(key, Ok(receiver), &mut subscriptions);
+        tx.send(ElectricalComponentTelemetry::default()).unwrap();
+
+        actor.rebuild_resamplers_after_jump(&mut subscriptions, start);
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        assert_eq!(snapshot.get(&key), Some(&None));
+    }
+
+    #[tokio::test]
+    async fn test_silent_new_subscription_reads_missing_after_one_tick() {
+        let mut actor = bare_actor();
+        let interval = actor.config.resampling_interval;
+        let key = active_power_key(3);
+        let mut subscriptions = HashMap::from([(
+            key,
+            subscription(&actor, key, actor.resampler_ts - interval, None),
+        )]);
+        let (_tx, receiver) = broadcast::channel(1);
+        actor.attach_subscription(key, Ok(receiver), &mut subscriptions);
+
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        assert!(!snapshot.contains_key(&key));
+        actor.resampler_ts += interval;
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        assert_eq!(
+            snapshot.get(&key),
+            Some(&None),
+            "a stream that never sends must end up missing",
+        );
     }
 
     #[tokio::test]
@@ -906,6 +1011,10 @@ mod tests {
         assert!(
             receiver.try_recv().is_ok(),
             "the live receiver must not be overwritten by a stale completion"
+        );
+        assert!(
+            !subscriptions[&key].awaiting_first_message,
+            "a stale completion must not make the live key wait again"
         );
     }
 
