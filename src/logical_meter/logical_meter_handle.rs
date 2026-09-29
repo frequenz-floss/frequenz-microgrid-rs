@@ -904,6 +904,40 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_formulas_from_different_meters_do_not_subscribe() {
+        let lm = new_logical_meter_handle(None).await;
+        let other = new_logical_meter_handle(None).await;
+        let grid = || lm.grid::<crate::metric::AcPowerActive>().unwrap();
+        let other_grid = || other.grid::<crate::metric::AcPowerActive>().unwrap();
+
+        let mixed = [
+            grid() + other_grid(),
+            grid().min(other_grid()),
+            grid().avg(vec![grid(), other_grid()]),
+            // A mixed formula stays mixed on either side of a later operator.
+            grid() * 2.0 + (grid() - other_grid()),
+            (grid() - other_grid()) + grid(),
+        ];
+        for formula in mixed {
+            let err = formula.subscribe().await.unwrap_err();
+            assert_eq!(
+                err.kind(),
+                crate::ErrorKind::FormulaEngineError,
+                "{formula}"
+            );
+        }
+
+        // Clones of one handle share its logical meter.
+        let clone = lm.clone();
+        let same = grid()
+            + clone
+                .grid::<crate::metric::AcPowerActive>()
+                .unwrap()
+                .max(crate::quantity::Power::from_watts(1.0));
+        assert!(same.subscribe().await.is_ok());
+    }
+
     /// Renders a graph formula the way the handle does, for wiring checks on
     /// formulas too long to spell out.
     fn rendered(

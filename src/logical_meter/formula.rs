@@ -49,10 +49,16 @@ impl std::fmt::Display for Key {
 /// [`coalesce`](Self::coalesce), [`min`](Self::min), [`max`](Self::max) and
 /// [`avg`](Self::avg). Composition never fails and never subscribes; only
 /// [`subscribe`](Self::subscribe) does.
+///
+/// All formulas in one expression must come from the same logical meter, that
+/// is one [`LogicalMeterHandle`](crate::LogicalMeterHandle) or its clones;
+/// otherwise [`subscribe`](Self::subscribe) fails.
 #[derive(Clone)]
 pub struct Formula<Q: Quantity> {
     engine_formula: engine::Formula<f32, Key>,
-    instructions_tx: mpsc::Sender<Instruction>,
+    /// The logical meter that evaluates this formula; `None` when its
+    /// operands come from different logical meters.
+    instructions_tx: Option<mpsc::Sender<Instruction>>,
     _quantity: PhantomData<Q>,
 }
 
@@ -63,15 +69,6 @@ pub enum FormulaOperand<Q: Quantity> {
     Formula(Formula<Q>),
     /// A constant value.
     Constant(Q),
-}
-
-impl<Q: Quantity> FormulaOperand<Q> {
-    fn into_engine_formula(self) -> engine::Formula<f32, Key> {
-        match self {
-            FormulaOperand::Formula(formula) => formula.engine_formula,
-            FormulaOperand::Constant(value) => engine::Formula::Constant(Some(value.base_value())),
-        }
-    }
 }
 
 impl<Q: Quantity> From<Formula<Q>> for FormulaOperand<Q> {
@@ -93,7 +90,7 @@ impl<Q: Quantity> Formula<Q> {
     ) -> Self {
         Self {
             engine_formula,
-            instructions_tx,
+            instructions_tx: Some(instructions_tx),
             _quantity: PhantomData,
         }
     }
@@ -111,15 +108,35 @@ impl<Q: Quantity> Formula<Q> {
         }
     }
 
+    /// Returns the operand's expression. A formula operand from another logical
+    /// meter, or one that already mixes meters, clears this formula's logical
+    /// meter, so `subscribe()` fails.
+    fn take_operand(&mut self, operand: impl Into<FormulaOperand<Q>>) -> engine::Formula<f32, Key> {
+        match operand.into() {
+            FormulaOperand::Formula(formula) => {
+                let same_meter = self
+                    .instructions_tx
+                    .as_ref()
+                    .zip(formula.instructions_tx.as_ref())
+                    .is_some_and(|(ours, theirs)| ours.same_channel(theirs));
+                if !same_meter {
+                    self.instructions_tx = None;
+                }
+                formula.engine_formula
+            }
+            FormulaOperand::Constant(value) => engine::Formula::Constant(Some(value.base_value())),
+        }
+    }
+
     fn combine(
-        self,
+        mut self,
         other: impl Into<FormulaOperand<Q>>,
         build: impl FnOnce(
             engine::Formula<f32, Key>,
             engine::Formula<f32, Key>,
         ) -> engine::Formula<f32, Key>,
     ) -> Self {
-        let rhs = other.into().into_engine_formula();
+        let rhs = self.take_operand(other);
         self.map(|lhs| build(lhs, rhs))
     }
 
@@ -145,8 +162,12 @@ impl<Q: Quantity> Formula<Q> {
     /// `AVG(self, others...)`. Operands with no value are skipped; the sample
     /// is `None` when no operand has a value, or while an operand's components
     /// are still being subscribed.
-    pub fn avg(self, others: Vec<impl Into<FormulaOperand<Q>>>) -> Self {
-        self.map(|lhs| lhs.avg(others.into_iter().map(|o| o.into().into_engine_formula())))
+    pub fn avg(mut self, others: Vec<impl Into<FormulaOperand<Q>>>) -> Self {
+        let others: Vec<_> = others
+            .into_iter()
+            .map(|other| self.take_operand(other))
+            .collect();
+        self.map(|lhs| lhs.avg(others))
     }
 }
 
@@ -155,9 +176,16 @@ impl<Q: Quantity + 'static> Formula<Q> {
     ///
     /// Each call gets its own channel. Formulas with the same expression share
     /// one evaluation in the actor.
+    ///
+    /// Fails if the formula combines formulas from different logical meters.
     pub async fn subscribe(&self) -> Result<broadcast::Receiver<Sample<Q>>, Error> {
+        let Some(instructions_tx) = &self.instructions_tx else {
+            return Err(Error::formula_engine_error(
+                "A formula cannot combine formulas from different logical meters",
+            ));
+        };
         let (tx, rx) = broadcast::channel(FORMULA_STREAM_CHANNEL_CAPACITY);
-        self.instructions_tx
+        instructions_tx
             .send(Instruction::SubscribeFormula {
                 engine_formula: self.engine_formula.clone(),
                 sink: Box::new(QuantitySink { tx }),
