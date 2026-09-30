@@ -331,15 +331,19 @@ impl MicrogridClientHandle {
 #[cfg(test)]
 mod tests {
 
+    use chrono::TimeDelta;
     use tokio::time::Instant;
 
     use crate::{
         MicrogridClientHandle,
+        client::SetPowerUpdate,
         client::proto::common::{
             metrics::{SimpleMetricValue, metric_value_variant},
             microgrid::electrical_components::ElectricalComponentCategory,
         },
+        client::proto::microgrid::{PowerType, SetElectricalComponentPowerRequestStatus},
         client::test_utils::{MockComponent, MockMicrogridApiClient},
+        quantity::{Power, ReactivePower},
     };
 
     fn new_client_handle() -> MicrogridClientHandle {
@@ -526,5 +530,89 @@ mod tests {
             .await
             .expect("no telemetry after resubscribing; stale stream cache?")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_set_power_active() {
+        let api_client = MockMicrogridApiClient::new(
+            MockComponent::grid(1).with_children(vec![MockComponent::battery_inverter(2)]),
+        );
+        let calls = api_client.set_power_calls_handle();
+        let handle = MicrogridClientHandle::new_from_client(api_client);
+
+        let (valid_until, mut updates) = handle
+            .set_power_active(2, Power::from_watts(1000.0), Some(TimeDelta::seconds(30)))
+            .await
+            .unwrap();
+        assert_eq!(valid_until, None); // mock sends no timestamp
+        assert_eq!(
+            updates.recv().await.unwrap().unwrap(),
+            SetPowerUpdate::Success { valid_until: None }
+        );
+        assert!(updates.recv().await.is_none());
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].electrical_component_id, 2);
+        assert_eq!(calls[0].power_type, PowerType::Active as i32);
+        assert_eq!(calls[0].power, 1000.0);
+        assert_eq!(calls[0].request_lifetime, Some(30));
+    }
+
+    #[tokio::test]
+    async fn test_set_power_forwards_all_updates() {
+        use SetElectricalComponentPowerRequestStatus as S;
+        let api_client = MockMicrogridApiClient::new(MockComponent::grid(1).with_children(vec![
+            MockComponent::battery_inverter(2).with_set_power_statuses(vec![
+                S::Accepted,
+                S::Accepted,
+                S::Success,
+            ]),
+        ]));
+        let handle = MicrogridClientHandle::new_from_client(api_client);
+
+        let (_, mut updates) = handle
+            .set_power_active(2, Power::from_watts(1000.0), None)
+            .await
+            .unwrap();
+        // A status that isn't final doesn't end the updates.
+        let update = updates.recv().await.unwrap().unwrap();
+        assert_eq!(update, SetPowerUpdate::Other(S::Accepted as i32));
+        assert!(!update.is_final());
+        let update = updates.recv().await.unwrap().unwrap();
+        assert_eq!(update, SetPowerUpdate::Success { valid_until: None });
+        assert!(update.is_final());
+        assert!(updates.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_set_power_failures() {
+        use SetElectricalComponentPowerRequestStatus as S;
+        let api_client = MockMicrogridApiClient::new(MockComponent::grid(1).with_children(vec![
+                MockComponent::battery_inverter(2).with_set_power_statuses(vec![S::Rejected]),
+                MockComponent::battery_inverter(3)
+                    .with_set_power_statuses(vec![S::Accepted, S::Failed]),
+                MockComponent::battery_inverter(4)
+                    .with_set_power_statuses(vec![S::Accepted, S::Overridden]),
+                MockComponent::battery_inverter(5).with_set_power_statuses(vec![S::Accepted]),
+            ]));
+        let handle = MicrogridClientHandle::new_from_client(api_client);
+        let set = |id| {
+            handle.set_power_reactive(id, ReactivePower::from_volt_amperes_reactive(100.0), None)
+        };
+        let first_update = |id| async move {
+            let (_, mut updates) = set(id).await.unwrap();
+            updates.recv().await.map(Result::unwrap)
+        };
+
+        // REJECTED -> error right away, no receiver
+        assert!(set(2).await.is_err());
+        // FAILED / OVERRIDDEN -> accepted, then forwarded as updates
+        assert_eq!(first_update(3).await, Some(SetPowerUpdate::Failed));
+        assert_eq!(first_update(4).await, Some(SetPowerUpdate::Overridden));
+        // stream ends after ACCEPTED -> receiver closes without an update
+        assert_eq!(first_update(5).await, None);
+        // unknown component -> empty stream -> error right away
+        assert!(set(99).await.is_err());
     }
 }
