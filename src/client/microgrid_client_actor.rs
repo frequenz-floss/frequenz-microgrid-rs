@@ -4,26 +4,32 @@
 //! The microgrid client actor that handles communication with the microgrid API.
 
 use crate::client::{
-    MicrogridApiClient,
-    instruction::Instruction,
+    MicrogridApiClient, SetPowerUpdate,
+    instruction::{Instruction, SetPowerResult},
+    proto::Timestamp,
     proto::common::microgrid::electrical_components::ElectricalComponentTelemetry,
     proto::microgrid::{
         ListElectricalComponentConnectionsRequest, ListElectricalComponentsRequest,
         ReceiveElectricalComponentTelemetryStreamRequest,
-        ReceiveElectricalComponentTelemetryStreamResponse,
+        ReceiveElectricalComponentTelemetryStreamResponse, SetElectricalComponentPowerRequest,
+        SetElectricalComponentPowerRequestStatus as SetPowerStatus,
+        SetElectricalComponentPowerResponse,
     },
     retry_tracker::RetryTracker,
 };
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
 use futures::{Stream, StreamExt};
 use std::collections::HashMap;
 use tokio::{
     select,
-    sync::{broadcast, mpsc},
+    sync::{broadcast, mpsc, oneshot},
 };
 use tracing::Instrument as _;
 
 use crate::Error;
+
+/// Buffer size for set-power updates waiting to be received.
+const SET_POWER_UPDATE_BUFFER: usize = 8;
 
 enum StreamStatus {
     Failed(u64),
@@ -232,31 +238,72 @@ async fn handle_instruction<T: MicrogridApiClient>(
                     ))
                 })
                 .map(|r| {
-                    r.into_inner().valid_until_time.and_then(|t| {
-                        match DateTime::from_timestamp(t.seconds, t.nanos as u32) {
-                            dt @ Some(_) => dt,
-                            None => {
-                                tracing::error!(
-                                    concat!(
-                                        "Received invalid valid_until_time in ",
-                                        "AugmentElectricalComponentBoundsResponse: {:?}"
-                                    ),
-                                    t
-                                );
-                                None
-                            }
-                        }
-                    })
+                    r.into_inner()
+                        .valid_until_time
+                        .and_then(from_proto_timestamp)
                 });
 
             response_tx
                 .send(response)
                 .map_err(|_| Error::internal("failed to send response"))?;
         }
+        Some(Instruction::SetElectricalComponentPower {
+            electrical_component_id,
+            power_type,
+            power,
+            request_lifetime,
+            response_tx,
+        }) => {
+            let request = SetElectricalComponentPowerRequest {
+                electrical_component_id,
+                power_type: power_type as i32,
+                power,
+                request_lifetime: request_lifetime.and_then(|d| {
+                    u64::try_from(d.num_seconds())
+                        .inspect_err(|_| tracing::error!("Invalid set-power request_lifetime: {d}"))
+                        .ok()
+                }),
+            };
+            match client.set_electrical_component_power(request).await {
+                Ok(r) => {
+                    tokio::spawn(
+                        run_set_power_stream(r.into_inner(), electrical_component_id, response_tx)
+                            .in_current_span(),
+                    );
+                }
+                Err(e) => {
+                    let _ = response_tx.send(Err(Error::api_server_error(format!(
+                        "set power for component {electrical_component_id} failed: {e}"
+                    ))));
+                }
+            }
+        }
         None => {}
     }
 
     Ok(())
+}
+
+/// Converts a timestamp received from the API, logging it if invalid.
+fn from_proto_timestamp(t: Timestamp) -> Option<DateTime<Utc>> {
+    u32::try_from(t.nanos)
+        .ok()
+        .and_then(|nanos| DateTime::from_timestamp(t.seconds, nanos))
+        .or_else(|| {
+            tracing::error!("Received invalid timestamp from the API: {t:?}");
+            None
+        })
+}
+
+/// Builds the error for a set-power response that didn't succeed.
+fn set_power_status_error(status: i32, electrical_component_id: u64) -> Error {
+    let status = SetPowerStatus::try_from(status).map_or_else(
+        |_| format!("unknown status {status}"),
+        |s| s.as_str_name().to_string(),
+    );
+    Error::api_server_error(format!(
+        "set power for component {electrical_component_id}: {status}"
+    ))
 }
 
 /// Handles the retry timer, checking if the data streams for any components
@@ -413,5 +460,61 @@ async fn run_electrical_component_telemetry_stream(
             electrical_component_id,
             e
         );
+    }
+}
+
+/// Reads a set-power response stream: the initial response answers
+/// `response_tx`, every later one is forwarded to the update receiver.
+async fn run_set_power_stream(
+    mut stream: impl Stream<Item = Result<SetElectricalComponentPowerResponse, tonic::Status>> + Unpin,
+    electrical_component_id: u64,
+    response_tx: oneshot::Sender<SetPowerResult>,
+) {
+    let id = electrical_component_id;
+    let stream_error = |e: tonic::Status| {
+        Error::api_server_error(format!("set power for component {id} failed: {e}"))
+    };
+
+    // Initial response: accepted -> hand out an update receiver, else error.
+    let initial = match stream.next().await {
+        Some(Ok(r)) if r.status() == SetPowerStatus::Accepted => r,
+        Some(Ok(r)) => {
+            let _ = response_tx.send(Err(set_power_status_error(r.status, id)));
+            return;
+        }
+        Some(Err(e)) => {
+            let _ = response_tx.send(Err(stream_error(e)));
+            return;
+        }
+        None => {
+            let _ = response_tx.send(Err(Error::api_server_error(format!(
+                "set power for component {id}: stream closed without a response"
+            ))));
+            return;
+        }
+    };
+    // The server sends only a few updates per request, so this buffer keeps
+    // a slow receiver from stalling the gRPC stream.
+    let (update_tx, update_rx) = mpsc::channel(SET_POWER_UPDATE_BUFFER);
+    let valid_until = initial.valid_until_time.and_then(from_proto_timestamp);
+    let _ = response_tx.send(Ok((valid_until, update_rx)));
+
+    // Forward everything until the server closes the stream, even if the
+    // receiver was dropped, so the call isn't cancelled early.
+    while let Some(item) = stream.next().await {
+        let update = item.map(to_set_power_update).map_err(stream_error);
+        let _ = update_tx.send(update).await;
+    }
+}
+
+/// Converts a set-power response received after acceptance.
+fn to_set_power_update(r: SetElectricalComponentPowerResponse) -> SetPowerUpdate {
+    match SetPowerStatus::try_from(r.status) {
+        Ok(SetPowerStatus::Success) => SetPowerUpdate::Success {
+            valid_until: r.valid_until_time.and_then(from_proto_timestamp),
+        },
+        Ok(SetPowerStatus::Failed) => SetPowerUpdate::Failed,
+        Ok(SetPowerStatus::Overridden) => SetPowerUpdate::Overridden,
+        _ => SetPowerUpdate::Other(r.status),
     }
 }

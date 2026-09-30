@@ -3,19 +3,33 @@
 
 //! Instructions that can be sent to the client actor from client handles.
 
-use chrono::TimeDelta;
-use tokio::sync::{broadcast, oneshot};
+use chrono::{DateTime, TimeDelta, Utc};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::{
     Error,
-    client::proto::common::{
-        metrics::{Bounds, Metric},
-        microgrid::electrical_components::{
-            ElectricalComponent, ElectricalComponentCategory, ElectricalComponentConnection,
-            ElectricalComponentTelemetry,
+    client::SetPowerUpdate,
+    client::proto::{
+        common::{
+            metrics::{Bounds, Metric},
+            microgrid::electrical_components::{
+                ElectricalComponent, ElectricalComponentCategory, ElectricalComponentConnection,
+                ElectricalComponentTelemetry,
+            },
         },
+        microgrid::PowerType,
     },
 };
+
+/// `valid_until` from the initial response, plus a receiver for the
+/// updates that follow it.
+pub(super) type SetPowerResult = Result<
+    (
+        Option<DateTime<Utc>>,
+        mpsc::Receiver<Result<SetPowerUpdate, Error>>,
+    ),
+    Error,
+>;
 
 /// Instructions that can be sent to the client actor from client handles.
 #[derive(Debug)]
@@ -40,5 +54,12 @@ pub(super) enum Instruction {
         bounds: Vec<Bounds>,
         request_lifetime: Option<TimeDelta>,
         response_tx: oneshot::Sender<Result<Option<chrono::DateTime<chrono::Utc>>, Error>>,
+    },
+    SetElectricalComponentPower {
+        electrical_component_id: u64,
+        power_type: PowerType,
+        power: f32,
+        request_lifetime: Option<TimeDelta>,
+        response_tx: oneshot::Sender<SetPowerResult>,
     },
 }

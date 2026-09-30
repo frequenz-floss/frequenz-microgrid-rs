@@ -13,6 +13,9 @@ pub(crate) use microgrid_api_client::MicrogridApiClient;
 mod microgrid_client_handle;
 pub use microgrid_client_handle::MicrogridClientHandle;
 
+mod set_power;
+pub use set_power::SetPowerUpdate;
+
 pub mod proto;
 pub use proto::common::microgrid::electrical_components::{
     ElectricalComponent, ElectricalComponentCategory,

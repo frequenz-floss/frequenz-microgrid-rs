@@ -6,25 +6,29 @@
 //! Instructions received by this handle are sent to the microgrid client actor,
 //! which owns the connection to the microgrid API service.
 
-use chrono::TimeDelta;
+use chrono::{DateTime, TimeDelta, Utc};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tonic::transport::{Channel, Endpoint};
 
 use crate::{
     Bounds, Error,
-    client::MicrogridApiClient,
     client::proto::{
         common::metrics::Bounds as PbBounds,
         common::microgrid::electrical_components::{
             ElectricalComponent, ElectricalComponentCategory, ElectricalComponentConnection,
             ElectricalComponentTelemetry,
         },
-        microgrid::microgrid_client::MicrogridClient,
+        microgrid::{PowerType, microgrid_client::MicrogridClient},
     },
+    client::{MicrogridApiClient, SetPowerUpdate},
     metric::Metric,
+    quantity::{Power, ReactivePower},
 };
 
-use super::{instruction::Instruction, microgrid_client_actor::MicrogridClientActor};
+use super::{
+    instruction::{Instruction, SetPowerResult},
+    microgrid_client_actor::MicrogridClientActor,
+};
 
 /// A handle to the microgrid client connection.
 ///
@@ -232,20 +236,114 @@ impl MicrogridClientHandle {
             .await
             .map_err(|e| Error::internal(format!("failed to receive response: {e}")))?
     }
+
+    /// Sets the active power of the given electrical component.
+    ///
+    /// Negative values discharge towards the grid, positive values charge
+    /// from it. Supported by inverters, CHPs, EV chargers, electrolyzers,
+    /// wind turbines and capacitor banks, if the specific model allows it.
+    ///
+    /// Returns once the API has accepted the request, with the time until
+    /// which the setpoint stays in effect, and a receiver for every update
+    /// the API sends after that. A final update ([`SetPowerUpdate::is_final`])
+    /// tells whether the setpoint was applied, failed or was overridden.
+    /// The receiver closes when the API ends the stream; if that happens
+    /// before a final update, the outcome is unknown. Errors on the receiver
+    /// are stream failures.
+    ///
+    /// `request_lifetime` must be between 10 seconds and 15 minutes; if
+    /// `None`, the API defaults to 60 seconds. After it expires, the
+    /// component returns to its default state unless a new setpoint is sent.
+    pub async fn set_power_active(
+        &self,
+        electrical_component_id: u64,
+        power: Power,
+        request_lifetime: Option<TimeDelta>,
+    ) -> Result<
+        (
+            Option<DateTime<Utc>>,
+            mpsc::Receiver<Result<SetPowerUpdate, Error>>,
+        ),
+        Error,
+    > {
+        self.set_power(
+            electrical_component_id,
+            PowerType::Active,
+            power.as_watts(),
+            request_lifetime,
+        )
+        .await
+    }
+
+    /// Sets the reactive power of the given electrical component.
+    ///
+    /// Negative values are capacitive (current leads voltage), positive
+    /// values are inductive (current lags voltage).
+    ///
+    /// Otherwise behaves like [`Self::set_power_active`].
+    pub async fn set_power_reactive(
+        &self,
+        electrical_component_id: u64,
+        power: ReactivePower,
+        request_lifetime: Option<TimeDelta>,
+    ) -> Result<
+        (
+            Option<DateTime<Utc>>,
+            mpsc::Receiver<Result<SetPowerUpdate, Error>>,
+        ),
+        Error,
+    > {
+        self.set_power(
+            electrical_component_id,
+            PowerType::Reactive,
+            power.as_volt_amperes_reactive(),
+            request_lifetime,
+        )
+        .await
+    }
+
+    async fn set_power(
+        &self,
+        electrical_component_id: u64,
+        power_type: PowerType,
+        power: f32,
+        request_lifetime: Option<TimeDelta>,
+    ) -> SetPowerResult {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.instructions_tx
+            .send(Instruction::SetElectricalComponentPower {
+                electrical_component_id,
+                power_type,
+                power,
+                request_lifetime,
+                response_tx,
+            })
+            .await
+            .map_err(|_| Error::internal("failed to send instruction"))?;
+
+        response_rx
+            .await
+            .map_err(|e| Error::internal(format!("failed to receive response: {e}")))?
+    }
 }
 
 #[cfg(test)]
 mod tests {
 
+    use chrono::TimeDelta;
     use tokio::time::Instant;
 
     use crate::{
         MicrogridClientHandle,
+        client::SetPowerUpdate,
         client::proto::common::{
             metrics::{SimpleMetricValue, metric_value_variant},
             microgrid::electrical_components::ElectricalComponentCategory,
         },
+        client::proto::microgrid::{PowerType, SetElectricalComponentPowerRequestStatus},
         client::test_utils::{MockComponent, MockMicrogridApiClient},
+        quantity::{Power, ReactivePower},
     };
 
     fn new_client_handle() -> MicrogridClientHandle {
@@ -432,5 +530,89 @@ mod tests {
             .await
             .expect("no telemetry after resubscribing; stale stream cache?")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_set_power_active() {
+        let api_client = MockMicrogridApiClient::new(
+            MockComponent::grid(1).with_children(vec![MockComponent::battery_inverter(2)]),
+        );
+        let calls = api_client.set_power_calls_handle();
+        let handle = MicrogridClientHandle::new_from_client(api_client);
+
+        let (valid_until, mut updates) = handle
+            .set_power_active(2, Power::from_watts(1000.0), Some(TimeDelta::seconds(30)))
+            .await
+            .unwrap();
+        assert_eq!(valid_until, None); // mock sends no timestamp
+        assert_eq!(
+            updates.recv().await.unwrap().unwrap(),
+            SetPowerUpdate::Success { valid_until: None }
+        );
+        assert!(updates.recv().await.is_none());
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].electrical_component_id, 2);
+        assert_eq!(calls[0].power_type, PowerType::Active as i32);
+        assert_eq!(calls[0].power, 1000.0);
+        assert_eq!(calls[0].request_lifetime, Some(30));
+    }
+
+    #[tokio::test]
+    async fn test_set_power_forwards_all_updates() {
+        use SetElectricalComponentPowerRequestStatus as S;
+        let api_client = MockMicrogridApiClient::new(MockComponent::grid(1).with_children(vec![
+            MockComponent::battery_inverter(2).with_set_power_statuses(vec![
+                S::Accepted,
+                S::Accepted,
+                S::Success,
+            ]),
+        ]));
+        let handle = MicrogridClientHandle::new_from_client(api_client);
+
+        let (_, mut updates) = handle
+            .set_power_active(2, Power::from_watts(1000.0), None)
+            .await
+            .unwrap();
+        // A status that isn't final doesn't end the updates.
+        let update = updates.recv().await.unwrap().unwrap();
+        assert_eq!(update, SetPowerUpdate::Other(S::Accepted as i32));
+        assert!(!update.is_final());
+        let update = updates.recv().await.unwrap().unwrap();
+        assert_eq!(update, SetPowerUpdate::Success { valid_until: None });
+        assert!(update.is_final());
+        assert!(updates.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_set_power_failures() {
+        use SetElectricalComponentPowerRequestStatus as S;
+        let api_client = MockMicrogridApiClient::new(MockComponent::grid(1).with_children(vec![
+                MockComponent::battery_inverter(2).with_set_power_statuses(vec![S::Rejected]),
+                MockComponent::battery_inverter(3)
+                    .with_set_power_statuses(vec![S::Accepted, S::Failed]),
+                MockComponent::battery_inverter(4)
+                    .with_set_power_statuses(vec![S::Accepted, S::Overridden]),
+                MockComponent::battery_inverter(5).with_set_power_statuses(vec![S::Accepted]),
+            ]));
+        let handle = MicrogridClientHandle::new_from_client(api_client);
+        let set = |id| {
+            handle.set_power_reactive(id, ReactivePower::from_volt_amperes_reactive(100.0), None)
+        };
+        let first_update = |id| async move {
+            let (_, mut updates) = set(id).await.unwrap();
+            updates.recv().await.map(Result::unwrap)
+        };
+
+        // REJECTED -> error right away, no receiver
+        assert!(set(2).await.is_err());
+        // FAILED / OVERRIDDEN -> accepted, then forwarded as updates
+        assert_eq!(first_update(3).await, Some(SetPowerUpdate::Failed));
+        assert_eq!(first_update(4).await, Some(SetPowerUpdate::Overridden));
+        // stream ends after ACCEPTED -> receiver closes without an update
+        assert_eq!(first_update(5).await, None);
+        // unknown component -> empty stream -> error right away
+        assert!(set(99).await.is_err());
     }
 }
