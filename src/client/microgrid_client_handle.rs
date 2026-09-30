@@ -6,25 +6,29 @@
 //! Instructions received by this handle are sent to the microgrid client actor,
 //! which owns the connection to the microgrid API service.
 
-use chrono::TimeDelta;
+use chrono::{DateTime, TimeDelta, Utc};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tonic::transport::{Channel, Endpoint};
 
 use crate::{
     Bounds, Error,
-    client::MicrogridApiClient,
     client::proto::{
         common::metrics::Bounds as PbBounds,
         common::microgrid::electrical_components::{
             ElectricalComponent, ElectricalComponentCategory, ElectricalComponentConnection,
             ElectricalComponentTelemetry,
         },
-        microgrid::microgrid_client::MicrogridClient,
+        microgrid::{PowerType, microgrid_client::MicrogridClient},
     },
+    client::{MicrogridApiClient, SetPowerUpdate},
     metric::Metric,
+    quantity::{Power, ReactivePower},
 };
 
-use super::{instruction::Instruction, microgrid_client_actor::MicrogridClientActor};
+use super::{
+    instruction::{Instruction, SetPowerResult},
+    microgrid_client_actor::MicrogridClientActor,
+};
 
 /// A handle to the microgrid client connection.
 ///
@@ -224,6 +228,96 @@ impl MicrogridClientHandle {
                 target_metric: M::METRIC,
                 bounds: bounds.into_iter().map(|x| x.into().into()).collect(),
                 request_lifetime,
+            })
+            .await
+            .map_err(|_| Error::internal("failed to send instruction"))?;
+
+        response_rx
+            .await
+            .map_err(|e| Error::internal(format!("failed to receive response: {e}")))?
+    }
+
+    /// Sets the active power of the given electrical component.
+    ///
+    /// Negative values discharge towards the grid, positive values charge
+    /// from it. Supported by inverters, CHPs, EV chargers, electrolyzers,
+    /// wind turbines and capacitor banks, if the specific model allows it.
+    ///
+    /// Returns once the API has accepted the request, with the time until
+    /// which the setpoint stays in effect, and a receiver for every update
+    /// the API sends after that. A final update ([`SetPowerUpdate::is_final`])
+    /// tells whether the setpoint was applied, failed or was overridden.
+    /// The receiver closes when the API ends the stream; if that happens
+    /// before a final update, the outcome is unknown. Errors on the receiver
+    /// are stream failures.
+    ///
+    /// `request_lifetime` must be between 10 seconds and 15 minutes; if
+    /// `None`, the API defaults to 60 seconds. After it expires, the
+    /// component returns to its default state unless a new setpoint is sent.
+    pub async fn set_power_active(
+        &self,
+        electrical_component_id: u64,
+        power: Power,
+        request_lifetime: Option<TimeDelta>,
+    ) -> Result<
+        (
+            Option<DateTime<Utc>>,
+            mpsc::Receiver<Result<SetPowerUpdate, Error>>,
+        ),
+        Error,
+    > {
+        self.set_power(
+            electrical_component_id,
+            PowerType::Active,
+            power.as_watts(),
+            request_lifetime,
+        )
+        .await
+    }
+
+    /// Sets the reactive power of the given electrical component.
+    ///
+    /// Negative values are capacitive (current leads voltage), positive
+    /// values are inductive (current lags voltage).
+    ///
+    /// Otherwise behaves like [`Self::set_power_active`].
+    pub async fn set_power_reactive(
+        &self,
+        electrical_component_id: u64,
+        power: ReactivePower,
+        request_lifetime: Option<TimeDelta>,
+    ) -> Result<
+        (
+            Option<DateTime<Utc>>,
+            mpsc::Receiver<Result<SetPowerUpdate, Error>>,
+        ),
+        Error,
+    > {
+        self.set_power(
+            electrical_component_id,
+            PowerType::Reactive,
+            power.as_volt_amperes_reactive(),
+            request_lifetime,
+        )
+        .await
+    }
+
+    async fn set_power(
+        &self,
+        electrical_component_id: u64,
+        power_type: PowerType,
+        power: f32,
+        request_lifetime: Option<TimeDelta>,
+    ) -> SetPowerResult {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.instructions_tx
+            .send(Instruction::SetElectricalComponentPower {
+                electrical_component_id,
+                power_type,
+                power,
+                request_lifetime,
+                response_tx,
             })
             .await
             .map_err(|_| Error::internal("failed to send instruction"))?;

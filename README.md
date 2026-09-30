@@ -6,7 +6,7 @@ High-level Rust interface for the Frequenz Microgrid API.
 
 The crate connects to a Microgrid API server, builds a component graph from the live topology, and exposes typed, formula-driven streams of microgrid metrics — grid power, battery state-of-charge, PV reactive power, consumer current, and so on — without requiring callers to write the per-component formulas by hand.
 
-Support for controlling components is coming soon.
+Higher-level control (e.g. through pools) is coming soon.
 
 ## Quick start
 
@@ -55,7 +55,7 @@ cargo add --dev frequenz-microgrid --features test-utils
 
 - `Microgrid` / `LogicalMeterHandle`: typed formulas for grid, battery, pv, chp, ev_charger, steam_boiler, consumer, producer, and individual components, parametrised over a metric.
 - `BatteryPool`, `PvPool` and `SteamBoilerPool`: aggregated active-power bounds and health-partitioned telemetry for a set of batteries, PV inverters or steam boilers.
-- `MicrogridClientHandle`: cloneable low-level gRPC handle with per-stream automatic reconnect.
+- `MicrogridClientHandle`: cloneable low-level gRPC handle with per-stream automatic reconnect, and `set_power_active`/`set_power_reactive` for controlling individual components.
 - Typed quantities — `Power`, `Current`, `Voltage`, `ReactivePower`, `Energy`, `Frequency`, `Percentage` — with unit conversions explicit at every API surface.
 
 See the [API documentation](https://docs.rs/frequenz-microgrid) for the full surface.
