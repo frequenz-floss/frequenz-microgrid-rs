@@ -614,30 +614,22 @@ impl<C: Clock> LogicalMeterActor<C> {
             );
             return;
         };
-        let timestamp = if let Some(timestamp) = dd.sample_time {
-            if let Some(timestamp) =
-                DateTime::from_timestamp(timestamp.seconds, timestamp.nanos as u32)
-            {
-                timestamp
-            } else {
-                return;
-            }
-        } else {
+        let Some(timestamp) = dd.sample_time.and_then(|timestamp| {
+            DateTime::from_timestamp(timestamp.seconds, timestamp.nanos as u32)
+        }) else {
             return;
         };
-
-        let value = if let Some(value) = &dd.value {
-            if let Some(value) = &value.metric_value_variant {
-                Some(match value {
-                    MetricValueVariant::SimpleMetric(value) => value.value,
-                    MetricValueVariant::AggregatedMetric(value) => value.avg_value,
-                })
-            } else {
-                return;
-            }
-        } else {
+        let Some(variant) = dd
+            .value
+            .as_ref()
+            .and_then(|value| value.metric_value_variant.as_ref())
+        else {
             return;
         };
+        let value = Some(match variant {
+            MetricValueVariant::SimpleMetric(value) => value.value,
+            MetricValueVariant::AggregatedMetric(value) => value.avg_value,
+        });
 
         let sample = Sample::new(timestamp, value);
 
@@ -655,7 +647,7 @@ mod tests {
         LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle,
         client::test_utils::{MockComponent, MockMicrogridApiClient, TokioSyncedClock},
         logical_meter::formula::Formula,
-        quantity::{Frequency, Power},
+        quantity::{Frequency, Power, Quantity},
     };
 
     async fn new_handle(
@@ -745,7 +737,9 @@ mod tests {
         }
     }
 
-    async fn next_sample(stream: &mut BroadcastStream<Sample<Power>>) -> Option<Sample<Power>> {
+    async fn next_sample<Q: Quantity + 'static>(
+        stream: &mut BroadcastStream<Sample<Q>>,
+    ) -> Option<Sample<Q>> {
         loop {
             match tokio::time::timeout(std::time::Duration::from_secs(10), stream.next()).await {
                 Ok(Some(Ok(s))) => return Some(s),
@@ -805,13 +799,9 @@ mod tests {
         let rx = formula.subscribe().await.unwrap();
         let mut stream = BroadcastStream::new(rx);
 
-        let first = loop {
-            match tokio::time::timeout(std::time::Duration::from_secs(10), stream.next()).await {
-                Ok(Some(Ok(s))) => break s,
-                Ok(Some(Err(_))) => continue,
-                _ => panic!("no first frequency sample"),
-            }
-        };
+        let first = next_sample(&mut stream)
+            .await
+            .expect("no first frequency sample");
         assert!(
             first.value().is_some(),
             "expected a frequency value to be streamed for the grid",
