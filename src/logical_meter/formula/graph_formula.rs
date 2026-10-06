@@ -3,13 +3,6 @@
 
 //! A formula generated from the component graph, subscribable through the
 //! logical-meter actor.
-//!
-//! The marker type `K` selects which component-graph methods generate the
-//! formula (the aggregation `*_formula` methods vs. the `*_coalesce_formula`
-//! ones), via the
-//! [`GraphFormulaProvider`](super::graph_formula_provider::GraphFormulaProvider)
-//! impls; the [`AggregationFormula`] / [`CoalesceFormula`] aliases name the two
-//! kinds.
 
 use std::marker::PhantomData;
 
@@ -20,48 +13,22 @@ use crate::{
 use async_trait::async_trait;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-/// Marker for formulas from the aggregation (`*_formula`) graph methods.
-pub enum Aggregation {}
-
-/// Marker for formulas from the coalesce (`*_coalesce_formula`) graph methods.
-pub enum Coalesce {}
-
-/// A component-graph formula for metric `M`, tagged by the kind `K` that
-/// selects the graph methods generating it.
-pub struct GraphFormula<M: Metric, K> {
+/// A component-graph formula for metric `M`.
+#[derive(Clone)]
+pub struct GraphFormula<M: Metric> {
     formula: frequenz_microgrid_component_graph::Formula,
     instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
-    phantom: PhantomData<(M, K)>,
+    phantom: PhantomData<fn() -> M>,
 }
 
-/// A formula that supports aggregation operations.
-pub type AggregationFormula<M> = GraphFormula<M, Aggregation>;
-
-/// A formula built from the component graph's coalesce methods.
-pub type CoalesceFormula<M> = GraphFormula<M, Coalesce>;
-
-// Manual `Clone`: a derive would demand `K: Clone`, but the marker types are
-// uninhabited and carry no data.
-impl<M: Metric, K> Clone for GraphFormula<M, K> {
-    fn clone(&self) -> Self {
-        Self {
-            formula: self.formula.clone(),
-            instructions_tx: self.instructions_tx.clone(),
-            phantom: PhantomData,
-        }
-    }
-}
-
-impl<M: Metric, K> std::fmt::Display for GraphFormula<M, K> {
+impl<M: Metric> std::fmt::Display for GraphFormula<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}::({})", M::METRIC.as_str_name(), self.formula)
     }
 }
 
 #[async_trait]
-impl<Q: Quantity + 'static, M: Metric<QuantityType = Q> + Sync + Send, K: Sync + Send>
-    FormulaSubscriber for GraphFormula<M, K>
-{
+impl<Q: Quantity + 'static, M: Metric<QuantityType = Q>> FormulaSubscriber for GraphFormula<M> {
     type QuantityType = Q;
 
     async fn subscribe(&self) -> Result<broadcast::Receiver<Sample<Q>>, Error> {
@@ -83,9 +50,9 @@ impl<Q: Quantity + 'static, M: Metric<QuantityType = Q> + Sync + Send, K: Sync +
     }
 }
 
-impl<M: Metric, K> GraphFormula<M, K> {
+impl<M: Metric> GraphFormula<M> {
     /// Creates a formula that subscribes through the given actor channel.
-    pub(super) fn new(
+    pub(crate) fn new(
         formula: frequenz_microgrid_component_graph::Formula,
         instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
     ) -> Self {
