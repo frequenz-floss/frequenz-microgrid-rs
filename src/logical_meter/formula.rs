@@ -18,7 +18,7 @@ use crate::{
     Error, Sample,
     client::proto::common::metrics::Metric as MetricPb,
     logical_meter::logical_meter_actor::{FormulaSink, Instruction},
-    quantity::Quantity,
+    quantity::{Percentage, Quantity},
 };
 
 /// Capacity of the per-subscriber broadcast channel carrying a formula's
@@ -45,7 +45,7 @@ impl std::fmt::Display for Key {
 /// A formula over component metrics, evaluated by the logical meter once per
 /// resampling tick.
 ///
-/// Formulas compose with `+`, `-`, `* f32`, `/ f32`,
+/// Formulas compose with `+`, `-`, `* f32`, `/ f32`, `* Percentage`,
 /// [`coalesce`](Self::coalesce), [`min`](Self::min), [`max`](Self::max) and
 /// [`avg`](Self::avg). Composition never fails and never subscribes; only
 /// [`subscribe`](Self::subscribe) does.
@@ -220,6 +220,14 @@ impl<Q: Quantity> std::ops::Div<f32> for Formula<Q> {
 
     fn div(self, rhs: f32) -> Self {
         self.map(|lhs| lhs / engine::Formula::Constant(Some(rhs)))
+    }
+}
+
+impl<Q: Quantity> std::ops::Mul<Percentage> for Formula<Q> {
+    type Output = Self;
+
+    fn mul(self, rhs: Percentage) -> Self {
+        self * rhs.as_fraction()
     }
 }
 
