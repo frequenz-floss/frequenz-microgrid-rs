@@ -2,7 +2,7 @@
 
 ## Summary
 
-The logical meter now evaluates formulas once per resampling tick, against one snapshot of component data. Composed formulas no longer subscribe to each operand separately.
+The logical meter now evaluates formulas once per resampling tick, against one snapshot of component data. Composed formulas no longer subscribe to each operand separately, and only the components a formula actually reads are subscribed.
 
 ## Upgrading
 
@@ -28,14 +28,19 @@ The logical meter now evaluates formulas once per resampling tick, against one s
   - The consumer formula can now be negative. For active power, combine it with `max` and a zero `Power` to get the old result. With phantom loads included, the consumer formula is unchanged.
   - A producer that draws power now adds a positive value instead of zero, so the producer total can be positive. For example, with PV and a CHP behind separate meters, PV producing 10 kW and the CHP drawing 2 kW used to give -10 kW and now give -8 kW.
   - Combining the producer formula with `min` and a zero `Power` gets close to the old result, but differs from it when one producer draws power while another produces.
+- The first samples of a new subscription may be `None`. `subscribe()` returns as soon as the request is queued, and the component subscriptions complete later. A formula emits `None` while a component it reads is still being subscribed, and on the first tick after that if the component has not sent anything yet. A `None` in the first samples does not always mean the data is missing.
+- A `COALESCE` fallback is subscribed only once the primary's value is missing, for example because the primary stopped sending data, does not send the metric, or sends NaN. When the primary's value is missing, a `COALESCE` can emit `None` for a few ticks while its fallback is subscribed. The fallback is used once it sends data. If it sends nothing by the second tick after its subscription completes, the `COALESCE` moves on to its next operand. When the primary has a value again, the fallback stays subscribed until no formula has read it for three ticks in a row, by default.
+- If the microgrid client stops running, components that are not subscribed yet can no longer be subscribed. A formula sends `None` on every tick on which it reads such a component, and its stream stays open.
 - `Quantity` can no longer be implemented outside this crate. Use the quantity types this crate provides.
 
 ## New Features
 
 - All operands of a composed formula, including operands of different metrics, are evaluated against the same tick's snapshot instead of being lined up by timestamp.
+- The logical meter subscribes to component telemetry on demand. Only the components a formula reads are subscribed, and a `COALESCE` fallback is subscribed only once the primary's value is missing. A component is unsubscribed on the third tick in a row in which no formula reads it; change this with `LogicalMeterConfig::with_unsubscribe_after_idle_intervals`.
 - `Formula<Q> * Percentage` scales a formula by a percentage.
 - `Formula<Q>` implements `Clone`, and `avg` accepts constants as well as formulas.
+- `test-utils`: `MockMicrogridApiClient::open_telemetry_streams()` reports which components have an open telemetry stream, and `wait_for_open_streams()` waits until that set matches an expected one. A `with_silence_after_metrics` component's stream closes when its last receiver is dropped while it still has samples to send; a receiver dropped after the component went silent leaves the stream open.
 
 ## Bug Fixes
 
-<!-- Here goes notable bug fixes that are worth a special mention or explanation -->
+- On the tick after a wall-clock jump, a formula that reads a component now sends `None`. Before, it was computed from resamplers with no data, so `COALESCE(#1, 0)` sent a made-up 0.
