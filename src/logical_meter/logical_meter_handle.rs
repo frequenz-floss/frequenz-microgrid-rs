@@ -1,8 +1,9 @@
 // License: MIT
 // Copyright © 2025 Frequenz Energy-as-a-Service GmbH
 
-use crate::logical_meter::formula::Formula;
+use crate::client::proto::common::metrics::Metric as MetricPb;
 use crate::logical_meter::formula::graph_formula::GraphFormula;
+use crate::logical_meter::formula::{Formula, Key};
 use crate::metric::{FormulaKind, Metric};
 use crate::{
     client::MicrogridClientHandle,
@@ -182,7 +183,7 @@ impl LogicalMeterHandle {
     }
 
     /// Asks the graph for the formula selected by `M::FORMULA_KIND` and
-    /// `target`, and parses it.
+    /// `target`, parses it, and tags every component leaf with `M::METRIC`.
     fn formula<M: Metric>(&self, target: FormulaTarget) -> Result<Formula<M::QuantityType>, Error> {
         let name = target.name();
         let graph = &self.graph;
@@ -225,17 +226,13 @@ impl LogicalMeterHandle {
         let generated = generated.map_err(|e| {
             Error::component_graph_error(format!("Could not get {name} formula: {e}"))
         })?;
-        let engine_formula = generated
-            .to_string()
-            .parse::<engine::Formula<f32>>()
-            .map_err(|e| {
-                Error::formula_engine_error(format!(
-                    "Could not parse {name} formula for {}: {e}",
-                    M::str_name()
-                ))
-            })?;
+        let engine_formula = tag_components(&generated, M::METRIC).map_err(|e| {
+            Error::formula_engine_error(format!(
+                "Could not parse {name} formula for {}: {e}",
+                M::str_name()
+            ))
+        })?;
         Ok(Formula::Subscriber(Box::new(GraphFormula::<M>::new(
-            generated,
             engine_formula,
             self.instructions_tx.clone(),
         ))))
@@ -245,6 +242,22 @@ impl LogicalMeterHandle {
     pub fn graph(&self) -> &ComponentGraph<ElectricalComponent, ElectricalComponentConnection> {
         &self.graph
     }
+}
+
+/// Parses a graph formula and tags every component leaf with `metric`.
+fn tag_components(
+    generated: &frequenz_microgrid_component_graph::Formula,
+    metric: MetricPb,
+) -> Result<engine::Formula<f32, Key>, engine::FormulaError> {
+    generated
+        .to_string()
+        .parse::<engine::Formula<f32>>()
+        .map(|formula| {
+            formula.map_components(|component_id| Key {
+                metric,
+                component_id,
+            })
+        })
 }
 
 /// Lists the components and connections from the API and builds the
@@ -365,12 +378,15 @@ mod tests {
         .await;
 
         let formula = lm.grid::<crate::metric::AcPowerActive>().unwrap();
-        assert_eq!(formula.to_string(), "METRIC_AC_POWER_ACTIVE::(#2)");
+        assert_eq!(formula.to_string(), "#2:AC_POWER_ACTIVE");
 
         let formula = lm.battery::<crate::metric::AcPowerReactive>(None).unwrap();
         assert_eq!(
             formula.to_string(),
-            "METRIC_AC_POWER_REACTIVE::(COALESCE(#8 + #6, #5, COALESCE(#8, 0.0) + COALESCE(#6, 0.0)))"
+            concat!(
+                "COALESCE(#8:AC_POWER_REACTIVE + #6:AC_POWER_REACTIVE, #5:AC_POWER_REACTIVE, ",
+                "COALESCE(#8:AC_POWER_REACTIVE, 0) + COALESCE(#6:AC_POWER_REACTIVE, 0))"
+            )
         );
 
         let formula = lm
@@ -378,36 +394,42 @@ mod tests {
             .unwrap();
         assert_eq!(
             formula.to_string(),
-            "METRIC_AC_POWER_ACTIVE::(COALESCE(#8, #5 - #6, 0.0))"
+            "COALESCE(#8:AC_POWER_ACTIVE, #5:AC_POWER_ACTIVE - #6:AC_POWER_ACTIVE, 0)"
         );
 
         let formula = lm
             .battery::<crate::metric::AcVoltage>(Some([7].into()))
             .unwrap();
-        assert_eq!(formula.to_string(), "METRIC_AC_VOLTAGE::(COALESCE(#5, #6))");
+        assert_eq!(
+            formula.to_string(),
+            "COALESCE(#5:AC_VOLTAGE, #6:AC_VOLTAGE)"
+        );
 
         let formula = lm.battery::<crate::metric::AcFrequency>(None).unwrap();
         assert_eq!(
             formula.to_string(),
-            "METRIC_AC_FREQUENCY::(COALESCE(#5, #6, #8))"
+            "COALESCE(#5:AC_FREQUENCY, #6:AC_FREQUENCY, #8:AC_FREQUENCY)"
         );
 
         let formula = lm.pv::<crate::metric::AcPowerReactive>(None).unwrap();
         assert_eq!(
             formula.to_string(),
-            "METRIC_AC_POWER_REACTIVE::(COALESCE(#4, #3, 0.0))"
+            "COALESCE(#4:AC_POWER_REACTIVE, #3:AC_POWER_REACTIVE, 0)"
         );
 
         let formula = lm.chp::<crate::metric::AcPowerActive>(None).unwrap();
         assert_eq!(
             formula.to_string(),
-            "METRIC_AC_POWER_ACTIVE::(COALESCE(#12, #11, 0.0))"
+            "COALESCE(#12:AC_POWER_ACTIVE, #11:AC_POWER_ACTIVE, 0)"
         );
 
         let formula = lm.ev_charger::<crate::metric::AcCurrent>(None).unwrap();
         assert_eq!(
             formula.to_string(),
-            "METRIC_AC_CURRENT::(COALESCE(#15 + #14, #13, COALESCE(#15, 0.0) + COALESCE(#14, 0.0)))"
+            concat!(
+                "COALESCE(#15:AC_CURRENT + #14:AC_CURRENT, #13:AC_CURRENT, ",
+                "COALESCE(#15:AC_CURRENT, 0) + COALESCE(#14:AC_CURRENT, 0))"
+            )
         );
 
         let formula = lm
@@ -415,7 +437,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             formula.to_string(),
-            "METRIC_AC_POWER_ACTIVE::(COALESCE(#17, #16, 0.0))"
+            "COALESCE(#17:AC_POWER_ACTIVE, #16:AC_POWER_ACTIVE, 0)"
         );
 
         let formula = lm
@@ -423,7 +445,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             formula.to_string(),
-            "METRIC_AC_POWER_ACTIVE::(COALESCE(#17, #16, 0.0))"
+            "COALESCE(#17:AC_POWER_ACTIVE, #16:AC_POWER_ACTIVE, 0)"
         );
 
         // 16 is the steam boiler's meter, not a steam boiler.
@@ -436,37 +458,43 @@ mod tests {
         assert_eq!(
             formula.to_string(),
             concat!(
-                "METRIC_AC_CURRENT::(MAX(",
-                "#2 - COALESCE(#3, #4, 0.0) - COALESCE(#5, COALESCE(#8, 0.0) + COALESCE(#6, 0.0)) ",
-                "- #10 - COALESCE(#11, #12, 0.0)",
-                " - COALESCE(#13, COALESCE(#15, 0.0) + COALESCE(#14, 0.0))",
-                " - COALESCE(#16, #17, 0.0),",
-                " 0.0)",
-                " + COALESCE(MAX(#3 - #4, 0.0), 0.0) + COALESCE(MAX(#5 - #6 - #8, 0.0), 0.0)",
-                " + MAX(#10, 0.0) + COALESCE(MAX(#11 - #12, 0.0), 0.0)",
-                " + COALESCE(MAX(#13 - #14 - #15, 0.0), 0.0)",
-                " + COALESCE(MAX(#16 - #17, 0.0), 0.0)",
-                ")"
+                "MAX(#2:AC_CURRENT - COALESCE(#3:AC_CURRENT, #4:AC_CURRENT, 0)",
+                " - COALESCE(#5:AC_CURRENT, COALESCE(#8:AC_CURRENT, 0) + COALESCE(#6:AC_CURRENT, 0))",
+                " - #10:AC_CURRENT - COALESCE(#11:AC_CURRENT, #12:AC_CURRENT, 0)",
+                " - COALESCE(#13:AC_CURRENT, COALESCE(#15:AC_CURRENT, 0) + COALESCE(#14:AC_CURRENT, 0))",
+                " - COALESCE(#16:AC_CURRENT, #17:AC_CURRENT, 0), 0)",
+                " + COALESCE(MAX(#3:AC_CURRENT - #4:AC_CURRENT, 0), 0)",
+                " + COALESCE(MAX(#5:AC_CURRENT - #6:AC_CURRENT - #8:AC_CURRENT, 0), 0)",
+                " + MAX(#10:AC_CURRENT, 0)",
+                " + COALESCE(MAX(#11:AC_CURRENT - #12:AC_CURRENT, 0), 0)",
+                " + COALESCE(MAX(#13:AC_CURRENT - #14:AC_CURRENT - #15:AC_CURRENT, 0), 0)",
+                " + COALESCE(MAX(#16:AC_CURRENT - #17:AC_CURRENT, 0), 0)"
             )
         );
 
         let formula = lm.producer::<crate::metric::AcPowerActive>().unwrap();
         assert_eq!(
             formula.to_string(),
-            "METRIC_AC_POWER_ACTIVE::(COALESCE(#4, #3, 0.0) + COALESCE(#12, #11, 0.0))"
+            concat!(
+                "COALESCE(#4:AC_POWER_ACTIVE, #3:AC_POWER_ACTIVE, 0)",
+                " + COALESCE(#12:AC_POWER_ACTIVE, #11:AC_POWER_ACTIVE, 0)"
+            )
         );
 
         let formula = lm.component::<crate::metric::AcCurrent>(10).unwrap();
-        assert_eq!(formula.to_string(), "METRIC_AC_CURRENT::(#10)");
+        assert_eq!(formula.to_string(), "#10:AC_CURRENT");
 
         let formula = lm.grid::<crate::metric::AcVoltage>().unwrap();
-        assert_eq!(formula.to_string(), "METRIC_AC_VOLTAGE::(#2)");
+        assert_eq!(formula.to_string(), "#2:AC_VOLTAGE");
 
         let formula = lm.pv::<crate::metric::AcVoltage>(None).unwrap();
-        assert_eq!(formula.to_string(), "METRIC_AC_VOLTAGE::(COALESCE(#3, #4))");
+        assert_eq!(
+            formula.to_string(),
+            "COALESCE(#3:AC_VOLTAGE, #4:AC_VOLTAGE)"
+        );
 
         let formula = lm.component::<crate::metric::AcFrequency>(10).unwrap();
-        assert_eq!(formula.to_string(), "METRIC_AC_FREQUENCY::(#10)");
+        assert_eq!(formula.to_string(), "#10:AC_FREQUENCY");
 
         // The coalesce kind is only defined for grid, battery, pv and
         // component; the other categories return an error.
@@ -539,11 +567,13 @@ mod tests {
         assert_eq!(
             formula.to_string(),
             concat!(
-                "METRIC_AC_POWER_ACTIVE::(#2 - COALESCE(#3, #4, 0.0)",
-                " - COALESCE(#5, COALESCE(#8, 0.0) + COALESCE(#6, 0.0))",
-                " - COALESCE(#11, #12, 0.0)",
-                " - COALESCE(#13, COALESCE(#15, 0.0) + COALESCE(#14, 0.0))",
-                " - COALESCE(#16, #17, 0.0))"
+                "#2:AC_POWER_ACTIVE - COALESCE(#3:AC_POWER_ACTIVE, #4:AC_POWER_ACTIVE, 0)",
+                " - COALESCE(#5:AC_POWER_ACTIVE, COALESCE(#8:AC_POWER_ACTIVE, 0)",
+                " + COALESCE(#6:AC_POWER_ACTIVE, 0))",
+                " - COALESCE(#11:AC_POWER_ACTIVE, #12:AC_POWER_ACTIVE, 0)",
+                " - COALESCE(#13:AC_POWER_ACTIVE, COALESCE(#15:AC_POWER_ACTIVE, 0)",
+                " + COALESCE(#14:AC_POWER_ACTIVE, 0))",
+                " - COALESCE(#16:AC_POWER_ACTIVE, #17:AC_POWER_ACTIVE, 0)"
             )
         );
     }
@@ -806,7 +836,7 @@ mod tests {
                 lm.pv::<crate::metric::AcPowerActive>(None)
                     .unwrap()
                     .to_string(),
-                "METRIC_AC_POWER_ACTIVE::(COALESCE(#3, #5, 0.0))",
+                "COALESCE(#3:AC_POWER_ACTIVE, #5:AC_POWER_ACTIVE, 0)",
                 "{mode:?}"
             );
 
@@ -814,7 +844,7 @@ mod tests {
                 lm.component::<crate::metric::AcPowerActive>(4)
                     .unwrap()
                     .to_string(),
-                "METRIC_AC_POWER_ACTIVE::(None)",
+                "None",
                 "{mode:?}"
             );
         }

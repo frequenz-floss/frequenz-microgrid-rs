@@ -13,6 +13,7 @@ use chrono::{DateTime, Utc};
 use crate::{
     Error,
     Sample,
+    client::proto::common::metrics::Metric as MetricPb,
     logical_meter::logical_meter_actor::FormulaSink,
     quantity::Quantity, //
 };
@@ -21,6 +22,23 @@ use tokio::sync::broadcast;
 /// Capacity of the per-subscriber broadcast channel carrying a formula's
 /// samples.
 const FORMULA_STREAM_CHANNEL_CAPACITY: usize = 100;
+
+/// A component leaf of a formula expression: one metric of one component.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct Key {
+    /// The metric read from the component.
+    pub metric: MetricPb,
+    /// The component's id.
+    pub component_id: u64,
+}
+
+impl std::fmt::Display for Key {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let metric = self.metric.as_str_name();
+        let metric = metric.strip_prefix("METRIC_").unwrap_or(metric);
+        write!(f, "{}:{}", self.component_id, metric)
+    }
+}
 
 #[async_trait]
 pub trait FormulaSubscriber: std::fmt::Display + Sync + Send {

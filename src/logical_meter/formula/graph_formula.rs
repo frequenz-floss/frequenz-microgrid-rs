@@ -6,7 +6,7 @@
 
 use std::marker::PhantomData;
 
-use super::{FORMULA_STREAM_CHANNEL_CAPACITY, FormulaSubscriber, QuantitySink};
+use super::{FORMULA_STREAM_CHANNEL_CAPACITY, FormulaSubscriber, Key, QuantitySink};
 use crate::{
     Error, Sample, logical_meter::logical_meter_actor, metric::Metric, quantity::Quantity,
 };
@@ -14,19 +14,18 @@ use async_trait::async_trait;
 use frequenz_microgrid_formula_engine as engine;
 use tokio::sync::{broadcast, mpsc};
 
-/// A component-graph formula for metric `M`.
+/// A component-graph formula for metric `M`, with every component leaf
+/// tagged with the metric.
 #[derive(Clone)]
 pub struct GraphFormula<M: Metric> {
-    formula: frequenz_microgrid_component_graph::Formula,
-    /// `formula`, parsed for the actor.
-    engine_formula: engine::Formula<f32>,
+    engine_formula: engine::Formula<f32, Key>,
     instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
     phantom: PhantomData<fn() -> M>,
 }
 
 impl<M: Metric> std::fmt::Display for GraphFormula<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}::({})", M::METRIC.as_str_name(), self.formula)
+        self.engine_formula.fmt(f)
     }
 }
 
@@ -39,7 +38,6 @@ impl<Q: Quantity + 'static, M: Metric<QuantityType = Q>> FormulaSubscriber for G
         self.instructions_tx
             .send(logical_meter_actor::Instruction::SubscribeFormula {
                 engine_formula: self.engine_formula.clone(),
-                metric: M::METRIC,
                 sink: Box::new(QuantitySink { tx }),
             })
             .await
@@ -51,12 +49,10 @@ impl<Q: Quantity + 'static, M: Metric<QuantityType = Q>> FormulaSubscriber for G
 impl<M: Metric> GraphFormula<M> {
     /// Creates a formula that subscribes through the given actor channel.
     pub(crate) fn new(
-        formula: frequenz_microgrid_component_graph::Formula,
-        engine_formula: engine::Formula<f32>,
+        engine_formula: engine::Formula<f32, Key>,
         instructions_tx: mpsc::Sender<logical_meter_actor::Instruction>,
     ) -> Self {
         Self {
-            formula,
             engine_formula,
             instructions_tx,
             phantom: PhantomData,
