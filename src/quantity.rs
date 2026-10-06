@@ -3,9 +3,25 @@
 
 //! This module defines various physical quantities and their operations.
 
+/// Conversion between a quantity and its base-unit `f32`, used to move values
+/// between typed samples and the untyped formula engine.
+#[allow(dead_code)]
+pub(crate) trait BaseValue: Sized {
+    /// Builds the quantity from a value in its base unit.
+    fn from_base_value(value: f32) -> Self;
+}
+
+impl BaseValue for f32 {
+    fn from_base_value(value: f32) -> Self {
+        value
+    }
+}
+
 /// A trait for physical quantities that supports basic arithmetic operations.
+#[expect(private_bounds)]
 pub trait Quantity:
-    std::ops::Add<Output = Self>
+    BaseValue
+    + std::ops::Add<Output = Self>
     + std::ops::Sub<Output = Self>
     + std::ops::Mul<Percentage, Output = Self>
     + std::ops::Mul<f32, Output = Self>
@@ -307,6 +323,12 @@ macro_rules! qty_ctor {
         qty_ctor!{@impl_arith_ops $typename}
         qty_format!{$typename => {$($rest)*}}
 
+        impl super::BaseValue for $typename {
+            fn from_base_value(value: f32) -> Self {
+                Self { value }
+            }
+        }
+
         impl super::Quantity for $typename {
             const MIN: Self = Self { value: f32::MIN };
             const MAX: Self = Self { value: f32::MAX };
@@ -369,6 +391,17 @@ pub use percentage::Percentage;
 pub use power::Power;
 pub use reactive_power::ReactivePower;
 pub use voltage::Voltage;
+
+#[cfg(test)]
+mod tests {
+    use super::{BaseValue, Power};
+
+    #[test]
+    fn base_values_are_the_base_units() {
+        assert_eq!(Power::from_base_value(7.0), Power::from_watts(7.0));
+        assert_eq!(f32::from_base_value(7.0), 7.0);
+    }
+}
 
 #[cfg(test)]
 mod test_utils {
