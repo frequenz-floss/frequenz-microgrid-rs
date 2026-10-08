@@ -419,16 +419,27 @@ mod tests {
         let formula = lm.producer::<crate::metric::AcPowerActive>().unwrap();
         assert_eq!(
             formula.to_string(),
-            concat!(
-                "METRIC_AC_POWER_ACTIVE::(",
-                "MIN(COALESCE(#4, #3, 0.0), 0.0)",
-                " + MIN(COALESCE(#12, #11, 0.0), 0.0)",
-                ")"
-            )
+            "METRIC_AC_POWER_ACTIVE::(COALESCE(#4, #3, 0.0) + COALESCE(#12, #11, 0.0))"
         );
 
         let formula = lm.component::<crate::metric::AcCurrent>(10).unwrap();
         assert_eq!(formula.to_string(), "METRIC_AC_CURRENT::(#10)");
+    }
+
+    #[tokio::test]
+    async fn test_consumer_formula_is_not_clamped() {
+        let lm = new_logical_meter_handle(None).await;
+        let formula = lm.consumer::<crate::metric::AcPowerActive>().unwrap();
+        assert_eq!(
+            formula.to_string(),
+            concat!(
+                "METRIC_AC_POWER_ACTIVE::(#2 - COALESCE(#3, #4, 0.0)",
+                " - COALESCE(#5, COALESCE(#8, 0.0) + COALESCE(#6, 0.0))",
+                " - COALESCE(#11, #12, 0.0)",
+                " - COALESCE(#13, COALESCE(#15, 0.0) + COALESCE(#14, 0.0))",
+                " - COALESCE(#16, #17, 0.0))"
+            )
+        );
     }
 
     #[tokio::test(start_paused = true)]
