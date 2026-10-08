@@ -6,7 +6,7 @@
 //! data to subscribers.
 
 use chrono::{DateTime, Utc};
-use frequenz_microgrid_formula_engine::FormulaEngine;
+use frequenz_microgrid_formula_engine::{self as engine, Reading};
 use frequenz_resampling::ResamplingFunction;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -27,7 +27,7 @@ use super::config::LogicalMeterConfig;
 const FORMULA_STREAM_CHANNEL_CAPACITY: usize = 100;
 
 struct LogicalMeterFormula<Q: Quantity = f32> {
-    formula: FormulaEngine<f32>,
+    formula: engine::Formula<f32>,
     sender: broadcast::Sender<Sample<Q>>,
 }
 
@@ -206,9 +206,10 @@ impl Formulas {
         metric: Metric,
         response_tx: TypedFormulaResponseSender,
     ) -> Result<HashSet<u64>, Error> {
-        let formula_engine = FormulaEngine::try_new(&formula)
+        let formula_engine = formula
+            .parse::<engine::Formula<f32>>()
             .map_err(|e| Error::formula_engine_error(format!("Failed to parse formula: {e}")))?;
-        let components = formula_engine.components().clone();
+        let components = formula_engine.components();
         let formula_key = (formula, metric);
 
         match response_tx {
@@ -237,7 +238,7 @@ impl Formulas {
     fn insert_and_send<Q: Quantity>(
         map: &mut HashMap<(String, Metric), LogicalMeterFormula<Q>>,
         key: (String, Metric),
-        formula: FormulaEngine<f32>,
+        formula: engine::Formula<f32>,
         response_tx: FormulaStreamSender<Q>,
     ) -> Result<(), Error> {
         let (sender, receiver) = broadcast::channel(FORMULA_STREAM_CHANNEL_CAPACITY);
@@ -487,12 +488,13 @@ impl<C: Clock> LogicalMeterActor<C> {
     ) -> Result<(), Error> {
         let mut formulas_to_drop = vec![];
         for (formula_key, formula) in formulas.iter_mut() {
-            let result = formula
-                .formula
-                .calculate(resampled_metrics.entry(formula_key.1).or_default())
-                .map_err(|e| {
-                    Error::formula_engine_error(format!("Failed to evaluate formula: {e}"))
-                })?;
+            let values = resampled_metrics.entry(formula_key.1).or_default();
+            let result = match formula.formula.evaluate(values).map_err(|e| {
+                Error::formula_engine_error(format!("Failed to evaluate formula: {e}"))
+            })? {
+                Reading::Known(value) => value,
+                Reading::Unknown => None,
+            };
 
             if let Err(e) = formula
                 .sender
