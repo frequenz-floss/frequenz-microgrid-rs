@@ -12,6 +12,7 @@ use crate::{
     error::Error,
 };
 use frequenz_microgrid_component_graph::{self, ComponentGraph, ComponentGraphConfig};
+use frequenz_microgrid_formula_engine as engine;
 use std::collections::BTreeSet;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -181,7 +182,7 @@ impl LogicalMeterHandle {
     }
 
     /// Asks the graph for the formula selected by `M::FORMULA_KIND` and
-    /// `target`.
+    /// `target`, and parses it.
     fn formula<M: Metric>(&self, target: FormulaTarget) -> Result<Formula<M::QuantityType>, Error> {
         let name = target.name();
         let graph = &self.graph;
@@ -224,8 +225,18 @@ impl LogicalMeterHandle {
         let generated = generated.map_err(|e| {
             Error::component_graph_error(format!("Could not get {name} formula: {e}"))
         })?;
+        let engine_formula = generated
+            .to_string()
+            .parse::<engine::Formula<f32>>()
+            .map_err(|e| {
+                Error::formula_engine_error(format!(
+                    "Could not parse {name} formula for {}: {e}",
+                    M::str_name()
+                ))
+            })?;
         Ok(Formula::Subscriber(Box::new(GraphFormula::<M>::new(
             generated,
+            engine_formula,
             self.instructions_tx.clone(),
         ))))
     }
@@ -482,6 +493,43 @@ mod tests {
                 "{err}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_formula_the_engine_rejects() {
+        // With phantom loads, each metered PV branch adds about three
+        // operators to the consumer formula: 400 branches exceed the engine's
+        // limit.
+        let branches = (0..400)
+            .map(|i| {
+                MockComponent::meter(100 + i)
+                    .with_children(vec![MockComponent::pv_inverter(1000 + i)])
+            })
+            .collect();
+        let api_client = MockMicrogridApiClient::new(
+            MockComponent::grid(1)
+                .with_children(vec![MockComponent::meter(2).with_children(branches)]),
+        );
+        let clock = api_client.clock();
+        let lm = LogicalMeterHandle::try_new_with_clock(
+            MicrogridClientHandle::new_from_client(api_client),
+            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap())
+                .with_component_graph_config(
+                    ComponentGraphConfig::builder()
+                        .include_phantom_loads_in_consumer_formula(true)
+                        .build(),
+                ),
+            clock,
+        )
+        .await
+        .unwrap();
+
+        let Err(err) = lm.consumer::<crate::metric::AcPowerActive>() else {
+            panic!("expected the engine to reject the consumer formula");
+        };
+        assert_eq!(err.kind(), crate::ErrorKind::FormulaEngineError, "{err}");
+        assert!(err.to_string().contains("consumer"), "{err}");
+        assert!(err.to_string().contains("is deeper than"), "{err}");
     }
 
     #[tokio::test]

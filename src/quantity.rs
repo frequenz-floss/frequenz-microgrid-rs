@@ -5,7 +5,6 @@
 
 /// Conversion between a quantity and its base-unit `f32`, used to move values
 /// between typed samples and the untyped formula engine.
-#[allow(dead_code)]
 pub(crate) trait BaseValue: Sized {
     /// Builds the quantity from a value in its base unit.
     fn from_base_value(value: f32) -> Self;
