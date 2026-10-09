@@ -2,7 +2,6 @@
 // Copyright © 2025 Frequenz Energy-as-a-Service GmbH
 
 use crate::client::proto::common::metrics::Metric as MetricPb;
-use crate::logical_meter::formula::graph_formula::GraphFormula;
 use crate::logical_meter::formula::{Formula, Key};
 use crate::metric::{FormulaKind, Metric};
 use crate::{
@@ -232,10 +231,7 @@ impl LogicalMeterHandle {
                 M::str_name()
             ))
         })?;
-        Ok(Formula::Subscriber(Box::new(GraphFormula::<M>::new(
-            engine_formula,
-            self.instructions_tx.clone(),
-        ))))
+        Ok(Formula::new(engine_formula, self.instructions_tx.clone()))
     }
 
     /// Returns a reference to the component graph.
@@ -877,7 +873,119 @@ mod tests {
         }
     }
 
-    async fn fetch_samples<Q: Quantity>(formula: Formula<Q>, num_values: usize) -> Vec<Sample<Q>> {
+    #[tokio::test(start_paused = true)]
+    async fn test_composed_formula_tracks_its_operands() {
+        let lm = new_logical_meter_handle(None).await;
+        let grid = lm.grid::<crate::metric::AcPowerActive>().unwrap();
+        let doubled = grid.clone() + grid.clone();
+        let scaled = grid.clone() * 2.0;
+        let offset = grid.clone() + crate::quantity::Power::from_watts(1.0);
+        let capped = grid.clone().min(crate::quantity::Power::from_watts(6.0));
+        assert_eq!(
+            doubled.to_string(),
+            "#2:AC_POWER_ACTIVE + #2:AC_POWER_ACTIVE"
+        );
+        assert_eq!(scaled.to_string(), "#2:AC_POWER_ACTIVE * 2");
+        assert_eq!(capped.to_string(), "MIN(#2:AC_POWER_ACTIVE, 6)");
+
+        let (base, doubled, scaled, offset, capped) = tokio::join!(
+            fetch_samples(grid, 5),
+            fetch_samples(doubled, 5),
+            fetch_samples(scaled, 5),
+            fetch_samples(offset, 5),
+            fetch_samples(capped, 5),
+        );
+        for i in 0..5 {
+            let b = base[i].value().unwrap().as_watts();
+            assert_eq!(doubled[i].timestamp(), base[i].timestamp());
+            assert!((doubled[i].value().unwrap().as_watts() - 2.0 * b).abs() < 1e-3);
+            assert!((scaled[i].value().unwrap().as_watts() - 2.0 * b).abs() < 1e-3);
+            assert!((offset[i].value().unwrap().as_watts() - (b + 1.0)).abs() < 1e-3);
+            assert!((capped[i].value().unwrap().as_watts() - b.min(6.0)).abs() < 1e-3);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_avg_and_scalar_composition() {
+        let lm = new_logical_meter_handle(None).await;
+        let voltage = lm.battery::<crate::metric::AcVoltage>(None).unwrap();
+        let averaged = voltage.clone().avg(vec![voltage.clone()]) / 2.0
+            + crate::quantity::Voltage::from_volts(0.0);
+        // The engine's Display parenthesises an operand only where precedence
+        // requires it, so `(a / 2) + 0` renders flat.
+        let v = voltage.to_string();
+        assert!(v.starts_with("COALESCE(#"), "{v}");
+        assert_eq!(averaged.to_string(), format!("AVG({v}, {v}) / 2 + 0"));
+        let (base, averaged) = tokio::join!(fetch_samples(voltage, 4), fetch_samples(averaged, 4));
+        for i in 0..4 {
+            let b = base[i].value().unwrap().as_volts();
+            assert!((averaged[i].value().unwrap().as_volts() - b / 2.0).abs() < 1e-3);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mixed_metric_formula_display() {
+        let lm = new_logical_meter_handle(None).await;
+        let mixed = lm
+            .grid::<crate::metric::AcVoltage>()
+            .unwrap()
+            .coalesce(lm.grid::<crate::metric::AcVoltagePhase1N>().unwrap());
+        let shown = mixed.to_string();
+        assert!(
+            shown.contains(":AC_VOLTAGE,") || shown.contains(":AC_VOLTAGE)"),
+            "{shown}"
+        );
+        assert!(shown.contains(":AC_VOLTAGE_PHASE_1_N"), "{shown}");
+        assert_eq!(
+            mixed.engine_formula().components().len(),
+            2 * lm
+                .grid::<crate::metric::AcVoltage>()
+                .unwrap()
+                .engine_formula()
+                .components()
+                .len(),
+            "each component appears once per metric: {shown}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_formulas_from_different_meters_do_not_subscribe() {
+        let lm = new_logical_meter_handle(None).await;
+        let other = new_logical_meter_handle(None).await;
+        let grid = || lm.grid::<crate::metric::AcPowerActive>().unwrap();
+        let other_grid = || other.grid::<crate::metric::AcPowerActive>().unwrap();
+
+        let mixed = [
+            grid() + other_grid(),
+            grid().min(other_grid()),
+            grid().avg(vec![grid(), other_grid()]),
+            // A mixed formula stays mixed on either side of a later operator.
+            grid() * 2.0 + (grid() - other_grid()),
+            (grid() - other_grid()) + grid(),
+        ];
+        for formula in mixed {
+            let err = formula.subscribe().await.unwrap_err();
+            assert_eq!(
+                err.kind(),
+                crate::ErrorKind::FormulaEngineError,
+                "{formula}"
+            );
+        }
+
+        // Clones of one handle share its logical meter.
+        let clone = lm.clone();
+        let same = grid()
+            + clone
+                .grid::<crate::metric::AcPowerActive>()
+                .unwrap()
+                .max(crate::quantity::Power::from_watts(1.0));
+        assert!(same.subscribe().await.is_ok());
+    }
+
+    async fn fetch_samples<Q: Quantity + 'static>(
+        formula: Formula<Q>,
+        num_values: usize,
+    ) -> Vec<Sample<Q>> {
         let rx = formula.subscribe().await.unwrap();
 
         BroadcastStream::new(rx)
