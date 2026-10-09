@@ -63,6 +63,13 @@ impl MicrogridClientHandle {
         Self { instructions_tx }
     }
 
+    /// A handle whose client actor is gone, so every request fails.
+    #[cfg(test)]
+    pub(crate) fn disconnected() -> Self {
+        let (instructions_tx, _) = mpsc::channel(1);
+        Self { instructions_tx }
+    }
+
     /// Returns a telemetry stream from an electrical component with a given ID.
     ///
     /// When a connection to the API service is lost, reconnecting is handled

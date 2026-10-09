@@ -2,16 +2,17 @@
 // Copyright © 2025 Frequenz Energy-as-a-Service GmbH
 
 use crate::logical_meter::formula::Formula;
-use crate::logical_meter::formula::graph_formula_provider::GraphFormulaProvider;
+use crate::logical_meter::formula::graph_formula::GraphFormula;
+use crate::metric::{FormulaKind, Metric};
 use crate::{
     client::MicrogridClientHandle,
     client::proto::common::microgrid::electrical_components::{
         ElectricalComponent, ElectricalComponentConnection,
     },
     error::Error,
-    metric,
 };
 use frequenz_microgrid_component_graph::{self, ComponentGraph, ComponentGraphConfig};
+use frequenz_microgrid_formula_engine as engine;
 use std::collections::BTreeSet;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -23,6 +24,35 @@ use super::{LogicalMeterConfig, logical_meter_actor::LogicalMeterActor};
 pub struct LogicalMeterHandle {
     instructions_tx: mpsc::Sender<super::logical_meter_actor::Instruction>,
     graph: ComponentGraph<ElectricalComponent, ElectricalComponentConnection>,
+}
+
+/// The part of the microgrid a handle method builds a formula for.
+enum FormulaTarget {
+    Grid,
+    Consumer,
+    Producer,
+    Battery(Option<BTreeSet<u64>>),
+    Chp(Option<BTreeSet<u64>>),
+    Pv(Option<BTreeSet<u64>>),
+    EvCharger(Option<BTreeSet<u64>>),
+    SteamBoiler(Option<BTreeSet<u64>>),
+    Component(u64),
+}
+
+impl FormulaTarget {
+    fn name(&self) -> &'static str {
+        match self {
+            FormulaTarget::Grid => "grid",
+            FormulaTarget::Consumer => "consumer",
+            FormulaTarget::Producer => "producer",
+            FormulaTarget::Battery(_) => "battery",
+            FormulaTarget::Chp(_) => "chp",
+            FormulaTarget::Pv(_) => "pv",
+            FormulaTarget::EvCharger(_) => "ev_charger",
+            FormulaTarget::SteamBoiler(_) => "steam_boiler",
+            FormulaTarget::Component(_) => "component",
+        }
+    }
 }
 
 impl LogicalMeterHandle {
@@ -71,124 +101,144 @@ impl LogicalMeterHandle {
         })
     }
 
-    /// Returns a receiver that streams samples for the given `metric` at the grid
-    /// connection point.
-    pub fn grid<M: metric::Metric>(&self) -> Result<Formula<M::QuantityType>, Error> {
-        Ok(Formula::Subscriber(Box::new(M::FormulaType::grid(
-            &self.graph,
-            self.instructions_tx.clone(),
-        )?)))
+    /// Returns a formula for `metric` at the grid connection point.
+    pub fn grid<M: Metric>(&self) -> Result<Formula<M::QuantityType>, Error> {
+        self.formula::<M>(FormulaTarget::Grid)
     }
 
-    /// Returns a receiver that streams samples for the given `metric` for the
-    /// given battery IDs.
+    /// Returns a formula for `metric` over the given battery IDs.
     ///
     /// When `component_ids` is `None`, all batteries in the microgrid are used.
-    pub fn battery<M: metric::Metric>(
+    pub fn battery<M: Metric>(
         &self,
         component_ids: Option<BTreeSet<u64>>,
     ) -> Result<Formula<M::QuantityType>, Error> {
-        Ok(Formula::Subscriber(Box::new(M::FormulaType::battery(
-            &self.graph,
-            self.instructions_tx.clone(),
-            component_ids,
-        )?)))
+        self.formula::<M>(FormulaTarget::Battery(component_ids))
     }
 
-    /// Returns a receiver that streams samples for the given `metric` for the
-    /// given CHP IDs.
+    /// Returns a formula for `metric` over the given CHP IDs.
     ///
     /// When `component_ids` is `None`, all CHPs in the microgrid are used.
-    pub fn chp<M: metric::Metric>(
+    pub fn chp<M: Metric>(
         &self,
         component_ids: Option<BTreeSet<u64>>,
     ) -> Result<Formula<M::QuantityType>, Error> {
-        Ok(Formula::Subscriber(Box::new(M::FormulaType::chp(
-            &self.graph,
-            self.instructions_tx.clone(),
-            component_ids,
-        )?)))
+        self.formula::<M>(FormulaTarget::Chp(component_ids))
     }
 
-    /// Returns a receiver that streams samples for the given `metric` for the
-    /// given PV IDs.
+    /// Returns a formula for `metric` over the given PV IDs.
     ///
     /// When `component_ids` is `None`, all PVs in the microgrid are used.
-    pub fn pv<M: metric::Metric>(
+    pub fn pv<M: Metric>(
         &self,
         component_ids: Option<BTreeSet<u64>>,
     ) -> Result<Formula<M::QuantityType>, Error> {
-        Ok(Formula::Subscriber(Box::new(M::FormulaType::pv(
-            &self.graph,
-            self.instructions_tx.clone(),
-            component_ids,
-        )?)))
+        self.formula::<M>(FormulaTarget::Pv(component_ids))
     }
 
-    /// Returns a receiver that streams samples for the given `metric` for the
-    /// given EV charger IDs.
+    /// Returns a formula for `metric` over the given EV charger IDs.
     ///
     /// When `component_ids` is `None`, all EV chargers in the microgrid are
     /// used.
-    pub fn ev_charger<M: metric::Metric>(
+    pub fn ev_charger<M: Metric>(
         &self,
         component_ids: Option<BTreeSet<u64>>,
     ) -> Result<Formula<M::QuantityType>, Error> {
-        Ok(Formula::Subscriber(Box::new(M::FormulaType::ev_charger(
-            &self.graph,
-            self.instructions_tx.clone(),
-            component_ids,
-        )?)))
+        self.formula::<M>(FormulaTarget::EvCharger(component_ids))
     }
 
-    /// Returns a receiver that streams samples for the given `metric` for the
-    /// given steam boiler IDs.
+    /// Returns a formula for `metric` over the given steam boiler IDs.
     ///
     /// When `component_ids` is `None`, all steam boilers in the microgrid are
     /// used.
-    pub fn steam_boiler<M: metric::Metric>(
+    pub fn steam_boiler<M: Metric>(
         &self,
         component_ids: Option<BTreeSet<u64>>,
     ) -> Result<Formula<M::QuantityType>, Error> {
-        Ok(Formula::Subscriber(Box::new(M::FormulaType::steam_boiler(
-            &self.graph,
-            self.instructions_tx.clone(),
-            component_ids,
-        )?)))
+        self.formula::<M>(FormulaTarget::SteamBoiler(component_ids))
     }
 
-    /// Returns a receiver that streams samples for the given `metric` for the
-    /// logical `consumer` in the microgrid.
-    pub fn consumer<M: metric::Metric>(&self) -> Result<Formula<M::QuantityType>, Error> {
-        Ok(Formula::Subscriber(Box::new(M::FormulaType::consumer(
-            &self.graph,
-            self.instructions_tx.clone(),
-        )?)))
+    /// Returns a formula for `metric` of the logical `consumer` in the
+    /// microgrid.
+    pub fn consumer<M: Metric>(&self) -> Result<Formula<M::QuantityType>, Error> {
+        self.formula::<M>(FormulaTarget::Consumer)
     }
 
-    /// Returns a receiver that streams samples for the given `metric` for the
-    /// logical `producer` in the microgrid.
-    pub fn producer<M: metric::Metric>(&self) -> Result<Formula<M::QuantityType>, Error> {
-        Ok(Formula::Subscriber(Box::new(M::FormulaType::producer(
-            &self.graph,
-            self.instructions_tx.clone(),
-        )?)))
+    /// Returns a formula for `metric` of the logical `producer` in the
+    /// microgrid.
+    pub fn producer<M: Metric>(&self) -> Result<Formula<M::QuantityType>, Error> {
+        self.formula::<M>(FormulaTarget::Producer)
     }
 
-    /// Returns a receiver that streams samples for the given `metric` for the
-    /// given component ID.
+    /// Returns a formula for `metric` of the given component.
     ///
     /// For a component whose operational mode provides no telemetry
     /// (`Inactive` or `ControlOnly`), the formula has no reading.
-    pub fn component<M: metric::Metric>(
+    pub fn component<M: Metric>(
         &self,
         component_id: u64,
     ) -> Result<Formula<M::QuantityType>, Error> {
-        Ok(Formula::Subscriber(Box::new(M::FormulaType::component(
-            &self.graph,
+        self.formula::<M>(FormulaTarget::Component(component_id))
+    }
+
+    /// Asks the graph for the formula selected by `M::FORMULA_KIND` and
+    /// `target`, and parses it.
+    fn formula<M: Metric>(&self, target: FormulaTarget) -> Result<Formula<M::QuantityType>, Error> {
+        let name = target.name();
+        let graph = &self.graph;
+        let generated = match (M::FORMULA_KIND, target) {
+            (FormulaKind::Aggregation, FormulaTarget::Grid) => graph.grid_formula(),
+            (FormulaKind::Aggregation, FormulaTarget::Consumer) => graph.consumer_formula(),
+            (FormulaKind::Aggregation, FormulaTarget::Producer) => graph.producer_formula(),
+            (FormulaKind::Aggregation, FormulaTarget::Battery(ids)) => graph.battery_formula(ids),
+            (FormulaKind::Aggregation, FormulaTarget::Chp(ids)) => graph.chp_formula(ids),
+            (FormulaKind::Aggregation, FormulaTarget::Pv(ids)) => graph.pv_formula(ids),
+            (FormulaKind::Aggregation, FormulaTarget::EvCharger(ids)) => {
+                graph.ev_charger_formula(ids)
+            }
+            (FormulaKind::Aggregation, FormulaTarget::SteamBoiler(ids)) => {
+                graph.steam_boiler_formula(ids)
+            }
+            (FormulaKind::Aggregation, FormulaTarget::Component(id)) => graph.component_formula(id),
+            (FormulaKind::Coalesce, FormulaTarget::Grid) => graph.grid_coalesce_formula(),
+            (FormulaKind::Coalesce, FormulaTarget::Battery(ids)) => {
+                graph.battery_ac_coalesce_formula(ids)
+            }
+            (FormulaKind::Coalesce, FormulaTarget::Pv(ids)) => graph.pv_ac_coalesce_formula(ids),
+            (FormulaKind::Coalesce, FormulaTarget::Component(id)) => {
+                graph.component_ac_coalesce_formula(id)
+            }
+            (
+                FormulaKind::Coalesce,
+                FormulaTarget::Consumer
+                | FormulaTarget::Producer
+                | FormulaTarget::Chp(_)
+                | FormulaTarget::EvCharger(_)
+                | FormulaTarget::SteamBoiler(_),
+            ) => {
+                return Err(Error::component_graph_error(format!(
+                    "The component graph does not support {name} formula generation for {}.",
+                    M::str_name()
+                )));
+            }
+        };
+        let generated = generated.map_err(|e| {
+            Error::component_graph_error(format!("Could not get {name} formula: {e}"))
+        })?;
+        let engine_formula = generated
+            .to_string()
+            .parse::<engine::Formula<f32>>()
+            .map_err(|e| {
+                Error::formula_engine_error(format!(
+                    "Could not parse {name} formula for {}: {e}",
+                    M::str_name()
+                ))
+            })?;
+        Ok(Formula::Subscriber(Box::new(GraphFormula::<M>::new(
+            generated,
+            engine_formula,
             self.instructions_tx.clone(),
-            component_id,
-        )?)))
+        ))))
     }
 
     /// Returns a reference to the component graph.
@@ -377,26 +427,10 @@ mod tests {
         );
 
         // 16 is the steam boiler's meter, not a steam boiler.
-        let err = lm
-            .steam_boiler::<crate::metric::AcPowerActive>(Some([16].into()))
-            .err()
-            .expect("a non-steam-boiler ID must be rejected");
-        assert!(
-            err.to_string().contains("is not a steam boiler"),
-            "unexpected error: {err}"
-        );
-
-        // Only the aggregation path exists for steam boilers (as for CHP), so a
-        // coalesce metric is unsupported.
-        let err = lm
-            .steam_boiler::<crate::metric::AcVoltage>(None)
-            .err()
-            .expect("coalesce metrics are unsupported for steam boilers");
-        assert!(
-            err.to_string()
-                .contains("does not support steam_boiler formula generation"),
-            "unexpected error: {err}"
-        );
+        let Err(err) = lm.steam_boiler::<crate::metric::AcPowerActive>(Some([16].into())) else {
+            panic!("a non-steam-boiler ID must be rejected");
+        };
+        assert!(err.to_string().contains("is not a steam boiler"), "{err}");
 
         let formula = lm.consumer::<crate::metric::AcCurrent>().unwrap();
         assert_eq!(
@@ -419,16 +453,99 @@ mod tests {
         let formula = lm.producer::<crate::metric::AcPowerActive>().unwrap();
         assert_eq!(
             formula.to_string(),
-            concat!(
-                "METRIC_AC_POWER_ACTIVE::(",
-                "MIN(COALESCE(#4, #3, 0.0), 0.0)",
-                " + MIN(COALESCE(#12, #11, 0.0), 0.0)",
-                ")"
-            )
+            "METRIC_AC_POWER_ACTIVE::(COALESCE(#4, #3, 0.0) + COALESCE(#12, #11, 0.0))"
         );
 
         let formula = lm.component::<crate::metric::AcCurrent>(10).unwrap();
         assert_eq!(formula.to_string(), "METRIC_AC_CURRENT::(#10)");
+
+        let formula = lm.grid::<crate::metric::AcVoltage>().unwrap();
+        assert_eq!(formula.to_string(), "METRIC_AC_VOLTAGE::(#2)");
+
+        let formula = lm.pv::<crate::metric::AcVoltage>(None).unwrap();
+        assert_eq!(formula.to_string(), "METRIC_AC_VOLTAGE::(COALESCE(#3, #4))");
+
+        let formula = lm.component::<crate::metric::AcFrequency>(10).unwrap();
+        assert_eq!(formula.to_string(), "METRIC_AC_FREQUENCY::(#10)");
+
+        // The coalesce kind is only defined for grid, battery, pv and
+        // component; the other categories return an error.
+        for (name, err) in [
+            ("consumer", lm.consumer::<crate::metric::AcVoltage>().err()),
+            (
+                "producer",
+                lm.producer::<crate::metric::AcFrequency>().err(),
+            ),
+            ("chp", lm.chp::<crate::metric::AcVoltage>(None).err()),
+            (
+                "ev_charger",
+                lm.ev_charger::<crate::metric::AcFrequency>(None).err(),
+            ),
+            (
+                "steam_boiler",
+                lm.steam_boiler::<crate::metric::AcVoltage>(None).err(),
+            ),
+        ] {
+            let err = err.unwrap_or_else(|| panic!("expected no {name} coalesce formula"));
+            assert!(
+                err.to_string()
+                    .contains(&format!("does not support {name} formula generation")),
+                "{err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_formula_the_engine_rejects() {
+        // With phantom loads, each metered PV branch adds about three
+        // operators to the consumer formula: 400 branches exceed the engine's
+        // limit.
+        let branches = (0..400)
+            .map(|i| {
+                MockComponent::meter(100 + i)
+                    .with_children(vec![MockComponent::pv_inverter(1000 + i)])
+            })
+            .collect();
+        let api_client = MockMicrogridApiClient::new(
+            MockComponent::grid(1)
+                .with_children(vec![MockComponent::meter(2).with_children(branches)]),
+        );
+        let clock = api_client.clock();
+        let lm = LogicalMeterHandle::try_new_with_clock(
+            MicrogridClientHandle::new_from_client(api_client),
+            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap())
+                .with_component_graph_config(
+                    ComponentGraphConfig::builder()
+                        .include_phantom_loads_in_consumer_formula(true)
+                        .build(),
+                ),
+            clock,
+        )
+        .await
+        .unwrap();
+
+        let Err(err) = lm.consumer::<crate::metric::AcPowerActive>() else {
+            panic!("expected the engine to reject the consumer formula");
+        };
+        assert_eq!(err.kind(), crate::ErrorKind::FormulaEngineError, "{err}");
+        assert!(err.to_string().contains("consumer"), "{err}");
+        assert!(err.to_string().contains("is deeper than"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_consumer_formula_is_not_clamped() {
+        let lm = new_logical_meter_handle(None).await;
+        let formula = lm.consumer::<crate::metric::AcPowerActive>().unwrap();
+        assert_eq!(
+            formula.to_string(),
+            concat!(
+                "METRIC_AC_POWER_ACTIVE::(#2 - COALESCE(#3, #4, 0.0)",
+                " - COALESCE(#5, COALESCE(#8, 0.0) + COALESCE(#6, 0.0))",
+                " - COALESCE(#11, #12, 0.0)",
+                " - COALESCE(#13, COALESCE(#15, 0.0) + COALESCE(#14, 0.0))",
+                " - COALESCE(#16, #17, 0.0))"
+            )
+        );
     }
 
     #[tokio::test(start_paused = true)]
