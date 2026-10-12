@@ -58,6 +58,18 @@ cargo add --dev frequenz-microgrid --features test-utils
 - `MicrogridClientHandle`: cloneable low-level gRPC handle with per-stream automatic reconnect.
 - Typed quantities — `Power`, `Current`, `Voltage`, `ReactivePower`, `Energy`, `Frequency`, `Percentage` — with unit conversions explicit at every API surface.
 
+Formulas compose without subscribing. `+`, `-`, `* f32`, `/ f32`, `* Percentage`, `coalesce`, `min`, `max` and `avg` build one expression. The logical meter evaluates it once per resampling tick, so all operands, of any metric, are read from the same tick's resampled values.
+
+```rust , ignore
+use frequenz_microgrid::{metric, quantity::Power};
+
+let logical_meter = microgrid.logical_meter();
+let net = logical_meter.grid::<metric::AcPowerActive>()?
+    - logical_meter.pv::<metric::AcPowerActive>(None)?
+    + Power::from_kilowatts(100.0);
+let mut rx = net.subscribe().await?;
+```
+
 See the [API documentation](https://docs.rs/frequenz-microgrid) for the full surface.
 
 ## Configuring the underlying graph

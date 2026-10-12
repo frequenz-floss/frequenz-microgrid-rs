@@ -2,13 +2,25 @@
 
 ## Summary
 
-<!-- Here goes a general summary of what this release is about -->
+The logical meter now evaluates formulas once per resampling tick, against one snapshot of component data. Composed formulas no longer subscribe to each operand separately.
 
 ## Upgrading
 
+- `Formula<Q>` is now a struct with one type parameter instead of the `Formula<QOut, QIn1, QIn2>` enum.
+  - The `FormulaSubscriber` trait is gone: `subscribe()` is a method on `Formula`, so remove `use frequenz_microgrid::FormulaSubscriber`. Use `Formula<Q>` where you used `FormulaSubscriber` bounds or trait objects. A type that implemented `FormulaSubscriber` can no longer be used in a formula: subscribe to it on its own and combine the streams yourself.
+  - The enum variants are gone, `Formula::Subscriber`, `Formula::Multiply` and `Formula::Divide` included. Build formulas with the operators and methods instead: a formula can be multiplied or divided by an `f32`, or multiplied by a `Percentage`.
+  - `coalesce`, `min`, `max` and `avg` no longer return `Result`: drop the `?`.
+- `FormulaOperand<Q>`, the operand of `+`, `-`, `coalesce`, `min`, `max` and `avg`, is now public. It holds a formula or a constant of the same quantity.
+  - An external `broadcast::Receiver` can no longer be used as an operand. Subscribe to the formula and combine the streams yourself.
+  - `avg` takes `Vec<impl Into<FormulaOperand<Q>>>`, so an empty list needs its type spelled out, e.g. `Vec::<Formula<Power>>::new()`.
+- A formula that combines formulas from different logical meters can still be built, but its `subscribe()` now fails with `ErrorKind::FormulaEngineError`. Each `Microgrid::try_new` and each `LogicalMeterHandle::try_new` call creates its own logical meter. Clones of a handle share it, and so does a `Microgrid` built from that handle with `new_from_handles`. Subscribe to each formula on its own and combine the streams yourself.
 - `Metric::FormulaType` is removed. No public API returned it; use the `Formula<M::QuantityType>` that the `LogicalMeterHandle` methods return.
+- `Formula`'s `Display` output changed.
+  - The `METRIC_X::(...)` wrapper around each formula from the component graph is gone, and every component carries its metric instead, e.g. `#2:AC_POWER_ACTIVE`.
+  - Parentheses appear only where precedence or left associativity needs them.
+  - Constants render as plain numbers in the quantity's base unit: `5 W` is now `5`, `Power::from_kilowatts(100.0)` is `100000`, and `0.0` is `0`.
 - `ErrorKind::DroppedUnusedFormulas` is removed. No public API returned it, so remove any match arm or comparison on it.
-- In a formula from a `LogicalMeterHandle` method, a NaN or infinite component value or intermediate result is now treated as missing data: `COALESCE` moves past it to its next operand, and `+`, `-`, `MIN` and `MAX` give `None`.
+- A NaN or infinite component value, constant or intermediate result is now treated as missing data. `COALESCE` moves past it to its next operand, `AVG` skips it, and the other operators give `None`.
 - A component-graph formula with more than about 1000 `+` and `-` operators is now rejected: the `LogicalMeterHandle` method that builds it returns `ErrorKind::FormulaEngineError`. This can happen at large sites, for example:
   - for the consumer formula with phantom loads included, at a few hundred metered branches;
   - for a battery or PV formula over a meter with more than about 510 inverters.
@@ -20,7 +32,9 @@
 
 ## New Features
 
-<!-- Here goes the main new features and examples or instructions on how to use them -->
+- All operands of a composed formula, including operands of different metrics, are evaluated against the same tick's snapshot instead of being lined up by timestamp.
+- `Formula<Q> * Percentage` scales a formula by a percentage.
+- `Formula<Q>` implements `Clone`, and `avg` accepts constants as well as formulas.
 
 ## Bug Fixes
 

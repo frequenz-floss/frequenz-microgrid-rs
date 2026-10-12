@@ -29,7 +29,7 @@ mod sample;
 pub use sample::Sample;
 
 mod logical_meter;
-pub use logical_meter::{Formula, FormulaSubscriber, LogicalMeterConfig, LogicalMeterHandle};
+pub use logical_meter::{Formula, FormulaOperand, LogicalMeterConfig, LogicalMeterHandle};
 
 // Re-exported so callers can build the config accepted by
 // [`LogicalMeterConfig::with_component_graph_config`] without depending on the
