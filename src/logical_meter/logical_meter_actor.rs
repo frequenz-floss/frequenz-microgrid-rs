@@ -69,8 +69,9 @@ type SubscribeRequest = BoxFuture<
 >;
 
 /// Reads a tick's resampled values and records every key read. A key that is
-/// not in the snapshot is unknown: a key with no subscription, and every key on
-/// the first tick after a wall-clock jump, whose snapshot is empty.
+/// not in the snapshot is unknown: a key with no subscription or a
+/// [`Feed::Pending`] one, and every key on the first tick after a wall-clock
+/// jump, whose snapshot is empty.
 struct RecordingSource<'a> {
     snapshot: &'a HashMap<Key, Option<f32>>,
     reads: &'a mut HashSet<Key>,
@@ -278,6 +279,10 @@ impl<C: Clock> LogicalMeterActor<C> {
 
     /// Resamples every subscribed component metric and returns this tick's
     /// values by key.
+    ///
+    /// A [`Feed::Pending`] subscription is left out of the snapshot, so its key
+    /// reads as [`Reading::Unknown`]. Its resampler is still advanced: one that
+    /// falls behind returns several values on its next call.
     fn resample(
         &self,
         subscriptions: &mut HashMap<Key, ComponentSubscription>,
@@ -296,7 +301,9 @@ impl<C: Clock> LogicalMeterActor<C> {
                     resampled.len()
                 )));
             }
-            snapshot.insert(*key, resampled[0].clone().value());
+            if matches!(subscription.feed, Feed::Live(_)) {
+                snapshot.insert(*key, resampled[0].clone().value());
+            }
         }
         Ok(snapshot)
     }
@@ -815,6 +822,61 @@ mod tests {
             subscribe_requests.is_empty(),
             "no subscription should start for an already-resampled key"
         );
+    }
+
+    #[tokio::test]
+    async fn test_pending_subscription_reads_as_unknown() {
+        let mut actor = bare_actor();
+        let start = actor.resampler_ts - actor.config.resampling_interval;
+        let pending_key = active_power_key(2);
+        let attached_key = active_power_key(3);
+        let (_tx, receiver) = broadcast::channel(1);
+        let mut subscriptions = HashMap::from([
+            // The pending key's subscription is still in flight.
+            (
+                pending_key,
+                subscription(&actor, pending_key, start, Feed::Pending),
+            ),
+            (
+                attached_key,
+                subscription(&actor, attached_key, start, Feed::Live(receiver)),
+            ),
+        ]);
+
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+
+        assert_eq!(
+            snapshot.keys().copied().collect::<HashSet<_>>(),
+            HashSet::from([attached_key]),
+            "a pending subscription must stay out of the snapshot so it reads unknown",
+        );
+
+        let (sink, recorded) = recording_sink();
+        let mut formulas = HashMap::from([(
+            "COALESCE(#2, #3)".to_string(),
+            subscribed_formula("COALESCE(#2, #3)", vec![sink]),
+        )]);
+
+        let used = actor.evaluate_formulas(&snapshot, &mut formulas);
+
+        assert_eq!(
+            *recorded.lock().unwrap(),
+            vec![(actor.resampler_ts, None)],
+            "an unknown primary makes the whole coalesce unknown, sent as None",
+        );
+        assert_eq!(
+            used,
+            HashSet::from([pending_key]),
+            "COALESCE stops at the unknown key and demands nothing beyond it",
+        );
+
+        // The pending subscription's resampler kept advancing, so the first
+        // resample after its receiver attaches yields exactly one value for it.
+        let (_tx, receiver) = broadcast::channel(1);
+        subscriptions.get_mut(&pending_key).unwrap().feed = Feed::Live(receiver);
+        actor.resampler_ts += actor.config.resampling_interval;
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        assert!(snapshot.contains_key(&pending_key));
     }
 
     #[tokio::test]
