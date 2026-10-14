@@ -59,14 +59,16 @@ type SubscribeRequest = BoxFuture<
     ),
 >;
 
-/// Reads a tick's resampled values; a key that is not in the snapshot is
-/// unknown.
-struct SnapshotSource<'a> {
+/// Reads a tick's resampled values and records every key read. A key that is
+/// not in the snapshot, because it has no subscription, is unknown.
+struct RecordingSource<'a> {
     snapshot: &'a HashMap<Key, Option<f32>>,
+    reads: &'a mut HashSet<Key>,
 }
 
-impl ValueSource<f32, Key> for SnapshotSource<'_> {
+impl ValueSource<f32, Key> for RecordingSource<'_> {
     fn read(&mut self, key: &Key) -> Reading<f32> {
+        self.reads.insert(*key);
         match self.snapshot.get(key) {
             Some(value) => Reading::Known(*value),
             None => Reading::Unknown,
@@ -106,6 +108,11 @@ pub(super) struct LogicalMeterActor<C: Clock> {
     config: LogicalMeterConfig,
     resampler_ts: DateTime<Utc>,
     resampler_timer: WallClockTimer<C>,
+    /// The snapshot the formulas were last evaluated against. A new
+    /// subscriber's expression is evaluated against it to find the components
+    /// it reads. A tick whose resampling fails leaves the previous snapshot in
+    /// place.
+    last_snapshot: HashMap<Key, Option<f32>>,
 }
 
 impl<C: Clock> LogicalMeterActor<C> {
@@ -141,6 +148,7 @@ impl<C: Clock> LogicalMeterActor<C> {
             config,
             resampler_ts,
             resampler_timer: timer,
+            last_snapshot: HashMap::new(),
         })
     }
 
@@ -184,8 +192,13 @@ impl<C: Clock> LogicalMeterActor<C> {
                             continue;
                         }
                     };
-                    self.evaluate_formulas(&snapshot, &mut formulas);
-                    Self::drop_unused_resamplers(&formulas, &mut subscriptions);
+                    let read_keys = self.evaluate_formulas(&snapshot, &mut formulas);
+                    self.last_snapshot = snapshot;
+                    self.reconcile_subscriptions(
+                        &read_keys,
+                        &mut subscriptions,
+                        &mut subscribe_requests,
+                    );
                 }
                 Some((key, resyncs_when_sent, result)) = subscribe_requests.next(),
                     if !subscribe_requests.is_empty() => {
@@ -284,20 +297,23 @@ impl<C: Clock> LogicalMeterActor<C> {
         Ok(snapshot)
     }
 
-    /// Evaluates every formula against `snapshot` and sends the results.
-    /// Sinks without receivers are dropped, and entries without sinks with
-    /// them.
+    /// Evaluates every formula against `snapshot` and sends the results. Sinks
+    /// without receivers are dropped, and formulas without sinks with them.
+    /// Returns the union of the keys the surviving formulas read.
     fn evaluate_formulas(
         &self,
         snapshot: &HashMap<Key, Option<f32>>,
         formulas: &mut HashMap<String, SubscribedFormula>,
-    ) {
+    ) -> HashSet<Key> {
         let timestamp = self.resampler_ts;
+        let mut read_keys = HashSet::new();
+        let mut formula_reads = HashSet::new();
         formulas.retain(|rendered, formula| {
-            let value = match formula
-                .engine_formula
-                .evaluate(&mut SnapshotSource { snapshot })
-            {
+            formula_reads.clear();
+            let value = match formula.engine_formula.evaluate(&mut RecordingSource {
+                snapshot,
+                reads: &mut formula_reads,
+            }) {
                 Ok(Reading::Known(value)) => value,
                 Ok(Reading::Unknown) => None,
                 Err(err) => {
@@ -308,29 +324,32 @@ impl<C: Clock> LogicalMeterActor<C> {
             formula.sinks.retain(|sink| sink.send(timestamp, value));
             if formula.sinks.is_empty() {
                 tracing::debug!("Dropping formula without subscribers: {rendered}");
+                return false;
             }
-            !formula.sinks.is_empty()
+            read_keys.extend(formula_reads.drain());
+            true
         });
+        read_keys
     }
 
-    /// Drops subscriptions no remaining formula references.
+    /// Starts subscriptions for keys that were read but have no subscription,
+    /// and drops attached subscriptions that were not read.
     ///
     /// A pending subscription is never dropped, so at most one subscribe
     /// request is in flight per key.
-    fn drop_unused_resamplers(
-        formulas: &HashMap<String, SubscribedFormula>,
+    fn reconcile_subscriptions(
+        &self,
+        read_keys: &HashSet<Key>,
         subscriptions: &mut HashMap<Key, Option<ResampledStream>>,
+        subscribe_requests: &mut FuturesUnordered<SubscribeRequest>,
     ) {
-        let referenced: HashSet<Key> = formulas
-            .values()
-            .flat_map(|formula| formula.engine_formula.components())
-            .collect();
+        self.start_missing_subscriptions(read_keys, subscriptions, subscribe_requests);
         subscriptions.retain(|key, stream| {
-            let keep = referenced.contains(key) || stream.is_none();
-            if !keep {
-                tracing::debug!("Dropping resampler for component {key}");
+            if read_keys.contains(key) || stream.is_none() {
+                return true;
             }
-            keep
+            tracing::debug!("Dropping subscription of unread component {key}");
+            false
         });
     }
 
@@ -398,8 +417,10 @@ impl<C: Clock> LogicalMeterActor<C> {
 
     /// Registers a subscriber for `engine_formula`, creating the formula on
     /// first sight of the expression and pushing the sink onto it otherwise.
-    /// Subscribes to any of its components not subscribed yet, without waiting
-    /// for the subscriptions to complete.
+    ///
+    /// For every new subscriber, the expression is evaluated against the last
+    /// snapshot only to find the components it reads; any not yet subscribed
+    /// are subscribed at once. Nothing is sent to the sinks.
     fn handle_subscribe_formula(
         &self,
         engine_formula: engine::Formula<f32, Key>,
@@ -415,11 +436,17 @@ impl<C: Clock> LogicalMeterActor<C> {
                 sinks: Vec::new(),
             });
         formula.sinks.push(sink);
-        self.start_missing_subscriptions(
-            &formula.engine_formula.components(),
-            subscriptions,
-            subscribe_requests,
-        );
+        let mut reads = HashSet::new();
+        if let Err(err) = formula.engine_formula.evaluate(&mut RecordingSource {
+            snapshot: &self.last_snapshot,
+            reads: &mut reads,
+        }) {
+            tracing::warn!(
+                "Evaluating formula {} against the last snapshot failed: {err}",
+                formula.engine_formula
+            );
+        }
+        self.start_missing_subscriptions(&reads, subscriptions, subscribe_requests);
     }
 
     /// Rebuilds every attached stream's `frequenz_resampling::Resampler` with
@@ -493,12 +520,16 @@ impl<C: Clock> LogicalMeterActor<C> {
 mod tests {
     use super::*;
     use chrono::TimeDelta;
+    use std::collections::BTreeSet;
     use std::sync::{Arc, Mutex};
     use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 
     use crate::{
         LogicalMeterConfig, LogicalMeterHandle, MicrogridClientHandle,
-        client::test_utils::{MockComponent, MockMicrogridApiClient, TokioSyncedClock},
+        client::test_utils::{
+            MockComponent, MockMicrogridApiClient, OpenStreams, TokioSyncedClock,
+            wait_for_open_streams,
+        },
         logical_meter::formula::Formula,
         quantity::{Frequency, Power, Quantity},
     };
@@ -668,9 +699,10 @@ mod tests {
         )]);
         let snapshot = HashMap::from([(active_power_key(2), Some(1.0)), (voltage, Some(230.0))]);
 
-        actor.evaluate_formulas(&snapshot, &mut formulas);
+        let read_keys = actor.evaluate_formulas(&snapshot, &mut formulas);
 
         assert_eq!(recorded.lock().unwrap()[0].1, Some(231.0));
+        assert_eq!(read_keys, HashSet::from([active_power_key(2), voltage]));
     }
 
     #[tokio::test]
@@ -681,7 +713,7 @@ mod tests {
             subscribed_formula("#2", vec![Box::new(DeadSink)]),
         )]);
 
-        actor.evaluate_formulas(
+        let read_keys = actor.evaluate_formulas(
             &HashMap::from([(active_power_key(2), Some(1.0))]),
             &mut formulas,
         );
@@ -690,21 +722,18 @@ mod tests {
             formulas.is_empty(),
             "the formula should go with its last sink"
         );
+        assert!(
+            read_keys.is_empty(),
+            "a dropped formula's reads must not be returned"
+        );
     }
 
     #[tokio::test]
-    async fn test_drop_unused_resamplers_keeps_only_referenced_keys() {
+    async fn test_reconcile_subscriptions_drops_unread_keys() {
         let actor = bare_actor();
         let mut subscriptions = HashMap::new();
-        // Component 2's voltage is not referenced: only its active power is.
-        for key in [
-            active_power_key(2),
-            active_power_key(3),
-            Key {
-                metric: Metric::AcVoltage,
-                component_id: 2,
-            },
-        ] {
+        for component_id in [2, 3] {
+            let key = active_power_key(component_id);
             let (_tx, receiver) = broadcast::channel(1);
             subscriptions.insert(
                 key,
@@ -714,47 +743,68 @@ mod tests {
         // Component 4's subscribe request is still in flight.
         let pending_key = active_power_key(4);
         subscriptions.insert(pending_key, None);
-        let formulas = HashMap::from([(
-            "#2".to_string(),
-            subscribed_formula("#2", vec![Box::new(DeadSink)]),
-        )]);
+        let read_keys = HashSet::from([active_power_key(2)]);
+        let mut subscribe_requests = FuturesUnordered::new();
 
-        LogicalMeterActor::<TokioSyncedClock>::drop_unused_resamplers(
-            &formulas,
-            &mut subscriptions,
-        );
+        actor.reconcile_subscriptions(&read_keys, &mut subscriptions, &mut subscribe_requests);
 
         assert_eq!(subscriptions.len(), 2);
         assert!(subscriptions.contains_key(&active_power_key(2)));
         // A pending subscription is never dropped.
         assert!(subscriptions[&pending_key].is_none());
+        assert!(
+            subscribe_requests.is_empty(),
+            "no subscription should start for an already-subscribed key"
+        );
     }
 
     #[tokio::test]
-    async fn test_handle_subscribe_formula_does_not_wait_for_the_subscriptions() {
+    async fn test_reconcile_subscriptions_starts_missing_keys() {
         let actor = bare_actor();
-        let mut formulas = HashMap::new();
         let mut subscriptions = HashMap::new();
+        let mut subscribe_requests = FuturesUnordered::new();
+        let read_keys = HashSet::from([active_power_key(2)]);
+
+        actor.reconcile_subscriptions(&read_keys, &mut subscriptions, &mut subscribe_requests);
+
+        assert_eq!(subscriptions.len(), 1);
+        let subscription = &subscriptions[&active_power_key(2)];
+        assert!(
+            subscription.is_none(),
+            "the receiver attaches only once the subscription completes"
+        );
+        assert_eq!(subscribe_requests.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_subscribe_formula_subscribes_from_the_last_snapshot() {
+        let mut actor = bare_actor();
+        let primary = active_power_key(2);
+        let fallback = active_power_key(3);
+        let (_tx, receiver) = broadcast::channel(1);
+        let mut subscriptions = HashMap::from([(
+            primary,
+            attached_subscription(&actor, primary, receiver, actor.resampler_ts),
+        )]);
+        // The last tick found the primary missing.
+        actor.last_snapshot = HashMap::from([(primary, None)]);
+        let mut formulas = HashMap::new();
         let mut subscribe_requests = FuturesUnordered::new();
         let (sink, _) = recording_sink();
 
         actor.handle_subscribe_formula(
-            active_power_formula("#2 + #3"),
+            active_power_formula("COALESCE(#2, #3)"),
             sink,
             &mut formulas,
             &mut subscriptions,
             &mut subscribe_requests,
         );
 
-        assert_eq!(formulas.len(), 1);
-        assert_eq!(subscriptions.len(), 2);
         assert!(
-            subscriptions
-                .values()
-                .all(|subscription| subscription.is_none()),
-            "the receiver attaches only once the subscription completes"
+            subscriptions.get(&fallback).is_some_and(|s| s.is_none()),
+            "the fallback must be subscribed at once, not on the next tick"
         );
-        assert_eq!(subscribe_requests.len(), 2);
+        assert_eq!(subscribe_requests.len(), 1);
     }
 
     #[tokio::test]
@@ -772,13 +822,9 @@ mod tests {
         );
         assert!(subscriptions[&key].is_none());
 
-        let mut formulas = HashMap::new();
         let mut subscribe_requests = FuturesUnordered::new();
-        let (sink, _) = recording_sink();
-        actor.handle_subscribe_formula(
-            active_power_formula("#2"),
-            sink,
-            &mut formulas,
+        actor.reconcile_subscriptions(
+            &HashSet::from([key]),
             &mut subscriptions,
             &mut subscribe_requests,
         );
@@ -851,17 +897,30 @@ mod tests {
         config: LogicalMeterConfig,
         clock: TokioSyncedClock,
     ) -> LogicalMeterHandle {
-        let api_client = MockMicrogridApiClient::new_with_clock(
+        handle_for(
             MockComponent::grid(1).with_children(vec![meter]),
-            clock.clone(),
-        );
-        LogicalMeterHandle::try_new_with_clock(
+            config,
+            clock,
+        )
+        .await
+        .0
+    }
+
+    async fn handle_for(
+        root: MockComponent,
+        config: LogicalMeterConfig,
+        clock: TokioSyncedClock,
+    ) -> (LogicalMeterHandle, Arc<Mutex<OpenStreams>>) {
+        let api_client = MockMicrogridApiClient::new_with_clock(root, clock.clone());
+        let open = api_client.open_telemetry_streams();
+        let lm = LogicalMeterHandle::try_new_with_clock(
             MicrogridClientHandle::new_from_client(api_client),
             config,
             clock,
         )
         .await
-        .unwrap()
+        .unwrap();
+        (lm, open)
     }
 
     // Pins the upstream contract that `rebuild_resamplers_after_jump`
@@ -1152,5 +1211,98 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_actor_recovers_from_whole_machine_backward_ntp_jump() {
         run_ntp_jump_recovery(-TimeDelta::try_seconds(30).unwrap()).await;
+    }
+
+    /// `grid(1) -> meter(2) -> meter(3) -> pv_inverter(4)`: the PV formula is
+    /// `COALESCE(#4, #3, 0)`, so the inverter is the primary and the meter the
+    /// fallback. Meter 3 sends power; `configure_inverter` sets up inverter 4.
+    fn pv_chain(configure_inverter: impl FnOnce(MockComponent) -> MockComponent) -> MockComponent {
+        let inverter = configure_inverter(MockComponent::pv_inverter(4));
+        let meter = MockComponent::meter(3).with_power(vec![1.0; 400]);
+        MockComponent::grid(1).with_children(vec![
+            MockComponent::meter(2).with_children(vec![meter.with_children(vec![inverter])]),
+        ])
+    }
+
+    async fn pv_chain_handle(
+        configure_inverter: impl FnOnce(MockComponent) -> MockComponent,
+        config: LogicalMeterConfig,
+    ) -> (LogicalMeterHandle, Arc<Mutex<OpenStreams>>) {
+        handle_for(pv_chain(configure_inverter), config, aligned_clock()).await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_only_the_primary_is_subscribed_while_it_delivers() {
+        let interval = TimeDelta::try_seconds(1).unwrap();
+        let (lm, open) = pv_chain_handle(
+            |inverter| inverter.with_power(vec![10.0; 400]),
+            LogicalMeterConfig::new(interval),
+        )
+        .await;
+        let formula = lm.pv::<crate::metric::AcPowerActive>(None).unwrap();
+        let mut stream = BroadcastStream::new(formula.subscribe().await.unwrap());
+
+        // Checked on every tick: a wrongly subscribed fallback would not stay
+        // subscribed for long.
+        for _ in 0..4 {
+            let sample = next_sample(&mut stream).await.expect("no sample");
+            assert_eq!(sample.value().map(|v| v.as_watts()), Some(10.0));
+            assert_eq!(open.lock().unwrap().ids(), BTreeSet::from([4]));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_fallback_is_subscribed_when_the_primary_goes_silent() {
+        let interval = TimeDelta::try_seconds(1).unwrap();
+        let (lm, open) = pv_chain_handle(
+            |inverter| {
+                inverter
+                    .with_power(vec![10.0; 5])
+                    .with_silence_after_metrics()
+            },
+            LogicalMeterConfig::new(interval),
+        )
+        .await;
+        let formula = lm.pv::<crate::metric::AcPowerActive>(None).unwrap();
+        let mut stream = BroadcastStream::new(formula.subscribe().await.unwrap());
+
+        let mut values = Vec::new();
+        for _ in 0..12 {
+            let sample = next_sample(&mut stream).await.expect("no sample");
+            values.push(sample.value().map(|v| v.as_watts()));
+            if values.last() == Some(&Some(1.0)) {
+                break;
+            }
+        }
+        assert_eq!(values.first(), Some(&Some(10.0)), "{values:?}");
+        assert_eq!(
+            values.iter().filter(|value| value.is_none()).count(),
+            1,
+            "expected exactly one None while falling back: {values:?}"
+        );
+        assert_eq!(values.last(), Some(&Some(1.0)), "{values:?}");
+        assert!(
+            open.lock().unwrap().contains(3),
+            "{:?}",
+            open.lock().unwrap().ids()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_subscriptions_end_after_the_last_subscriber_drops() {
+        let interval = TimeDelta::try_seconds(1).unwrap();
+        let (lm, open) = pv_chain_handle(
+            |inverter| inverter.with_power(vec![10.0; 400]),
+            LogicalMeterConfig::new(interval),
+        )
+        .await;
+        let formula = lm.pv::<crate::metric::AcPowerActive>(None).unwrap();
+        let mut stream = BroadcastStream::new(formula.subscribe().await.unwrap());
+        let _ = next_sample(&mut stream).await.expect("no sample");
+        assert_eq!(open.lock().unwrap().ids(), BTreeSet::from([4]));
+
+        drop(stream);
+        // Up to three resampling intervals of simulated time.
+        wait_for_open_streams(&open, BTreeSet::new(), interval.to_std().unwrap() / 5, 15).await;
     }
 }
