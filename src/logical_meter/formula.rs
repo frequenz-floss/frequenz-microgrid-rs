@@ -53,6 +53,17 @@ impl std::fmt::Display for Key {
 /// All formulas in one expression must come from the same logical meter, that
 /// is one [`LogicalMeterHandle`](crate::LogicalMeterHandle) or its clones;
 /// otherwise [`subscribe`](Self::subscribe) fails.
+///
+/// # Values that are not known yet
+///
+/// A component's value is not known yet until its subscription completes. It is
+/// also not known on the first tick after the subscription completes, if the
+/// component has sent nothing yet. If the subscription fails because the
+/// microgrid client stopped, the value is never known. Every component's value
+/// is also not known on the first tick after a wall-clock jump. This is not the
+/// same as a missing value. A formula that reads a component whose value is not
+/// known yet emits `None`, and [`coalesce`](Self::coalesce) does not move past
+/// it.
 #[derive(Clone)]
 pub struct Formula<Q: Quantity> {
     engine_formula: engine::Formula<f32, Key>,
@@ -140,23 +151,32 @@ impl<Q: Quantity> Formula<Q> {
         self.map(|lhs| build(lhs, rhs))
     }
 
-    /// `COALESCE(self, other)`: the first operand with a value.
+    /// `COALESCE(self, other)`: the first operand with a value. It moves past
+    /// an operand whose value is missing, but not past one whose value is [not
+    /// known yet](Self#values-that-are-not-known-yet). The sample is then
+    /// `None` for as long as that value is not known.
     pub fn coalesce(self, other: impl Into<FormulaOperand<Q>>) -> Self {
         self.combine(other, engine::Formula::coalesce)
     }
 
-    /// `MIN(self, other)`. An operand with no value makes the sample `None`.
+    /// `MIN(self, other)`. An operand with no value makes the sample `None`,
+    /// whether its value is missing or [not known
+    /// yet](Self#values-that-are-not-known-yet).
     pub fn min(self, other: impl Into<FormulaOperand<Q>>) -> Self {
         self.combine(other, engine::Formula::min)
     }
 
-    /// `MAX(self, other)`. An operand with no value makes the sample `None`.
+    /// `MAX(self, other)`. An operand with no value makes the sample `None`,
+    /// whether its value is missing or [not known
+    /// yet](Self#values-that-are-not-known-yet).
     pub fn max(self, other: impl Into<FormulaOperand<Q>>) -> Self {
         self.combine(other, engine::Formula::max)
     }
 
-    /// `AVG(self, others...)`. Operands with no value are skipped; the sample
-    /// is `None` when no operand has a value.
+    /// `AVG(self, others...)`. Operands with a missing value are skipped; the
+    /// sample is `None` when no operand has a value. An operand whose value is
+    /// [not known yet](Self#values-that-are-not-known-yet) also makes the
+    /// sample `None`.
     pub fn avg(mut self, others: Vec<impl Into<FormulaOperand<Q>>>) -> Self {
         let others: Vec<_> = others
             .into_iter()
@@ -171,6 +191,11 @@ impl<Q: Quantity + 'static> Formula<Q> {
     ///
     /// Each call gets its own channel. Formulas with the same expression share
     /// one evaluation in the logical meter.
+    ///
+    /// The first samples can be `None`. Components are subscribed after this
+    /// call returns, and only when the formula reads them: for example, a
+    /// [`coalesce`](Self::coalesce) fallback only once the operands before it
+    /// are missing.
     ///
     /// Fails if the formula combines formulas from different logical meters.
     pub async fn subscribe(&self) -> Result<broadcast::Receiver<Sample<Q>>, Error> {
