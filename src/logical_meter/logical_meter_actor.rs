@@ -46,6 +46,8 @@ struct SubscribedFormula {
 struct ResampledStream {
     receiver: broadcast::Receiver<ElectricalComponentTelemetry>,
     resampler: frequenz_resampling::Resampler<f32, Sample<f32>>,
+    /// Consecutive ticks on which no formula read this key.
+    unread_ticks: u32,
 }
 
 /// A subscribe request in flight, yielding the key it was sent for, the actor's
@@ -266,6 +268,7 @@ impl<C: Clock> LogicalMeterActor<C> {
         ResampledStream {
             receiver,
             resampler: self.build_resampler(metric, start),
+            unread_ticks: 0,
         }
     }
 
@@ -333,7 +336,8 @@ impl<C: Clock> LogicalMeterActor<C> {
     }
 
     /// Starts subscriptions for keys that were read but have no subscription,
-    /// and drops attached subscriptions that were not read.
+    /// and drops attached subscriptions that have gone unread for
+    /// `unsubscribe_after_unread_ticks` ticks.
     ///
     /// A pending subscription is never dropped, so at most one subscribe
     /// request is in flight per key.
@@ -344,12 +348,21 @@ impl<C: Clock> LogicalMeterActor<C> {
         subscribe_requests: &mut FuturesUnordered<SubscribeRequest>,
     ) {
         self.start_missing_subscriptions(read_keys, subscriptions, subscribe_requests);
+        let limit = self.config.unsubscribe_after_unread_ticks;
         subscriptions.retain(|key, stream| {
-            if read_keys.contains(key) || stream.is_none() {
+            let Some(stream) = stream else {
+                return true;
+            };
+            if read_keys.contains(key) {
+                stream.unread_ticks = 0;
                 return true;
             }
-            tracing::debug!("Dropping subscription of unread component {key}");
-            false
+            stream.unread_ticks += 1;
+            if stream.unread_ticks >= limit {
+                tracing::debug!("Dropping subscription of unread component {key}");
+                return false;
+            }
+            true
         });
     }
 
@@ -729,8 +742,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reconcile_subscriptions_drops_unread_keys() {
-        let actor = bare_actor();
+    async fn test_reconcile_subscriptions_counts_each_metric_separately() {
+        let actor = bare_actor_with(
+            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap())
+                .with_unsubscribe_after_unread_ticks(2),
+        );
+        let read_key = active_power_key(2);
+        let unread_key = Key {
+            metric: Metric::AcVoltage,
+            component_id: 2,
+        };
+        let mut subscriptions = HashMap::new();
+        for key in [read_key, unread_key] {
+            let (_tx, receiver) = broadcast::channel(1);
+            subscriptions.insert(
+                key,
+                attached_subscription(&actor, key, receiver, actor.resampler_ts),
+            );
+        }
+        let read_keys = HashSet::from([read_key]);
+        let mut subscribe_requests = FuturesUnordered::new();
+
+        actor.reconcile_subscriptions(&read_keys, &mut subscriptions, &mut subscribe_requests);
+        assert!(subscriptions.contains_key(&unread_key));
+
+        actor.reconcile_subscriptions(&read_keys, &mut subscriptions, &mut subscribe_requests);
+        assert!(subscriptions.contains_key(&read_key));
+        assert!(
+            !subscriptions.contains_key(&unread_key),
+            "a read of another metric of the component must not reset this count"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_subscriptions_ages_out_unread_keys() {
+        let limit = 2;
+        let actor = bare_actor_with(
+            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap())
+                .with_unsubscribe_after_unread_ticks(limit),
+        );
         let mut subscriptions = HashMap::new();
         for component_id in [2, 3] {
             let key = active_power_key(component_id);
@@ -746,11 +796,27 @@ mod tests {
         let read_keys = HashSet::from([active_power_key(2)]);
         let mut subscribe_requests = FuturesUnordered::new();
 
+        // An unread key survives until it has gone unread for `limit`
+        // consecutive ticks.
+        for tick in 1..limit {
+            actor.reconcile_subscriptions(&read_keys, &mut subscriptions, &mut subscribe_requests);
+            assert_eq!(subscriptions.len(), 3, "dropped too early on tick {tick}");
+        }
         actor.reconcile_subscriptions(&read_keys, &mut subscriptions, &mut subscribe_requests);
 
         assert_eq!(subscriptions.len(), 2);
         assert!(subscriptions.contains_key(&active_power_key(2)));
+        assert_eq!(
+            subscriptions[&active_power_key(2)]
+                .as_ref()
+                .map(|s| s.unread_ticks),
+            Some(0)
+        );
+
         // A pending subscription is never dropped.
+        for _ in 0..limit {
+            actor.reconcile_subscriptions(&read_keys, &mut subscriptions, &mut subscribe_requests);
+        }
         assert!(subscriptions[&pending_key].is_none());
         assert!(
             subscribe_requests.is_empty(),
@@ -774,6 +840,45 @@ mod tests {
             "the receiver attaches only once the subscription completes"
         );
         assert_eq!(subscribe_requests.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_subscriptions_resets_the_unread_count_on_a_read() {
+        let limit = 3;
+        let actor = bare_actor_with(
+            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap())
+                .with_unsubscribe_after_unread_ticks(limit),
+        );
+        let key = active_power_key(2);
+        let (_tx, receiver) = broadcast::channel(1);
+        let mut subscriptions = HashMap::from([(
+            key,
+            attached_subscription(&actor, key, receiver, actor.resampler_ts),
+        )]);
+        let mut subscribe_requests = FuturesUnordered::new();
+        let no_reads = HashSet::new();
+
+        for _ in 1..limit {
+            actor.reconcile_subscriptions(&no_reads, &mut subscriptions, &mut subscribe_requests);
+        }
+        // One read starts the count again.
+        actor.reconcile_subscriptions(
+            &HashSet::from([key]),
+            &mut subscriptions,
+            &mut subscribe_requests,
+        );
+        for tick in 1..limit {
+            actor.reconcile_subscriptions(&no_reads, &mut subscriptions, &mut subscribe_requests);
+            assert!(
+                subscriptions.contains_key(&key),
+                "dropped on unread tick {tick} after the read"
+            );
+        }
+        actor.reconcile_subscriptions(&no_reads, &mut subscriptions, &mut subscribe_requests);
+        assert!(
+            !subscriptions.contains_key(&key),
+            "not dropped after {limit} unread ticks in a row"
+        );
     }
 
     #[tokio::test]
@@ -1289,11 +1394,11 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_subscriptions_end_after_the_last_subscriber_drops() {
+    async fn test_subscriptions_age_out_after_the_last_subscriber_drops() {
         let interval = TimeDelta::try_seconds(1).unwrap();
         let (lm, open) = pv_chain_handle(
             |inverter| inverter.with_power(vec![10.0; 400]),
-            LogicalMeterConfig::new(interval),
+            LogicalMeterConfig::new(interval).with_unsubscribe_after_unread_ticks(2),
         )
         .await;
         let formula = lm.pv::<crate::metric::AcPowerActive>(None).unwrap();
@@ -1302,7 +1407,7 @@ mod tests {
         assert_eq!(open.lock().unwrap().ids(), BTreeSet::from([4]));
 
         drop(stream);
-        // Up to three resampling intervals of simulated time.
-        wait_for_open_streams(&open, BTreeSet::new(), interval.to_std().unwrap() / 5, 15).await;
+        // Up to six resampling intervals of simulated time.
+        wait_for_open_streams(&open, BTreeSet::new(), interval.to_std().unwrap() / 5, 30).await;
     }
 }

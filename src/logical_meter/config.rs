@@ -20,8 +20,12 @@ pub struct LogicalMeterConfig {
     /// The maximum age of samples to be considered for resampling, in number of
     /// intervals.
     pub(crate) max_age_in_intervals: u32,
-    /// Configuration forwarded to the underlying [`ComponentGraph`][cg]. Defaults
-    /// to [`ComponentGraphConfig::default()`].
+    /// The number of unread resampling ticks in a row that drops the telemetry
+    /// subscription of a component's metric. See
+    /// [`Self::with_unsubscribe_after_unread_ticks`].
+    pub(crate) unsubscribe_after_unread_ticks: u32,
+    /// Configuration forwarded to the underlying [`ComponentGraph`][cg].
+    /// Defaults to [`ComponentGraphConfig::default()`].
     ///
     /// [cg]: frequenz_microgrid_component_graph::ComponentGraph
     pub(crate) component_graph_config: ComponentGraphConfig,
@@ -35,6 +39,7 @@ impl LogicalMeterConfig {
             resampling_function: None,
             resampling_overrides: HashMap::new(),
             max_age_in_intervals: 3,
+            unsubscribe_after_unread_ticks: 3,
             component_graph_config: ComponentGraphConfig::default(),
         }
     }
@@ -80,8 +85,32 @@ impl LogicalMeterConfig {
         self
     }
 
-    /// Sets the [`ComponentGraphConfig`] forwarded to the underlying graph
-    /// when [`LogicalMeterHandle::try_new`][lm] (and therefore
+    /// Sets when an unread component's telemetry subscription is dropped: on
+    /// the `ticks`-th resampling tick in a row in which no formula reads it.
+    /// With 3, a component that no formula reads on two ticks in a row is kept,
+    /// and it is dropped on the third.
+    ///
+    /// A formula reads every component in its expression on every tick, except
+    /// that a `COALESCE` reads a fallback only if the operands before it are
+    /// missing.
+    ///
+    /// The count is kept per component and metric, so a metric that no formula
+    /// reads is dropped even if a formula reads another metric of the
+    /// component. One stream carries all metrics of a component, so dropping a
+    /// metric closes the stream only if nothing else receives from it.
+    ///
+    /// A subscription that is still waiting for the client is always kept;
+    /// counting starts once it is attached.
+    ///
+    /// Must be at least 1; smaller values are clamped to 1. If not set, the
+    /// default is 3.
+    pub fn with_unsubscribe_after_unread_ticks(mut self, ticks: u32) -> Self {
+        self.unsubscribe_after_unread_ticks = ticks.max(1);
+        self
+    }
+
+    /// Sets the [`ComponentGraphConfig`] forwarded to the underlying graph when
+    /// [`LogicalMeterHandle::try_new`][lm] (and therefore
     /// [`Microgrid::try_new`][mg]) builds it. If not set, the graph crate's
     /// `Default::default()` is used.
     ///
@@ -90,5 +119,19 @@ impl LogicalMeterConfig {
     pub fn with_component_graph_config(mut self, config: ComponentGraphConfig) -> Self {
         self.component_graph_config = config;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_max_age_and_unread_ticks_are_clamped_to_one() {
+        let config = LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap())
+            .with_max_age_in_intervals(0)
+            .with_unsubscribe_after_unread_ticks(0);
+        assert_eq!(config.max_age_in_intervals, 1);
+        assert_eq!(config.unsubscribe_after_unread_ticks, 1);
     }
 }
