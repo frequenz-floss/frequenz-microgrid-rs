@@ -8,8 +8,9 @@
 use chrono::{DateTime, Utc};
 use frequenz_microgrid_formula_engine::{self as engine, Reading, ValueSource};
 use frequenz_resampling::ResamplingFunction;
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use futures::future::BoxFuture;
+use futures::stream::{FuturesUnordered, StreamExt};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::client::proto::common::metrics::{Metric, metric_value_variant::MetricValueVariant};
@@ -41,10 +42,28 @@ struct SubscribedFormula {
     sinks: Vec<Box<dyn FormulaSink>>,
 }
 
+/// The state of a component's telemetry subscription.
+enum Feed {
+    /// The subscribe request is still in flight, or it failed.
+    Pending,
+    /// Attached to the component's telemetry stream.
+    Live(broadcast::Receiver<ElectricalComponentTelemetry>),
+}
+
 struct ComponentSubscription {
     resampler: frequenz_resampling::Resampler<f32, Sample<f32>>,
-    receiver: broadcast::Receiver<ElectricalComponentTelemetry>,
+    feed: Feed,
 }
+
+/// A subscribe request in flight, yielding the key it was sent for together
+/// with its result.
+type SubscribeRequest = BoxFuture<
+    'static,
+    (
+        Key,
+        Result<broadcast::Receiver<ElectricalComponentTelemetry>, Error>,
+    ),
+>;
 
 /// Reads a tick's resampled values; a key that is not in the snapshot is
 /// unknown.
@@ -130,6 +149,7 @@ impl<C: Clock> LogicalMeterActor<C> {
     pub async fn run(mut self) {
         let mut subscriptions: HashMap<Key, ComponentSubscription> = HashMap::new();
         let mut formulas: HashMap<String, SubscribedFormula> = HashMap::new();
+        let mut subscribe_requests: FuturesUnordered<SubscribeRequest> = FuturesUnordered::new();
 
         loop {
             tokio::select! {
@@ -167,17 +187,20 @@ impl<C: Clock> LogicalMeterActor<C> {
                     self.evaluate_formulas(&snapshot, &mut formulas);
                     Self::drop_unused_resamplers(&formulas, &mut subscriptions);
                 }
+                Some((key, result)) = subscribe_requests.next(),
+                    if !subscribe_requests.is_empty() => {
+                    self.attach_subscription(key, result, &mut subscriptions);
+                }
                 instruction = self.instructions_rx.recv() => {
                     match instruction {
                         Some(Instruction::SubscribeFormula{engine_formula, sink}) => {
-                            if let Err(err) = self.handle_subscribe_formula(
+                            self.handle_subscribe_formula(
                                 engine_formula,
                                 sink,
                                 &mut formulas,
-                                &mut subscriptions
-                            ).await {
-                                tracing::error!("Error adding formula: {err}");
-                            };
+                                &mut subscriptions,
+                                &mut subscribe_requests,
+                            );
                         }
                         None => {
                             tracing::warn!(
@@ -230,8 +253,10 @@ impl<C: Clock> LogicalMeterActor<C> {
     ) -> Result<HashMap<Key, Option<f32>>, Error> {
         let mut snapshot = HashMap::with_capacity(subscriptions.len());
         for (key, subscription) in subscriptions.iter_mut() {
-            while let Some(data) = poll_telemetry(&mut subscription.receiver, key.component_id) {
-                Self::push_to_resampler(&mut subscription.resampler, *key, data);
+            if let Feed::Live(receiver) = &mut subscription.feed {
+                while let Some(data) = poll_telemetry(receiver, key.component_id) {
+                    Self::push_to_resampler(&mut subscription.resampler, *key, data);
+                }
             }
             let resampled = subscription.resampler.resample(self.resampler_ts);
             if resampled.len() != 1 {
@@ -275,6 +300,9 @@ impl<C: Clock> LogicalMeterActor<C> {
     }
 
     /// Drops subscriptions no remaining formula references.
+    ///
+    /// A pending subscription is never dropped, so at most one subscribe
+    /// request is in flight per key.
     fn drop_unused_resamplers(
         formulas: &HashMap<String, SubscribedFormula>,
         subscriptions: &mut HashMap<Key, ComponentSubscription>,
@@ -283,8 +311,8 @@ impl<C: Clock> LogicalMeterActor<C> {
             .values()
             .flat_map(|formula| formula.engine_formula.components())
             .collect();
-        subscriptions.retain(|key, _| {
-            let keep = referenced.contains(key);
+        subscriptions.retain(|key, subscription| {
+            let keep = referenced.contains(key) || matches!(subscription.feed, Feed::Pending);
             if !keep {
                 tracing::debug!("Dropping resampler for component {key}");
             }
@@ -292,56 +320,81 @@ impl<C: Clock> LogicalMeterActor<C> {
         });
     }
 
-    /// Registers a subscriber for `engine_formula`, creating the entry and its
-    /// component subscriptions on first sight.
+    /// Registers a subscription for every key in `keys` that has none and
+    /// starts its telemetry subscription without blocking the actor.
+    fn start_missing_subscriptions(
+        &self,
+        keys: &HashSet<Key>,
+        subscriptions: &mut HashMap<Key, ComponentSubscription>,
+        subscribe_requests: &mut FuturesUnordered<SubscribeRequest>,
+    ) {
+        for &key in keys {
+            let Entry::Vacant(entry) = subscriptions.entry(key) else {
+                continue;
+            };
+            entry.insert(ComponentSubscription {
+                resampler: self.build_resampler(key.metric, self.resampler_ts),
+                feed: Feed::Pending,
+            });
+            tracing::debug!("Subscribing to {key}");
+            let client = self.client.clone();
+            subscribe_requests.push(Box::pin(async move {
+                let result = client
+                    .receive_electrical_component_telemetry_stream(key.component_id)
+                    .await;
+                (key, result)
+            }));
+        }
+    }
+
+    /// Attaches the result of a subscribe request to the key's subscription.
     ///
-    /// If a telemetry subscription cannot be started, no entry is created and
-    /// the sink is dropped, which closes the subscriber's stream.
-    async fn handle_subscribe_formula(
-        &mut self,
+    /// The request fails only once the client actor has stopped, so it could
+    /// never succeed later. The error is logged once and the subscription stays
+    /// pending. Its entry is kept, so no new request is sent for the key.
+    fn attach_subscription(
+        &self,
+        key: Key,
+        result: Result<broadcast::Receiver<ElectricalComponentTelemetry>, Error>,
+        subscriptions: &mut HashMap<Key, ComponentSubscription>,
+    ) {
+        let Some(subscription) = subscriptions.get_mut(&key) else {
+            tracing::debug!("Subscription for {key} completed, but it is gone");
+            return;
+        };
+        match result {
+            Ok(receiver) => {
+                tracing::debug!("Subscribed to {key}");
+                subscription.feed = Feed::Live(receiver);
+            }
+            Err(err) => tracing::error!("Subscribing to {key} failed, not retrying: {err}"),
+        }
+    }
+
+    /// Registers a subscriber for `engine_formula`, creating the formula on
+    /// first sight of the expression and pushing the sink onto it otherwise.
+    /// Subscribes to any of its components not subscribed yet, without waiting
+    /// for the subscriptions to complete.
+    fn handle_subscribe_formula(
+        &self,
         engine_formula: engine::Formula<f32, Key>,
         sink: Box<dyn FormulaSink>,
         formulas: &mut HashMap<String, SubscribedFormula>,
         subscriptions: &mut HashMap<Key, ComponentSubscription>,
-    ) -> Result<(), Error> {
-        match formulas.entry(engine_formula.to_string()) {
-            Entry::Occupied(mut entry) => entry.get_mut().sinks.push(sink),
-            Entry::Vacant(slot) => {
-                let components = engine_formula.components();
-                self.start_resamplers(&components, subscriptions).await?;
-                slot.insert(SubscribedFormula {
-                    engine_formula,
-                    sinks: vec![sink],
-                });
-            }
-        }
-        Ok(())
-    }
-
-    /// Starts a resampler and its telemetry subscription for every key that
-    /// does not have one yet.
-    async fn start_resamplers(
-        &mut self,
-        keys: &HashSet<Key>,
-        subscriptions: &mut HashMap<Key, ComponentSubscription>,
-    ) -> Result<(), Error> {
-        for key in keys {
-            if subscriptions.contains_key(key) {
-                continue;
-            }
-            let receiver = self
-                .client
-                .receive_electrical_component_telemetry_stream(key.component_id)
-                .await?;
-            subscriptions.insert(
-                *key,
-                ComponentSubscription {
-                    resampler: self.build_resampler(key.metric, self.resampler_ts),
-                    receiver,
-                },
-            );
-        }
-        Ok(())
+        subscribe_requests: &mut FuturesUnordered<SubscribeRequest>,
+    ) {
+        let formula = formulas
+            .entry(engine_formula.to_string())
+            .or_insert_with(|| SubscribedFormula {
+                engine_formula,
+                sinks: Vec::new(),
+            });
+        formula.sinks.push(sink);
+        self.start_missing_subscriptions(
+            &formula.engine_formula.components(),
+            subscriptions,
+            subscribe_requests,
+        );
     }
 
     /// Rebuilds every inner `frequenz_resampling::Resampler` with `start`
@@ -359,7 +412,9 @@ impl<C: Clock> LogicalMeterActor<C> {
             // Drain any samples that were queued during the jump window;
             // they are timestamped on the old wall-clock frame and would
             // pollute the freshly-aligned resampler.
-            while poll_telemetry(&mut subscription.receiver, key.component_id).is_some() {}
+            if let Feed::Live(receiver) = &mut subscription.feed {
+                while poll_telemetry(receiver, key.component_id).is_some() {}
+            }
             subscription.resampler = self.build_resampler(key.metric, start);
         }
     }
@@ -477,6 +532,20 @@ mod tests {
         Key {
             metric: Metric::AcPowerActive,
             component_id,
+        }
+    }
+
+    /// A subscription for `key` in state `feed`, with its resampler aligned to
+    /// `start`.
+    fn subscription(
+        actor: &LogicalMeterActor<TokioSyncedClock>,
+        key: Key,
+        start: DateTime<Utc>,
+        feed: Feed,
+    ) -> ComponentSubscription {
+        ComponentSubscription {
+            resampler: actor.build_resampler(key.metric, start),
+            feed,
         }
     }
 
@@ -615,12 +684,15 @@ mod tests {
             let (_tx, receiver) = broadcast::channel(1);
             subscriptions.insert(
                 key,
-                ComponentSubscription {
-                    resampler: actor.build_resampler(key.metric, actor.resampler_ts),
-                    receiver,
-                },
+                subscription(&actor, key, actor.resampler_ts, Feed::Live(receiver)),
             );
         }
+        // Component 4's subscribe request is still in flight.
+        let pending_key = active_power_key(4);
+        subscriptions.insert(
+            pending_key,
+            subscription(&actor, pending_key, actor.resampler_ts, Feed::Pending),
+        );
         let formulas = HashMap::from([(
             "#2".to_string(),
             subscribed_formula("#2", vec![Box::new(DeadSink)]),
@@ -631,42 +703,70 @@ mod tests {
             &mut subscriptions,
         );
 
-        assert_eq!(subscriptions.len(), 1);
+        assert_eq!(subscriptions.len(), 2);
         assert!(subscriptions.contains_key(&active_power_key(2)));
+        // A pending subscription is never dropped.
+        assert!(matches!(subscriptions[&pending_key].feed, Feed::Pending));
     }
 
     #[tokio::test]
-    async fn test_failed_telemetry_registers_no_formula() {
-        let (_tx, rx) = mpsc::channel(1);
-        let mut actor = LogicalMeterActor::try_new(
-            rx,
-            MicrogridClientHandle::disconnected(),
-            LogicalMeterConfig::new(TimeDelta::try_seconds(1).unwrap()),
-            TokioSyncedClock::new(),
-        )
-        .unwrap();
+    async fn test_handle_subscribe_formula_does_not_wait_for_the_subscriptions() {
+        let actor = bare_actor();
         let mut formulas = HashMap::new();
         let mut subscriptions = HashMap::new();
-        let (sink, recorded) = recording_sink();
+        let mut subscribe_requests = FuturesUnordered::new();
+        let (sink, _) = recording_sink();
 
-        let result = actor
-            .handle_subscribe_formula(
-                active_power_formula("#2"),
-                sink,
-                &mut formulas,
-                &mut subscriptions,
-            )
-            .await;
-
-        assert!(result.is_err(), "the client is gone, so subscribing fails");
-        assert!(
-            formulas.is_empty(),
-            "a formula without its telemetry must not stay registered"
+        actor.handle_subscribe_formula(
+            active_power_formula("#2 + #3"),
+            sink,
+            &mut formulas,
+            &mut subscriptions,
+            &mut subscribe_requests,
         );
-        assert_eq!(
-            Arc::strong_count(&recorded),
-            1,
-            "the sink should be dropped, which closes the subscriber's stream"
+
+        assert_eq!(formulas.len(), 1);
+        assert_eq!(subscriptions.len(), 2);
+        assert!(
+            subscriptions
+                .values()
+                .all(|subscription| matches!(subscription.feed, Feed::Pending)),
+            "the receiver attaches only once the subscription completes"
+        );
+        assert_eq!(subscribe_requests.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_failed_subscription_stays_pending_and_is_not_resent() {
+        let actor = bare_actor();
+        let key = active_power_key(2);
+        let mut subscriptions = HashMap::from([(
+            key,
+            subscription(&actor, key, actor.resampler_ts, Feed::Pending),
+        )]);
+
+        // The request fails only once the client actor has stopped.
+        actor.attach_subscription(
+            key,
+            Err(Error::connection_failure("client stopped")),
+            &mut subscriptions,
+        );
+        assert!(matches!(subscriptions[&key].feed, Feed::Pending));
+
+        let mut formulas = HashMap::new();
+        let mut subscribe_requests = FuturesUnordered::new();
+        let (sink, _) = recording_sink();
+        actor.handle_subscribe_formula(
+            active_power_formula("#2"),
+            sink,
+            &mut formulas,
+            &mut subscriptions,
+            &mut subscribe_requests,
+        );
+        assert!(matches!(subscriptions[&key].feed, Feed::Pending));
+        assert!(
+            subscribe_requests.is_empty(),
+            "no new request is sent for a failed subscription"
         );
     }
 
