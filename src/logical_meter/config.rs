@@ -23,7 +23,8 @@ pub struct LogicalMeterConfig {
     /// How many resampling intervals in a row a component may go unread before
     /// its telemetry subscription is dropped. A subscription that is still
     /// waiting for the client is always kept; counting starts once it is
-    /// attached.
+    /// attached. The first tick after a wall-clock jump is not counted, and it
+    /// does not reset the count.
     pub(crate) unsubscribe_after_idle_intervals: u32,
     /// Configuration forwarded to the underlying [`ComponentGraph`][cg].
     /// Defaults to [`ComponentGraphConfig::default()`].
@@ -90,7 +91,8 @@ impl LogicalMeterConfig {
     /// before its telemetry subscription is dropped. With 3, a component that
     /// no formula reads for two intervals is kept, and it is dropped on the
     /// third. A subscription that is still waiting for the client is always
-    /// kept; counting starts once it is attached.
+    /// kept; counting starts once it is attached. The first tick after a
+    /// wall-clock jump is not counted, and it does not reset the count.
     ///
     /// Must be at least 1; smaller values are clamped to 1. If not set, the
     /// default is 3.

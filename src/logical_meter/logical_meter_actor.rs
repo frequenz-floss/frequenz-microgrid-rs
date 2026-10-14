@@ -69,7 +69,8 @@ type SubscribeRequest = BoxFuture<
 >;
 
 /// Reads a tick's resampled values and records every key read. A key that is
-/// not in the snapshot, because it has no subscription, is unknown.
+/// not in the snapshot is unknown: a key with no subscription, and every key on
+/// the first tick after a wall-clock jump, whose snapshot is empty.
 struct RecordingSource<'a> {
     snapshot: &'a HashMap<Key, Option<f32>>,
     reads: &'a mut HashSet<Key>,
@@ -115,8 +116,9 @@ pub(super) struct LogicalMeterActor<C: Clock> {
     resampler_ts: DateTime<Utc>,
     resampler_timer: WallClockTimer<C>,
     /// The snapshot the formulas were last evaluated against, used to seed the
-    /// component demand of a newly subscribed expression. A tick whose
-    /// resampling fails leaves the previous snapshot in place.
+    /// component demand of a newly subscribed expression. A tick after a
+    /// wall-clock jump stores an empty snapshot. A tick whose resampling fails
+    /// leaves the previous snapshot in place.
     last_snapshot: HashMap<Key, Option<f32>>,
 }
 
@@ -194,13 +196,27 @@ impl<C: Clock> LogicalMeterActor<C> {
                             continue;
                         }
                     };
-                    let used = self.evaluate_formulas(&snapshot, &mut formulas);
-                    self.last_snapshot = snapshot;
-                    self.reconcile_subscriptions(
-                        &used,
-                        &mut subscriptions,
-                        &mut subscribe_requests,
-                    );
+                    if tick_info.resynced {
+                        // This tick's resampled values have no data. Read as
+                        // known-missing, they would make each COALESCE
+                        // subscribe its fallback, and `COALESCE(.., 0)` emit a
+                        // made-up 0. So evaluate against an empty snapshot:
+                        // every component reads as unknown, and a formula that
+                        // reads one emits `None`. Leave the subscriptions as
+                        // they are: nothing is subscribed, and no component is
+                        // counted as unread.
+                        let empty = HashMap::new();
+                        self.evaluate_formulas(&empty, &mut formulas);
+                        self.last_snapshot = empty;
+                    } else {
+                        let used = self.evaluate_formulas(&snapshot, &mut formulas);
+                        self.last_snapshot = snapshot;
+                        self.reconcile_subscriptions(
+                            &used,
+                            &mut subscriptions,
+                            &mut subscribe_requests,
+                        );
+                    }
                 }
                 Some((key, result)) = subscribe_requests.next(),
                     if !subscribe_requests.is_empty() => {
@@ -1332,5 +1348,98 @@ mod tests {
         drop(stream);
         // Up to six resampling intervals of simulated time.
         wait_for_open_streams(&open, BTreeSet::new(), interval.to_std().unwrap() / 5, 30).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_resync_tick_reads_every_component_as_unknown() {
+        let interval = TimeDelta::try_seconds(1).unwrap();
+        let clock = aligned_clock();
+        // Inverter 5 has no meter of its own, so its PV formula is
+        // `COALESCE(#5, 0)`.
+        let (lm, open) = handle_for(
+            MockComponent::grid(1).with_children(vec![MockComponent::meter(2).with_children(
+                vec![
+                    MockComponent::meter(3)
+                        .with_power(vec![1.0; 400])
+                        .with_children(vec![
+                            MockComponent::pv_inverter(4).with_power(vec![10.0; 400]),
+                        ]),
+                    MockComponent::pv_inverter(5).with_power(vec![20.0; 400]),
+                ],
+            )]),
+            LogicalMeterConfig::new(interval),
+            clock.clone(),
+        )
+        .await;
+        let pv_4 = lm
+            .pv::<crate::metric::AcPowerActive>(Some(BTreeSet::from([4])))
+            .unwrap();
+        let pv_5 = lm
+            .pv::<crate::metric::AcPowerActive>(Some(BTreeSet::from([5])))
+            .unwrap();
+        assert_eq!(pv_5.to_string(), "COALESCE(#5:AC_POWER_ACTIVE, 0)");
+        let mut stream_4 = BroadcastStream::new(pv_4.subscribe().await.unwrap());
+        let mut stream_5 = BroadcastStream::new(pv_5.subscribe().await.unwrap());
+        for _ in 0..2 {
+            let sample = next_sample(&mut stream_4).await.expect("no sample");
+            assert_eq!(sample.value().map(|v| v.as_watts()), Some(10.0));
+            let sample = next_sample(&mut stream_5).await.expect("no sample");
+            assert_eq!(sample.value().map(|v| v.as_watts()), Some(20.0));
+        }
+
+        clock.inject_wall_jump(TimeDelta::try_seconds(30).unwrap());
+
+        // On the resync tick the inverters have no data. They must read as
+        // unknown, not as missing, so the meter fallback is not subscribed, and
+        // `COALESCE(#5, 0)` does not send 0.
+        let resync = next_sample(&mut stream_4).await.expect("no resync sample");
+        assert_eq!(resync.value().map(|v| v.as_watts()), None);
+        let resync = next_sample(&mut stream_5).await.expect("no resync sample");
+        assert_eq!(resync.value().map(|v| v.as_watts()), None);
+        for _ in 0..4 {
+            let sample = next_sample(&mut stream_4).await.expect("no sample");
+            assert_eq!(sample.value().map(|v| v.as_watts()), Some(10.0));
+            let sample = next_sample(&mut stream_5).await.expect("no sample");
+            assert_eq!(sample.value().map(|v| v.as_watts()), Some(20.0));
+            assert_eq!(open.lock().unwrap().ids(), BTreeSet::from([4, 5]));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_resync_tick_keeps_the_subscriptions() {
+        let interval = TimeDelta::try_seconds(1).unwrap();
+        let clock = aligned_clock();
+        // The inverter sends no active power, so the formula reads the meter
+        // fallback on every tick.
+        let (lm, open) = handle_for(
+            pv_chain(
+                MockComponent::pv_inverter(4).with_reactive_power(vec![5.0; 400]),
+                MockComponent::meter(3).with_power(vec![1.0; 400]),
+            ),
+            LogicalMeterConfig::new(interval).with_unsubscribe_after_idle_intervals(1),
+            clock.clone(),
+        )
+        .await;
+        let formula = lm.pv::<crate::metric::AcPowerActive>(None).unwrap();
+        let mut stream = BroadcastStream::new(formula.subscribe().await.unwrap());
+        let mut values = Vec::new();
+        while values.last() != Some(&Some(1.0)) {
+            assert!(values.len() < 5, "no fallback value: {values:?}");
+            let sample = next_sample(&mut stream).await.expect("no sample");
+            values.push(sample.value().map(|v| v.as_watts()));
+        }
+
+        clock.inject_wall_jump(TimeDelta::try_seconds(30).unwrap());
+
+        // The resync tick reads only the inverter, which is unknown. It must
+        // not count as a tick on which the meter went unread, or the meter is
+        // dropped and the next sample is `None` while it is subscribed again.
+        let resync = next_sample(&mut stream).await.expect("no resync sample");
+        assert_eq!(resync.value().map(|v| v.as_watts()), None);
+        for _ in 0..4 {
+            let sample = next_sample(&mut stream).await.expect("no sample");
+            assert_eq!(sample.value().map(|v| v.as_watts()), Some(1.0));
+            assert_eq!(open.lock().unwrap().ids(), BTreeSet::from([3, 4]));
+        }
     }
 }
