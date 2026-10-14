@@ -172,6 +172,11 @@ impl<Q: Quantity + 'static> Formula<Q> {
     /// Each call gets its own channel. Formulas with the same expression share
     /// one evaluation in the logical meter.
     ///
+    /// The first samples can be `None`. Components are subscribed after this
+    /// call returns, and only when the formula reads them: for example, a
+    /// [`coalesce`](Self::coalesce) fallback only once the operands before it
+    /// are missing.
+    ///
     /// Fails if the formula combines formulas from different logical meters.
     pub async fn subscribe(&self) -> Result<broadcast::Receiver<Sample<Q>>, Error> {
         let Some(instructions_tx) = &self.instructions_tx else {
