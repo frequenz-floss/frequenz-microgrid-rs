@@ -62,7 +62,8 @@ type SubscribeRequest = BoxFuture<
 >;
 
 /// Reads a tick's resampled values and records every key read. A key that is
-/// not in the snapshot, because it has no subscription, is unknown.
+/// not in the snapshot is unknown: a key with no subscription, or one with no
+/// stream.
 struct RecordingSource<'a> {
     snapshot: &'a HashMap<Key, Option<f32>>,
     reads: &'a mut HashSet<Key>,
@@ -272,17 +273,18 @@ impl<C: Clock> LogicalMeterActor<C> {
         }
     }
 
-    /// Resamples every subscribed component metric and returns this tick's
-    /// values by key.
+    /// Resamples every attached subscription and returns this tick's values by
+    /// key.
+    ///
+    /// A subscription with no stream has no resampler and is left out of the
+    /// snapshot, so its key reads as [`Reading::Unknown`].
     fn resample(
         &self,
         subscriptions: &mut HashMap<Key, Option<ResampledStream>>,
     ) -> Result<HashMap<Key, Option<f32>>, Error> {
         let mut snapshot = HashMap::with_capacity(subscriptions.len());
         for (key, stream) in subscriptions.iter_mut() {
-            // No resampler yet: reads as missing.
             let Some(stream) = stream else {
-                snapshot.insert(*key, None);
                 continue;
             };
             while let Some(data) = poll_telemetry(&mut stream.receiver, key.component_id) {
@@ -821,6 +823,50 @@ mod tests {
         assert!(
             subscribe_requests.is_empty(),
             "no subscription should start for an already-subscribed key"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pending_subscription_reads_as_unknown() {
+        let actor = bare_actor();
+        let start = actor.resampler_ts - actor.config.resampling_interval;
+        let pending_key = active_power_key(2);
+        let attached_key = active_power_key(3);
+        let (_tx, receiver) = broadcast::channel(1);
+        let mut subscriptions = HashMap::from([
+            // The pending key's subscription is still in flight.
+            (pending_key, None),
+            (
+                attached_key,
+                attached_subscription(&actor, attached_key, receiver, start),
+            ),
+        ]);
+
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+
+        assert_eq!(
+            snapshot.keys().copied().collect::<HashSet<_>>(),
+            HashSet::from([attached_key]),
+            "a pending subscription must stay out of the snapshot so it reads unknown",
+        );
+
+        let (sink, recorded) = recording_sink();
+        let mut formulas = HashMap::from([(
+            "COALESCE(#2, #3)".to_string(),
+            subscribed_formula("COALESCE(#2, #3)", vec![sink]),
+        )]);
+
+        let read_keys = actor.evaluate_formulas(&snapshot, &mut formulas);
+
+        assert_eq!(
+            *recorded.lock().unwrap(),
+            vec![(actor.resampler_ts, None)],
+            "an unknown primary makes the whole coalesce unknown, sent as None",
+        );
+        assert_eq!(
+            read_keys,
+            HashSet::from([pending_key]),
+            "COALESCE stops at the unknown key and reads nothing beyond it",
         );
     }
 

@@ -92,7 +92,7 @@ impl LogicalMeterConfig {
     ///
     /// A formula reads every component in its expression on every tick, except
     /// that a `COALESCE` reads a fallback only if the operands before it are
-    /// missing.
+    /// missing, and stops at an operand whose value is not known yet.
     ///
     /// The count is kept per component and metric, so a metric that no formula
     /// reads is dropped even if a formula reads another metric of the
