@@ -36,4 +36,4 @@ The logical meter now evaluates formulas once per resampling tick, against one s
 
 ## Bug Fixes
 
-<!-- Here goes notable bug fixes that are worth a special mention or explanation -->
+- The microgrid client no longer hangs when many telemetry streams start or fail at the same time, for example after a connection loss while more than 50 telemetry streams are open. Before, it stopped starting and reconnecting streams and stopped answering requests.

@@ -6,7 +6,7 @@
 mod tokio_synced_clock;
 pub use tokio_synced_clock::TokioSyncedClock;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 use std::{sync::Arc, time::SystemTime};
 use tokio_stream::wrappers::ReceiverStream;
@@ -57,6 +57,8 @@ pub struct MockMicrogridApiClient {
     pub augment_bounds_calls: Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>>,
     /// Component ids with a running telemetry-stream task.
     open_streams: Arc<Mutex<OpenStreams>>,
+    /// Attempts to start a telemetry stream, per component id.
+    start_attempts: HashMap<u64, usize>,
 }
 
 /// The component ids with a running telemetry-stream task.
@@ -136,6 +138,9 @@ pub struct MockComponent {
     /// prevents the client actor from reconnecting and replaying the same
     /// data. Useful for testing missing-data timeouts.
     silence_after_metrics: bool,
+    /// How many attempts to start the telemetry stream fail before one
+    /// succeeds. Set via [`MockComponent::with_failed_starts`].
+    failed_starts: usize,
     /// Bounds attached to every streamed `AcPowerActive` sample. Set via
     /// [`MockComponent::add_sample_power_bounds`]; empty by default.
     sample_power_bounds: Vec<Bounds>,
@@ -373,6 +378,13 @@ impl MockComponent {
         self.silence_after_metrics = true;
         self
     }
+
+    /// Makes the first `count` attempts to start the telemetry stream fail with
+    /// `Unavailable`. Later attempts succeed.
+    pub fn with_failed_starts(mut self, count: usize) -> Self {
+        self.failed_starts = count;
+        self
+    }
 }
 
 impl MockMicrogridApiClient {
@@ -411,6 +423,7 @@ impl MockMicrogridApiClient {
             clock,
             augment_bounds_calls: Arc::new(Mutex::new(Vec::new())),
             open_streams: Arc::new(Mutex::new(OpenStreams::default())),
+            start_attempts: HashMap::new(),
         };
 
         fn traverse(node: &MockComponent, client: &mut MockMicrogridApiClient) {
@@ -524,6 +537,15 @@ impl MicrogridApiClient for MockMicrogridApiClient {
             .iter()
             .find(|c| c.component.id == comp_id)
             .cloned();
+
+        let failed_starts = component.as_ref().map_or(0, |c| c.failed_starts);
+        let attempts = self.start_attempts.entry(comp_id).or_default();
+        *attempts += 1;
+        if *attempts <= failed_starts {
+            return Err(tonic::Status::unavailable(format!(
+                "telemetry stream for {comp_id} failed to start"
+            )));
+        }
 
         if let Some(component) = component
             && !component.metrics.is_empty()
