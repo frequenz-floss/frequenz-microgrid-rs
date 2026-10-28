@@ -100,7 +100,9 @@ impl LogicalMeterConfig {
     /// metric closes the stream only if nothing else receives from it.
     ///
     /// A subscription that is still waiting for the client is always kept;
-    /// counting starts once it is attached.
+    /// counting starts once it is attached. The first tick after the wall clock
+    /// jumps by more than one resampling interval is not counted: it neither
+    /// adds to the count nor resets it.
     ///
     /// Must be at least 1; smaller values are clamped to 1. If not set, the
     /// default is 3.

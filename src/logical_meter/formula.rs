@@ -62,6 +62,9 @@ impl std::fmt::Display for Key {
 /// - on the first tick after that, unless a message from the component has
 ///   arrived by then. A message whose sample of the metric is for a later tick
 ///   does not count;
+/// - on the first tick after the wall clock jumps by more than one resampling
+///   interval, except in rare cases where the component's data arrives while
+///   the logical meter processes that tick;
 /// - ever, if the subscription failed because the microgrid client stopped.
 ///
 /// This is not the same as a missing value. A formula that reads a component

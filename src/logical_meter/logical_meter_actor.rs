@@ -46,9 +46,12 @@ struct SubscribedFormula {
 struct ResampledStream {
     receiver: broadcast::Receiver<ElectricalComponentTelemetry>,
     resampler: frequenz_resampling::Resampler<f32, Sample<f32>>,
-    /// Not resampled since it attached. See [`LogicalMeterActor::resample`].
+    /// Not resampled since it attached or since a wall-clock jump restarted it.
+    /// See [`LogicalMeterActor::resample`].
     fresh: bool,
-    /// Consecutive ticks on which no formula read this key.
+    /// Consecutive ticks on which no formula read this key. The first tick
+    /// after the wall clock jumps by more than one resampling interval neither
+    /// adds to the count nor resets it.
     unread_ticks: u32,
 }
 
@@ -168,20 +171,22 @@ impl<C: Clock> LogicalMeterActor<C> {
             tokio::select! {
                 tick_info = self.resampler_timer.tick() => {
                     if tick_info.resynced {
-                        // Wall clock jumped; the inner resamplers' `start`
-                        // fields reference the old clock frame and can't be
-                        // advanced through the gap (the API is
-                        // single-output-per-tick). Drop any buffered
-                        // telemetry from the gap and rebuild them aligned
-                        // to one interval before the realigned current
-                        // tick, so the resample below emits a single
-                        // (empty-buffer → `None`) sample at the realigned
-                        // tick — preserving the every-interval cadence
-                        // across the jump.
+                        // Wall clock jumped. The inner resamplers' `start`
+                        // fields are on the old clock frame. Resampling across
+                        // the gap can give several outputs, or none after a
+                        // backward jump, but this actor's `resample` needs
+                        // exactly one per tick.
+                        //
+                        // So drop all buffered telemetry and restart every
+                        // attached stream as fresh. Its new resampler starts
+                        // one interval before the realigned current tick, so
+                        // the resample below emits a single sample at that
+                        // tick, and the every-interval cadence holds across the
+                        // jump.
                         let realigned_current =
                             self.resampler_timer.next_tick_time()
                                 - self.config.resampling_interval;
-                        self.rebuild_resamplers_after_jump(
+                        self.restart_streams_after_jump(
                             &mut subscriptions,
                             realigned_current - self.config.resampling_interval,
                         );
@@ -199,11 +204,17 @@ impl<C: Clock> LogicalMeterActor<C> {
                     };
                     let read_keys = self.evaluate_formulas(&snapshot, &mut formulas);
                     self.last_snapshot = snapshot;
-                    self.reconcile_subscriptions(
-                        &read_keys,
-                        &mut subscriptions,
-                        &mut subscribe_requests,
-                    );
+                    // On the resync tick, the restarted streams normally read
+                    // as unknown, so no COALESCE reaches its fallbacks. Leave
+                    // the subscriptions as they are, so none is counted as
+                    // unread.
+                    if !tick_info.resynced {
+                        self.reconcile_subscriptions(
+                            &read_keys,
+                            &mut subscriptions,
+                            &mut subscribe_requests,
+                        );
+                    }
                 }
                 Some((key, resyncs_when_sent, result)) = subscribe_requests.next(),
                     if !subscribe_requests.is_empty() => {
@@ -478,27 +489,33 @@ impl<C: Clock> LogicalMeterActor<C> {
         self.start_missing_subscriptions(&reads, subscriptions, subscribe_requests);
     }
 
-    /// Rebuilds every attached stream's `frequenz_resampling::Resampler` with
-    /// `start` set to the given boundary, preserving its telemetry broadcast
-    /// receiver. Buffered telemetry from the jumped-over window is drained and
-    /// discarded (including `Lagged` errors from the broadcast receiver, which
-    /// can happen when the server bursts enough samples during the jump to fill
-    /// the channel). A subscription with no stream yet gets a resampler aligned
-    /// to the new frame when it attaches, and its receiver is drained then.
-    fn rebuild_resamplers_after_jump(
+    /// Restarts every attached stream as fresh, with a new resampler whose
+    /// `start` is the given boundary. The stream keeps its telemetry broadcast
+    /// receiver and its unread count. All buffered telemetry is drained and
+    /// discarded, including messages that arrived after the jump.
+    ///
+    /// Draining also clears `Lagged` errors from the broadcast receiver, which
+    /// happen when more samples arrive during the jump than the channel holds.
+    ///
+    /// The jump is also counted in `resyncs`, so a subscription with no stream
+    /// yet has its receiver drained when it attaches. Its resampler is then
+    /// aligned to the new frame.
+    fn restart_streams_after_jump(
         &mut self,
         subscriptions: &mut HashMap<Key, Option<ResampledStream>>,
         start: DateTime<Utc>,
     ) {
         self.resyncs += 1;
         for (key, stream) in subscriptions.iter_mut() {
-            // Drain any samples that were queued during the jump window;
-            // they are timestamped on the old wall-clock frame and would
-            // pollute the realigned resampler.
-            if let Some(stream) = stream {
-                while poll_telemetry(&mut stream.receiver, key.component_id).is_some() {}
-                stream.resampler = self.build_resampler(key.metric, start);
-            }
+            let Some(stream) = stream else {
+                continue;
+            };
+            // Drain every queued sample, so the new resampler starts empty:
+            // samples from before the jump may not fit its window, for example
+            // when the server's clock jumped too.
+            while poll_telemetry(&mut stream.receiver, key.component_id).is_some() {}
+            stream.resampler = self.build_resampler(key.metric, start);
+            stream.fresh = true;
         }
     }
 
@@ -987,6 +1004,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_jump_keeps_the_unread_count() {
+        let mut actor = bare_actor();
+        let key = active_power_key(2);
+        let (_tx, receiver) = broadcast::channel(1);
+        let mut stream = attached_subscription(&actor, key, receiver, actor.resampler_ts).unwrap();
+        stream.unread_ticks = 2;
+        let mut subscriptions = HashMap::from([(key, Some(stream))]);
+
+        actor.restart_streams_after_jump(&mut subscriptions, actor.resampler_ts);
+
+        assert_eq!(
+            subscriptions[&key].as_ref().map(|s| s.unread_ticks),
+            Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_jump_restarts_attached_streams_as_fresh() {
+        let mut actor = bare_actor();
+        let interval = actor.config.resampling_interval;
+        let attached = active_power_key(2);
+        let pending = active_power_key(3);
+        let (tx, receiver) = broadcast::channel(1);
+        let mut subscriptions = HashMap::from([
+            (
+                attached,
+                attached_subscription(&actor, attached, receiver, actor.resampler_ts - interval),
+            ),
+            (pending, None),
+        ]);
+        // Queued during the jump, on the old wall-clock frame.
+        tx.send(ElectricalComponentTelemetry::default()).unwrap();
+
+        actor.restart_streams_after_jump(&mut subscriptions, actor.resampler_ts);
+        assert_eq!(
+            subscriptions[&attached].as_ref().map(|s| s.fresh),
+            Some(true)
+        );
+        assert!(subscriptions[&pending].is_none());
+
+        actor.resampler_ts += interval;
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        assert!(
+            snapshot.is_empty(),
+            "a message drained after a jump must not count as the first one",
+        );
+    }
+
+    #[tokio::test]
     async fn test_silent_new_subscription_reads_missing_after_one_tick() {
         let mut actor = bare_actor();
         let interval = actor.config.resampling_interval;
@@ -1140,7 +1206,7 @@ mod tests {
         let mut subscriptions = HashMap::from([(crossed, None)]);
         let resyncs_when_sent = actor.resyncs;
         let crossed_receiver = queued_receiver();
-        actor.rebuild_resamplers_after_jump(&mut subscriptions, actor.resampler_ts);
+        actor.restart_streams_after_jump(&mut subscriptions, actor.resampler_ts);
         actor.attach_subscription(
             crossed,
             resyncs_when_sent,
@@ -1169,14 +1235,14 @@ mod tests {
         let mut subscriptions = HashMap::new();
         let mut subscribe_requests = FuturesUnordered::new();
 
-        actor.rebuild_resamplers_after_jump(&mut subscriptions, actor.resampler_ts);
+        actor.restart_streams_after_jump(&mut subscriptions, actor.resampler_ts);
         let resyncs_when_sent = actor.resyncs;
         actor.start_missing_subscriptions(
             &HashSet::from([key]),
             &mut subscriptions,
             &mut subscribe_requests,
         );
-        actor.rebuild_resamplers_after_jump(&mut subscriptions, actor.resampler_ts);
+        actor.restart_streams_after_jump(&mut subscriptions, actor.resampler_ts);
 
         let (_, resyncs_in_request, _) = subscribe_requests.next().await.unwrap();
         assert_eq!(resyncs_in_request, resyncs_when_sent);
@@ -1213,15 +1279,14 @@ mod tests {
         (lm, open)
     }
 
-    // Pins the upstream contract that `rebuild_resamplers_after_jump`
-    // relies on: after rebuilding with `start = current - interval`, a
-    // `resample(current)` call on an empty buffer must yield exactly
-    // one output, with `value() == None`. If `frequenz_resampling`
-    // ever returns zero outputs for an empty window, the jump-recovery
-    // path flips from a graceful `None` sample to a runtime
-    // `ConnectionFailure("Resampling produced N values")`, so this
-    // assumption deserves a focused regression test rather than only
-    // implicit coverage from the end-to-end NTP-jump tests.
+    // Pins the upstream contract that `restart_streams_after_jump` relies on:
+    // after rebuilding with `start = current - interval`, a `resample(current)`
+    // call on an empty buffer must yield exactly one output, with `value() ==
+    // None`. If `frequenz_resampling` ever returns zero outputs for an empty
+    // window, the jump-recovery path flips from a graceful `None` sample to a
+    // runtime `ConnectionFailure("Resampling produced N values")`, so this
+    // assumption deserves a focused regression test rather than only implicit
+    // coverage from the end-to-end NTP-jump tests.
     #[test]
     fn test_resampler_empty_window_yields_single_none_sample() {
         let interval = TimeDelta::try_seconds(1).unwrap();
@@ -1594,5 +1659,95 @@ mod tests {
         drop(stream);
         // Up to six resampling intervals of simulated time.
         wait_for_open_streams(&open, BTreeSet::new(), interval.to_std().unwrap() / 5, 30).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_resync_tick_reads_every_component_as_unknown() {
+        let interval = TimeDelta::try_seconds(1).unwrap();
+        let clock = aligned_clock();
+        // Inverter 5 has no meter of its own, so its PV formula is
+        // `COALESCE(#5, 0)`.
+        let (lm, open) = handle_for(
+            MockComponent::grid(1).with_children(vec![MockComponent::meter(2).with_children(
+                vec![
+                    MockComponent::meter(3)
+                        .with_power(vec![1.0; 400])
+                        .with_children(vec![
+                            MockComponent::pv_inverter(4).with_power(vec![10.0; 400]),
+                        ]),
+                    MockComponent::pv_inverter(5).with_power(vec![20.0; 400]),
+                ],
+            )]),
+            LogicalMeterConfig::new(interval),
+            clock.clone(),
+        )
+        .await;
+        let pv_4 = lm
+            .pv::<crate::metric::AcPowerActive>(Some(BTreeSet::from([4])))
+            .unwrap();
+        let pv_5 = lm
+            .pv::<crate::metric::AcPowerActive>(Some(BTreeSet::from([5])))
+            .unwrap();
+        assert_eq!(pv_5.to_string(), "COALESCE(#5:AC_POWER_ACTIVE, 0)");
+        let mut stream_4 = BroadcastStream::new(pv_4.subscribe().await.unwrap());
+        let mut stream_5 = BroadcastStream::new(pv_5.subscribe().await.unwrap());
+        for _ in 0..2 {
+            let sample = next_sample(&mut stream_4).await.expect("no sample");
+            assert_eq!(sample.value().map(|v| v.as_watts()), Some(10.0));
+            let sample = next_sample(&mut stream_5).await.expect("no sample");
+            assert_eq!(sample.value().map(|v| v.as_watts()), Some(20.0));
+        }
+
+        clock.inject_wall_jump(TimeDelta::try_seconds(30).unwrap());
+
+        // On the resync tick the inverters have no data. They must read as
+        // unknown, not as missing, so the meter fallback is not subscribed, and
+        // `COALESCE(#5, 0)` does not send 0.
+        let resync = next_sample(&mut stream_4).await.expect("no resync sample");
+        assert_eq!(resync.value().map(|v| v.as_watts()), None);
+        let resync = next_sample(&mut stream_5).await.expect("no resync sample");
+        assert_eq!(resync.value().map(|v| v.as_watts()), None);
+        for _ in 0..4 {
+            let sample = next_sample(&mut stream_4).await.expect("no sample");
+            assert_eq!(sample.value().map(|v| v.as_watts()), Some(10.0));
+            let sample = next_sample(&mut stream_5).await.expect("no sample");
+            assert_eq!(sample.value().map(|v| v.as_watts()), Some(20.0));
+            assert_eq!(open.lock().unwrap().ids(), BTreeSet::from([4, 5]));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_resync_tick_keeps_the_subscriptions() {
+        let interval = TimeDelta::try_seconds(1).unwrap();
+        let clock = aligned_clock();
+        // The inverter sends no active power, so the formula reads the meter
+        // fallback on every tick.
+        let (lm, open) = handle_for(
+            pv_chain(|inverter| inverter.with_reactive_power(vec![5.0; 400])),
+            LogicalMeterConfig::new(interval).with_unsubscribe_after_unread_ticks(1),
+            clock.clone(),
+        )
+        .await;
+        let formula = lm.pv::<crate::metric::AcPowerActive>(None).unwrap();
+        let mut stream = BroadcastStream::new(formula.subscribe().await.unwrap());
+        let mut values = Vec::new();
+        while values.last() != Some(&Some(1.0)) {
+            assert!(values.len() < 5, "no fallback value: {values:?}");
+            let sample = next_sample(&mut stream).await.expect("no sample");
+            values.push(sample.value().map(|v| v.as_watts()));
+        }
+
+        clock.inject_wall_jump(TimeDelta::try_seconds(30).unwrap());
+
+        // The resync tick reads only the inverter, which is unknown. It must
+        // not count as a tick on which the meter went unread, or the meter is
+        // dropped and the next sample is `None` while it is subscribed again.
+        let resync = next_sample(&mut stream).await.expect("no resync sample");
+        assert_eq!(resync.value().map(|v| v.as_watts()), None);
+        for _ in 0..4 {
+            let sample = next_sample(&mut stream).await.expect("no sample");
+            assert_eq!(sample.value().map(|v| v.as_watts()), Some(1.0));
+            assert_eq!(open.lock().unwrap().ids(), BTreeSet::from([3, 4]));
+        }
     }
 }
