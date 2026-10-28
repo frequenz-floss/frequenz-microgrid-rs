@@ -32,6 +32,7 @@ The logical meter now evaluates formulas once per resampling tick, against one s
 
 ## New Features
 
+- `Cargo.toml` now declares the minimum supported Rust version, 1.90. Version 0.7.1 already needed Rust 1.90.
 - All operands of a composed formula, including operands of different metrics, are evaluated against the same tick's snapshot instead of being lined up by timestamp.
 - `Formula<Q> * Percentage` scales a formula by a percentage.
 - `Formula<Q>` implements `Clone`, and `avg` accepts constants as well as formulas.
