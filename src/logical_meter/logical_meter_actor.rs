@@ -46,6 +46,8 @@ struct SubscribedFormula {
 struct ResampledStream {
     receiver: broadcast::Receiver<ElectricalComponentTelemetry>,
     resampler: frequenz_resampling::Resampler<f32, Sample<f32>>,
+    /// Not resampled since it attached. See [`LogicalMeterActor::resample`].
+    fresh: bool,
     /// Consecutive ticks on which no formula read this key.
     unread_ticks: u32,
 }
@@ -62,8 +64,8 @@ type SubscribeRequest = BoxFuture<
 >;
 
 /// Reads a tick's resampled values and records every key read. A key that is
-/// not in the snapshot is unknown: a key with no subscription, or one with no
-/// stream.
+/// not in the snapshot is unknown: a key with no subscription, or one that
+/// [`LogicalMeterActor::resample`] left out of it.
 struct RecordingSource<'a> {
     snapshot: &'a HashMap<Key, Option<f32>>,
     reads: &'a mut HashSet<Key>,
@@ -269,6 +271,7 @@ impl<C: Clock> LogicalMeterActor<C> {
         ResampledStream {
             receiver,
             resampler: self.build_resampler(metric, start),
+            fresh: true,
             unread_ticks: 0,
         }
     }
@@ -278,6 +281,10 @@ impl<C: Clock> LogicalMeterActor<C> {
     ///
     /// A subscription with no stream has no resampler and is left out of the
     /// snapshot, so its key reads as [`Reading::Unknown`].
+    ///
+    /// A fresh stream stops being fresh. If no message is waiting, or every
+    /// waiting message gives it a sample later than this tick, it is left out
+    /// of this one snapshot, so its key reads as unknown.
     fn resample(
         &self,
         subscriptions: &mut HashMap<Key, Option<ResampledStream>>,
@@ -287,8 +294,12 @@ impl<C: Clock> LogicalMeterActor<C> {
             let Some(stream) = stream else {
                 continue;
             };
+            let mut settled = false;
             while let Some(data) = poll_telemetry(&mut stream.receiver, key.component_id) {
-                Self::push_to_resampler(&mut stream.resampler, *key, data);
+                let sample_time = Self::push_to_resampler(&mut stream.resampler, *key, data);
+                // A message settles the key, unless its sample is past this
+                // tick: that sample stays in the resampler for a later tick.
+                settled |= sample_time.is_none_or(|time| time <= self.resampler_ts);
             }
             let resampled = stream.resampler.resample(self.resampler_ts);
             if resampled.len() != 1 {
@@ -297,7 +308,10 @@ impl<C: Clock> LogicalMeterActor<C> {
                     resampled.len()
                 )));
             }
-            snapshot.insert(*key, resampled[0].clone().value());
+            if settled || !stream.fresh {
+                snapshot.insert(*key, resampled[0].clone().value());
+            }
+            stream.fresh = false;
         }
         Ok(snapshot)
     }
@@ -480,7 +494,7 @@ impl<C: Clock> LogicalMeterActor<C> {
         for (key, stream) in subscriptions.iter_mut() {
             // Drain any samples that were queued during the jump window;
             // they are timestamped on the old wall-clock frame and would
-            // pollute the freshly-aligned resampler.
+            // pollute the realigned resampler.
             if let Some(stream) = stream {
                 while poll_telemetry(&mut stream.receiver, key.component_id).is_some() {}
                 stream.resampler = self.build_resampler(key.metric, start);
@@ -489,12 +503,14 @@ impl<C: Clock> LogicalMeterActor<C> {
     }
 
     /// Extracts the resampler's metric from the given telemetry and pushes it
-    /// to the resampler's internal buffer.
+    /// to the resampler's internal buffer. Returns the pushed sample's
+    /// timestamp, or `None` if the telemetry has no sample of the metric, or
+    /// its first one has no valid timestamp or no value.
     fn push_to_resampler(
         resampler: &mut frequenz_resampling::Resampler<f32, Sample<f32>>,
         key: Key,
         data: ElectricalComponentTelemetry,
-    ) {
+    ) -> Option<DateTime<Utc>> {
         let metric = key.metric;
         let Some(dd) = data
             .metric_samples
@@ -506,20 +522,15 @@ impl<C: Clock> LogicalMeterActor<C> {
                 metric,
                 key.component_id
             );
-            return;
+            return None;
         };
-        let Some(timestamp) = dd.sample_time.and_then(|timestamp| {
+        let timestamp = dd.sample_time.and_then(|timestamp| {
             DateTime::from_timestamp(timestamp.seconds, timestamp.nanos as u32)
-        }) else {
-            return;
-        };
-        let Some(variant) = dd
+        })?;
+        let variant = dd
             .value
             .as_ref()
-            .and_then(|value| value.metric_value_variant.as_ref())
-        else {
-            return;
-        };
+            .and_then(|value| value.metric_value_variant.as_ref())?;
         let value = Some(match variant {
             MetricValueVariant::SimpleMetric(value) => value.value,
             MetricValueVariant::AggregatedMetric(value) => value.avg_value,
@@ -528,6 +539,7 @@ impl<C: Clock> LogicalMeterActor<C> {
         let sample = Sample::new(timestamp, value);
 
         resampler.push(sample);
+        Some(timestamp)
     }
 }
 
@@ -608,14 +620,16 @@ mod tests {
         }
     }
 
-    /// A subscription attached to `receiver`, whose stream starts at `start`.
+    /// A subscription attached to `receiver`, whose stream starts at `start`
+    /// and has been resampled before.
     fn attached_subscription(
         actor: &LogicalMeterActor<TokioSyncedClock>,
         key: Key,
         receiver: broadcast::Receiver<ElectricalComponentTelemetry>,
         start: DateTime<Utc>,
     ) -> Option<ResampledStream> {
-        let stream = actor.build_stream(key.metric, receiver, start);
+        let mut stream = actor.build_stream(key.metric, receiver, start);
+        stream.fresh = false;
         Some(stream)
     }
 
@@ -867,6 +881,131 @@ mod tests {
             read_keys,
             HashSet::from([pending_key]),
             "COALESCE stops at the unknown key and reads nothing beyond it",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_new_subscription_without_a_message_reads_unknown_on_its_first_tick() {
+        let mut actor = bare_actor();
+        let start = actor.resampler_ts;
+        let primary = active_power_key(4);
+        let fallback = active_power_key(3);
+        let (_primary_tx, primary_receiver) = broadcast::channel(1);
+        let mut subscriptions = HashMap::from([
+            // The primary is attached but silent, so it reads as missing.
+            (
+                primary,
+                attached_subscription(&actor, primary, primary_receiver, start),
+            ),
+            (fallback, None),
+        ]);
+        let (_fallback_tx, fallback_receiver) = broadcast::channel(1);
+        actor.attach_subscription(
+            fallback,
+            actor.resyncs,
+            Ok(fallback_receiver),
+            &mut subscriptions,
+        );
+        actor.resampler_ts += actor.config.resampling_interval;
+
+        let (sink, recorded) = recording_sink();
+        let mut formulas = HashMap::from([(
+            "COALESCE(#4, #3, 0)".to_string(),
+            subscribed_formula("COALESCE(#4, #3, 0)", vec![sink]),
+        )]);
+
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        actor.evaluate_formulas(&snapshot, &mut formulas);
+        assert_eq!(
+            *recorded.lock().unwrap(),
+            vec![(actor.resampler_ts, None)],
+            "the coalesce must wait for the new fallback, not fall through to 0",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_new_subscription_is_settled_by_a_message_without_the_metric() {
+        let mut actor = bare_actor();
+        let key = active_power_key(3);
+        let mut subscriptions = HashMap::from([(key, None)]);
+        let (tx, receiver) = broadcast::channel(1);
+        actor.attach_subscription(key, actor.resyncs, Ok(receiver), &mut subscriptions);
+        actor.resampler_ts += actor.config.resampling_interval;
+
+        // A message without the metric settles the key on the same tick.
+        tx.send(ElectricalComponentTelemetry::default()).unwrap();
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        assert_eq!(snapshot.get(&key), Some(&None));
+    }
+
+    /// A message from `key`'s component with one sample of `key`'s metric.
+    fn telemetry(key: Key, timestamp: DateTime<Utc>, value: f32) -> ElectricalComponentTelemetry {
+        use crate::client::proto::{
+            common::metrics::{self, MetricSample, SimpleMetricValue},
+            google::protobuf,
+        };
+        ElectricalComponentTelemetry {
+            electrical_component_id: key.component_id,
+            metric_samples: vec![MetricSample {
+                sample_time: Some(protobuf::Timestamp {
+                    seconds: timestamp.timestamp(),
+                    nanos: timestamp.timestamp_subsec_nanos() as i32,
+                }),
+                metric: key.metric as i32,
+                value: Some(metrics::MetricValueVariant {
+                    metric_value_variant: Some(MetricValueVariant::SimpleMetric(
+                        SimpleMetricValue { value },
+                    )),
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_new_subscription_is_not_settled_by_a_sample_past_its_tick() {
+        let mut actor = bare_actor();
+        let interval = actor.config.resampling_interval;
+        let key = active_power_key(3);
+        let mut subscriptions = HashMap::from([(key, None)]);
+        let (tx, receiver) = broadcast::channel(1);
+        actor.attach_subscription(key, actor.resyncs, Ok(receiver), &mut subscriptions);
+        actor.resampler_ts += interval;
+
+        let just_after = actor.resampler_ts + TimeDelta::milliseconds(1);
+        tx.send(telemetry(key, just_after, 7.0)).unwrap();
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        assert!(
+            !snapshot.contains_key(&key),
+            "a sample past this tick must leave the key unknown",
+        );
+
+        actor.resampler_ts += interval;
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        assert_eq!(snapshot.get(&key), Some(&Some(7.0)));
+    }
+
+    #[tokio::test]
+    async fn test_silent_new_subscription_reads_missing_after_one_tick() {
+        let mut actor = bare_actor();
+        let interval = actor.config.resampling_interval;
+        let key = active_power_key(3);
+        let mut subscriptions = HashMap::from([(key, None)]);
+        let (_tx, receiver) = broadcast::channel(1);
+        actor.attach_subscription(key, actor.resyncs, Ok(receiver), &mut subscriptions);
+        assert_eq!(subscriptions[&key].as_ref().map(|s| s.fresh), Some(true));
+
+        actor.resampler_ts += interval;
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        assert!(!snapshot.contains_key(&key));
+        assert_eq!(subscriptions[&key].as_ref().map(|s| s.fresh), Some(false));
+        actor.resampler_ts += interval;
+        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        assert_eq!(
+            snapshot.get(&key),
+            Some(&None),
+            "a stream that never sends must end up missing",
         );
     }
 

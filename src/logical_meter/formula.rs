@@ -59,6 +59,9 @@ impl std::fmt::Display for Key {
 /// A component's value is not known:
 ///
 /// - until its subscription completes;
+/// - on the first tick after that, unless a message from the component has
+///   arrived by then. A message whose sample of the metric is for a later tick
+///   does not count;
 /// - ever, if the subscription failed because the microgrid client stopped.
 ///
 /// This is not the same as a missing value. A formula that reads a component
