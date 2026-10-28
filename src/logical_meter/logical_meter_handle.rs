@@ -519,21 +519,24 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_formula_the_engine_rejects() {
-        // With phantom loads, each metered PV branch adds about three
-        // operators to the consumer formula: 400 branches exceed the engine's
-        // limit.
+    #[tokio::test(start_paused = true)]
+    async fn test_consumer_formula_of_a_large_site_evaluates() {
+        // With phantom loads, each metered PV branch adds three operators to
+        // the consumer formula, so 400 branches give 1200 operators.
         let branches = (0..400)
             .map(|i| {
                 MockComponent::meter(100 + i)
-                    .with_children(vec![MockComponent::pv_inverter(1000 + i)])
+                    .with_power(vec![1.0; 50])
+                    .with_children(vec![
+                        MockComponent::pv_inverter(1000 + i).with_power(vec![1.0; 50]),
+                    ])
             })
             .collect();
-        let api_client = MockMicrogridApiClient::new(
-            MockComponent::grid(1)
-                .with_children(vec![MockComponent::meter(2).with_children(branches)]),
-        );
+        let api_client = MockMicrogridApiClient::new(MockComponent::grid(1).with_children(vec![
+            MockComponent::meter(2)
+                .with_power(vec![500.0; 50])
+                .with_children(branches),
+        ]));
         let clock = api_client.clock();
         let lm = LogicalMeterHandle::try_new_with_clock(
             MicrogridClientHandle::new_from_client(api_client),
@@ -548,12 +551,14 @@ mod tests {
         .await
         .unwrap();
 
-        let Err(err) = lm.consumer::<crate::metric::AcPowerActive>() else {
-            panic!("expected the engine to reject the consumer formula");
-        };
-        assert_eq!(err.kind(), crate::ErrorKind::FormulaEngineError, "{err}");
-        assert!(err.to_string().contains("consumer"), "{err}");
-        assert!(err.to_string().contains("is deeper than"), "{err}");
+        let formula = lm.consumer::<crate::metric::AcPowerActive>().unwrap();
+        let values = fetch_samples(formula, 5)
+            .await
+            .iter()
+            .map(|sample| sample.value().map(|power| power.as_watts()))
+            .collect::<Vec<_>>();
+        // 500 W at the grid meter, minus 1 W at each of the 400 branch meters.
+        assert!(values.contains(&Some(100.0)), "{values:?}");
     }
 
     #[tokio::test]

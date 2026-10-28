@@ -21,9 +21,6 @@ The logical meter now evaluates formulas once per resampling tick, against one s
   - Constants render as plain numbers in the quantity's base unit: `5 W` is now `5`, `Power::from_kilowatts(100.0)` is `100000`, and `0.0` is `0`.
 - `ErrorKind::DroppedUnusedFormulas` is removed. No public API returned it, so remove any match arm or comparison on it.
 - A NaN or infinite component value, constant or intermediate result is now treated as missing data. `COALESCE` moves past it to its next operand, `AVG` skips it, and the other operators give `None`.
-- A component-graph formula with more than about 1000 `+` and `-` operators is now rejected: the `LogicalMeterHandle` method that builds it returns `ErrorKind::FormulaEngineError`. This can happen at large sites, for example:
-  - for the consumer formula with phantom loads included, at a few hundred metered branches;
-  - for a battery or PV formula over a meter with more than about 510 inverters.
 - The formulas from `LogicalMeterHandle::consumer` and `LogicalMeterHandle::producer` are no longer clamped at zero, because component graph 0.6.3 removed the clamps: they replaced valid values of metrics other than active power, such as reactive power, with zero.
   - The consumer formula can now be negative. For active power, combine it with `max` and a zero `Power` to get the old result. With phantom loads included, the consumer formula is unchanged.
   - A producer that draws power now adds a positive value instead of zero, so the producer total can be positive. For example, with PV and a CHP behind separate meters, PV producing 10 kW and the CHP drawing 2 kW used to give -10 kW and now give -8 kW.
