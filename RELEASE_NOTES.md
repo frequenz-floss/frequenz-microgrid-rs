@@ -36,4 +36,5 @@ The logical meter now evaluates formulas once per resampling tick, against one s
 
 ## Bug Fixes
 
+- The microgrid client now closes a component's telemetry stream as soon as its last receiver is dropped. Before, the stream stayed open until the component sent its next message or the stream failed, so a component that sent nothing more could keep its stream open indefinitely.
 - The microgrid client no longer hangs when many telemetry streams start or fail at the same time, for example after a connection loss while more than 50 telemetry streams are open. Before, it stopped starting and reconnecting streams and stopped answering requests.

@@ -361,9 +361,9 @@ async fn run_electrical_component_telemetry_stream(
     }
 }
 
-/// Forwards telemetry from `stream` to `tx`. Checks for receivers at the start
-/// and after each message: returns [`StreamStatus::Ended`] if `tx` has none,
-/// and [`StreamStatus::Failed`] if the stream stops first.
+/// Forwards telemetry from `stream` to `tx`. Returns [`StreamStatus::Ended`] as
+/// soon as `tx` has no receivers, also while waiting for a message, and
+/// [`StreamStatus::Failed`] if the stream stops first.
 async fn forward_telemetry(
     mut stream: impl Stream<
         Item = Result<ReceiveElectricalComponentTelemetryStreamResponse, tonic::Status>,
@@ -371,23 +371,26 @@ async fn forward_telemetry(
     electrical_component_id: u64,
     tx: &broadcast::Sender<ElectricalComponentTelemetry>,
 ) -> StreamStatus {
+    let closed = tx.closed();
+    tokio::pin!(closed);
     loop {
-        if tx.receiver_count() == 0 {
-            tracing::debug!(
-                "Dropping ComponentData stream for component_id:{:?}",
-                electrical_component_id
-            );
-            return StreamStatus::Ended(electrical_component_id);
-        }
-        let message = match stream.next().await {
-            Some(m) => m,
-            None => {
-                tracing::error!(
-                    "get_component_data stream failed for {}",
-                    electrical_component_id,
+        let next_message = select! {
+            biased;
+            () = &mut closed => {
+                tracing::debug!(
+                    "Dropping ComponentData stream for component_id:{:?}",
+                    electrical_component_id
                 );
-                break;
+                return StreamStatus::Ended(electrical_component_id);
             }
+            next = stream.next() => next,
+        };
+        let Some(message) = next_message else {
+            tracing::error!(
+                "get_component_data stream failed for {}",
+                electrical_component_id,
+            );
+            break;
         };
         let data = match message {
             Ok(ReceiveElectricalComponentTelemetryStreamResponse { telemetry: Some(d) }) => d,
@@ -408,9 +411,9 @@ async fn forward_telemetry(
             }
         };
 
-        if tx.send(data).is_err() {
-            continue;
-        };
+        // A send fails only when no receivers are left, and `closed` handles
+        // that case.
+        let _ = tx.send(data);
     }
 
     StreamStatus::Failed(electrical_component_id)
@@ -561,8 +564,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_mock_tracks_open_telemetry_streams() {
         // Enough samples to outlast the wait, so the stream can only close
-        // because the receiver went away. The client actor closes the stream
-        // when the next message arrives after the last receiver went away.
+        // because the receiver went away.
         assert_stream_closes_when_receiver_drops(
             MockComponent::meter(2).with_power(vec![1.0; 400]),
         )
@@ -570,14 +572,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_mock_closes_a_silent_components_stream_when_its_receiver_drops() {
-        // Enough samples to outlast the wait, so the receiver is dropped while
-        // the component still has samples to send. The client actor drops the
-        // stream on the next message. The send then fails, and the task must
-        // end even though the component would go silent.
+    async fn test_silent_component_stream_closes_when_its_receiver_drops() {
+        // One sample, then silence: no message arrives after the receiver is
+        // dropped, so only the dropped receiver can close the stream.
         assert_stream_closes_when_receiver_drops(
             MockComponent::meter(2)
-                .with_power(vec![1.0; 400])
+                .with_power(vec![1.0])
                 .with_silence_after_metrics(),
         )
         .await;

@@ -370,10 +370,6 @@ impl MockComponent {
     /// Keeps the telemetry stream open and silent after the configured metrics
     /// are exhausted, so the client actor doesn't reconnect and replay the
     /// data. Useful for testing missing-data timeouts.
-    ///
-    /// If its last receiver is dropped while samples remain, the client drops
-    /// the stream on the next sample, and the stream ends. A receiver dropped
-    /// after the component went silent leaves the stream open.
     pub fn with_silence_after_metrics(mut self) -> Self {
         self.silence_after_metrics = true;
         self
@@ -453,12 +449,12 @@ impl MockMicrogridApiClient {
     ///
     /// An id joins when the mock starts streaming it and leaves when its last
     /// stream task ends: when the client drops the stream, or when the
-    /// component's samples run out. The client drops a stream on the first
-    /// message after its last receiver is gone, so a
-    /// `with_silence_after_metrics` component leaves only if its receiver is
-    /// dropped before it goes silent. A reconnect that starts a new stream task
-    /// before the previous one has ended keeps the id open. A component with no
-    /// samples is never counted, because no stream task is started for it.
+    /// component's samples run out, unless it was built with
+    /// [`MockComponent::with_silence_after_metrics`]. The client drops a stream
+    /// when its last receiver is gone. A reconnect that starts a new stream
+    /// task before the previous one has ended keeps the id open. A component
+    /// with no samples is never counted, because no stream task is started for
+    /// it.
     pub fn open_telemetry_streams(&self) -> Arc<Mutex<OpenStreams>> {
         self.open_streams.clone()
     }
@@ -692,8 +688,7 @@ impl MicrogridApiClient for MockMicrogridApiClient {
                 if silence_after_metrics {
                     // Hold the sender open so the client actor doesn't see the
                     // stream end and reconnect. Finish when it drops the
-                    // stream; it only notices a dropped receiver on a message,
-                    // so a silent component stays open.
+                    // stream.
                     tx.closed().await;
                 }
             });
