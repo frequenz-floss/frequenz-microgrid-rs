@@ -195,13 +195,7 @@ impl<C: Clock> LogicalMeterActor<C> {
                         self.resampler_ts = tick_info.expected_tick_time;
                     }
 
-                    let snapshot = match self.resample(&mut subscriptions) {
-                        Ok(snapshot) => snapshot,
-                        Err(err) => {
-                            tracing::error!("Error resampling metrics: {}", err);
-                            continue;
-                        }
-                    };
+                    let snapshot = self.resample(&mut subscriptions);
                     let read_keys = self.evaluate_formulas(&snapshot, &mut formulas);
                     self.last_snapshot = snapshot;
                     // On the resync tick, the restarted streams normally read
@@ -296,15 +290,20 @@ impl<C: Clock> LogicalMeterActor<C> {
     /// A fresh stream stops being fresh. If no message is waiting, or every
     /// waiting message gives it a sample later than this tick, it is left out
     /// of this one snapshot, so its key reads as unknown.
+    ///
+    /// When a resampler does not give exactly one value for this tick, the
+    /// error is logged, and its key is left out of this tick's snapshot, so it
+    /// reads as unknown. The other keys are not affected.
     fn resample(
         &self,
         subscriptions: &mut HashMap<Key, Option<ResampledStream>>,
-    ) -> Result<HashMap<Key, Option<f32>>, Error> {
+    ) -> HashMap<Key, Option<f32>> {
         let mut snapshot = HashMap::with_capacity(subscriptions.len());
         for (key, stream) in subscriptions.iter_mut() {
             let Some(stream) = stream else {
                 continue;
             };
+            let fresh = std::mem::replace(&mut stream.fresh, false);
             let mut settled = false;
             while let Some(data) = poll_telemetry(&mut stream.receiver, key.component_id) {
                 let sample_time = Self::push_to_resampler(&mut stream.resampler, *key, data);
@@ -312,19 +311,21 @@ impl<C: Clock> LogicalMeterActor<C> {
                 // tick: that sample stays in the resampler for a later tick.
                 settled |= sample_time.is_none_or(|time| time <= self.resampler_ts);
             }
-            let resampled = stream.resampler.resample(self.resampler_ts);
-            if resampled.len() != 1 {
-                return Err(Error::connection_failure(format!(
-                    "Resampling produced {} values",
-                    resampled.len()
-                )));
+            let sample = match <[_; 1]>::try_from(stream.resampler.resample(self.resampler_ts)) {
+                Ok([sample]) => sample,
+                Err(resampled) => {
+                    tracing::error!(
+                        "Resampling {key} produced {} values, expected 1",
+                        resampled.len()
+                    );
+                    continue;
+                }
+            };
+            if settled || !fresh {
+                snapshot.insert(*key, sample.value());
             }
-            if settled || !stream.fresh {
-                snapshot.insert(*key, resampled[0].clone().value());
-            }
-            stream.fresh = false;
         }
-        Ok(snapshot)
+        snapshot
     }
 
     /// Evaluates every formula against `snapshot` and sends the results. Sinks
@@ -873,7 +874,7 @@ mod tests {
             ),
         ]);
 
-        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        let snapshot = actor.resample(&mut subscriptions);
 
         assert_eq!(
             snapshot.keys().copied().collect::<HashSet<_>>(),
@@ -931,7 +932,7 @@ mod tests {
             subscribed_formula("COALESCE(#4, #3, 0)", vec![sink]),
         )]);
 
-        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        let snapshot = actor.resample(&mut subscriptions);
         actor.evaluate_formulas(&snapshot, &mut formulas);
         assert_eq!(
             *recorded.lock().unwrap(),
@@ -951,7 +952,7 @@ mod tests {
 
         // A message without the metric settles the key on the same tick.
         tx.send(ElectricalComponentTelemetry::default()).unwrap();
-        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        let snapshot = actor.resample(&mut subscriptions);
         assert_eq!(snapshot.get(&key), Some(&None));
     }
 
@@ -992,14 +993,14 @@ mod tests {
 
         let just_after = actor.resampler_ts + TimeDelta::milliseconds(1);
         tx.send(telemetry(key, just_after, 7.0)).unwrap();
-        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        let snapshot = actor.resample(&mut subscriptions);
         assert!(
             !snapshot.contains_key(&key),
             "a sample past this tick must leave the key unknown",
         );
 
         actor.resampler_ts += interval;
-        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        let snapshot = actor.resample(&mut subscriptions);
         assert_eq!(snapshot.get(&key), Some(&Some(7.0)));
     }
 
@@ -1045,7 +1046,7 @@ mod tests {
         assert!(subscriptions[&pending].is_none());
 
         actor.resampler_ts += interval;
-        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        let snapshot = actor.resample(&mut subscriptions);
         assert!(
             snapshot.is_empty(),
             "a message drained after a jump must not count as the first one",
@@ -1063,15 +1064,55 @@ mod tests {
         assert_eq!(subscriptions[&key].as_ref().map(|s| s.fresh), Some(true));
 
         actor.resampler_ts += interval;
-        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        let snapshot = actor.resample(&mut subscriptions);
         assert!(!snapshot.contains_key(&key));
         assert_eq!(subscriptions[&key].as_ref().map(|s| s.fresh), Some(false));
         actor.resampler_ts += interval;
-        let snapshot = actor.resample(&mut subscriptions).unwrap();
+        let snapshot = actor.resample(&mut subscriptions);
         assert_eq!(
             snapshot.get(&key),
             Some(&None),
             "a stream that never sends must end up missing",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_resampler_that_fell_behind_only_makes_its_own_key_unknown() {
+        let mut actor = bare_actor();
+        let interval = actor.config.resampling_interval;
+        let behind_keys = [active_power_key(2), active_power_key(3)];
+        let other_key = active_power_key(4);
+        let (tx, _) = broadcast::channel(1);
+        // The behind keys are one interval behind, so each gives two values on
+        // this tick. With two of them, one is always resampled after the other,
+        // so a tick that stopped at the first would leave the second behind.
+        let behind_start = actor.resampler_ts - interval * 2;
+        let other_start = actor.resampler_ts - interval;
+        let mut subscriptions: HashMap<_, _> = behind_keys
+            .iter()
+            .map(|&key| (key, behind_start))
+            .chain([(other_key, other_start)])
+            .map(|(key, start)| {
+                (
+                    key,
+                    attached_subscription(&actor, key, tx.subscribe(), start),
+                )
+            })
+            .collect();
+
+        let snapshot = actor.resample(&mut subscriptions);
+        assert_eq!(
+            snapshot.keys().copied().collect::<HashSet<_>>(),
+            HashSet::from([other_key]),
+            "only the out-of-step keys must read unknown",
+        );
+
+        actor.resampler_ts += interval;
+        let snapshot = actor.resample(&mut subscriptions);
+        assert_eq!(
+            snapshot.keys().copied().collect::<HashSet<_>>(),
+            HashSet::from([behind_keys[0], behind_keys[1], other_key]),
+            "every resampler must be in step on the next tick",
         );
     }
 
