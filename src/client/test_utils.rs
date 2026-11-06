@@ -58,7 +58,7 @@ pub struct MockMicrogridApiClient {
     /// Component ids with a running telemetry-stream task.
     open_streams: Arc<Mutex<OpenStreams>>,
     /// Attempts to start a telemetry stream, per component id.
-    start_attempts: HashMap<u64, usize>,
+    start_attempts: Arc<Mutex<HashMap<u64, usize>>>,
 }
 
 /// The component ids with a running telemetry-stream task.
@@ -419,7 +419,7 @@ impl MockMicrogridApiClient {
             clock,
             augment_bounds_calls: Arc::new(Mutex::new(Vec::new())),
             open_streams: Arc::new(Mutex::new(OpenStreams::default())),
-            start_attempts: HashMap::new(),
+            start_attempts: Arc::default(),
         };
 
         fn traverse(node: &MockComponent, client: &mut MockMicrogridApiClient) {
@@ -457,6 +457,13 @@ impl MockMicrogridApiClient {
     /// it.
     pub fn open_telemetry_streams(&self) -> Arc<Mutex<OpenStreams>> {
         self.open_streams.clone()
+    }
+
+    /// Counts the attempts to start a telemetry stream, per component id,
+    /// failed ones included.
+    #[cfg(test)]
+    pub(crate) fn telemetry_start_attempts(&self) -> Arc<Mutex<HashMap<u64, usize>>> {
+        self.start_attempts.clone()
     }
 }
 
@@ -535,9 +542,13 @@ impl MicrogridApiClient for MockMicrogridApiClient {
             .cloned();
 
         let failed_starts = component.as_ref().map_or(0, |c| c.failed_starts);
-        let attempts = self.start_attempts.entry(comp_id).or_default();
-        *attempts += 1;
-        if *attempts <= failed_starts {
+        let attempts = {
+            let mut start_attempts = self.start_attempts.lock().unwrap();
+            let attempts = start_attempts.entry(comp_id).or_default();
+            *attempts += 1;
+            *attempts
+        };
+        if attempts <= failed_starts {
             return Err(tonic::Status::unavailable(format!(
                 "telemetry stream for {comp_id} failed to start"
             )));

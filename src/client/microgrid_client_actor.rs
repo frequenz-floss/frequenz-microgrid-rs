@@ -77,30 +77,16 @@ impl<T: MicrogridApiClient> MicrogridClientActor<T> {
                         }
                         Some(StreamStatus::Ended(component_id)) => {
                             components_to_retry.remove(&component_id);
-                            match component_streams.get(&component_id) {
-                                // A subscriber arrived between the stream
-                                // task's no-receivers check and this message;
-                                // the task is gone, so restart the stream for
-                                // the new subscriber.
-                                Some(tx) if tx.receiver_count() > 0 => {
-                                    let tx = tx.clone();
-                                    start_electrical_component_telemetry_stream(
-                                        &mut self.client,
-                                        &mut components_to_retry,
-                                        component_id,
-                                        tx,
-                                        stream_status_tx.clone(),
-                                    )
-                                    .await;
-                                }
-                                // Drop the cached sender: nothing writes to it
-                                // anymore, so handing out further subscriptions
-                                // on it would never yield data. The next
-                                // subscription starts a fresh stream instead.
-                                _ => {
-                                    component_streams.remove(&component_id);
-                                }
-                            }
+                            // A subscriber may have arrived between the stream
+                            // task's no-receivers check and this message.
+                            restart_or_forget(
+                                &mut self.client,
+                                &mut component_streams,
+                                &mut components_to_retry,
+                                component_id,
+                                stream_status_tx.clone(),
+                            )
+                            .await;
                         }
                         None => {
                             tracing::error!("MicrogridClientActor: Stream status channel closed, exiting.");
@@ -109,15 +95,13 @@ impl<T: MicrogridApiClient> MicrogridClientActor<T> {
                     }
                 }
                 now = retry_timer.tick() => {
-                    if let Err(e) = handle_retry_timer(
+                    handle_retry_timer(
                         &mut self.client,
                         &mut component_streams,
                         &mut components_to_retry,
                         stream_status_tx.clone(),
                         now,
-                    ).await {
-                        tracing::error!("MicrogridClientActor: Error handling retry timer: {e}");
-                    }
+                    ).await;
                 }
             }
         }
@@ -257,38 +241,65 @@ async fn handle_instruction<T: MicrogridApiClient>(
     Ok(())
 }
 
-/// Handles the retry timer, checking if the data streams for any components
-/// need to be retried and restarting their streaming tasks if necessary.
+/// Handles the retry timer: restarts or forgets each component whose stream
+/// retry is due, see [`restart_or_forget`].
 async fn handle_retry_timer<T: MicrogridApiClient>(
     client: &mut T,
     component_streams: &mut HashMap<u64, broadcast::Sender<ElectricalComponentTelemetry>>,
     components_to_retry: &mut HashMap<u64, RetryTracker>,
     stream_status_tx: mpsc::Sender<StreamStatus>,
     now: tokio::time::Instant,
-) -> Result<(), Error> {
+) {
     let due: Vec<u64> = components_to_retry
         .iter()
         .filter(|(_, tracker)| tracker.next_retry_time() <= now)
         .map(|(component_id, _)| *component_id)
         .collect();
     for component_id in due {
-        let Some(tx) = component_streams.get(&component_id).cloned() else {
-            components_to_retry.remove(&component_id);
-            tracing::error!("Component stream not found for retry: {component_id}");
-            return Err(Error::internal(format!(
-                "Component stream not found for retry: {component_id}"
-            )));
-        };
-        start_electrical_component_telemetry_stream(
+        restart_or_forget(
             client,
+            component_streams,
             components_to_retry,
             component_id,
-            tx,
             stream_status_tx.clone(),
         )
         .await;
     }
-    Ok(())
+}
+
+/// Restarts a component's stream if its sender still has receivers.
+///
+/// Otherwise forgets the component: nothing would write to the cached sender
+/// anymore, so the next subscription starts a new stream instead.
+async fn restart_or_forget<T: MicrogridApiClient>(
+    client: &mut T,
+    component_streams: &mut HashMap<u64, broadcast::Sender<ElectricalComponentTelemetry>>,
+    components_to_retry: &mut HashMap<u64, RetryTracker>,
+    component_id: u64,
+    stream_status_tx: mpsc::Sender<StreamStatus>,
+) {
+    match component_streams.get(&component_id) {
+        Some(tx) if tx.receiver_count() > 0 => {
+            let tx = tx.clone();
+            start_electrical_component_telemetry_stream(
+                client,
+                components_to_retry,
+                component_id,
+                tx,
+                stream_status_tx,
+            )
+            .await;
+        }
+        Some(_) => {
+            tracing::debug!("Forgetting telemetry stream for {component_id}: no receivers");
+            component_streams.remove(&component_id);
+            components_to_retry.remove(&component_id);
+        }
+        None => {
+            components_to_retry.remove(&component_id);
+            tracing::error!("Component stream not found for restart: {component_id}");
+        }
+    }
 }
 
 /// Marks a new failure for a component's stream, so that the retry timer
@@ -513,6 +524,40 @@ mod tests {
             .unwrap();
         // The retries after the two failed starts are due at 3 s and 6 s.
         assert!(start.elapsed() >= std::time::Duration::from_secs(6));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_failed_stream_is_not_retried_without_receivers() {
+        let api = MockMicrogridApiClient::new(MockComponent::grid(1).with_children(vec![
+            MockComponent::meter(2)
+                .with_power(vec![1.0; 10])
+                .with_failed_starts(1),
+        ]));
+        let attempts = api.telemetry_start_attempts();
+        let client = MicrogridClientHandle::new_from_client(api);
+
+        let rx = client
+            .receive_electrical_component_telemetry_stream(2)
+            .await
+            .unwrap();
+        drop(rx);
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        assert_eq!(
+            attempts.lock().unwrap().get(&2),
+            Some(&1),
+            "a stream without receivers must not be retried",
+        );
+
+        // The component was forgotten, so a new subscription starts a new
+        // stream.
+        let mut rx = client
+            .receive_electrical_component_telemetry_stream(2)
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("the new subscription did not start a stream")
+            .unwrap();
     }
 
     #[tokio::test(start_paused = true)]
