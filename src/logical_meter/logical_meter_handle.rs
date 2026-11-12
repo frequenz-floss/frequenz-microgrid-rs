@@ -519,21 +519,24 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_formula_the_engine_rejects() {
-        // With phantom loads, each metered PV branch adds about three
-        // operators to the consumer formula: 400 branches exceed the engine's
-        // limit.
+    #[tokio::test(start_paused = true)]
+    async fn test_consumer_formula_of_a_large_site_evaluates() {
+        // With phantom loads, each metered PV branch adds three operators to
+        // the consumer formula, so 400 branches give 1200 operators.
         let branches = (0..400)
             .map(|i| {
                 MockComponent::meter(100 + i)
-                    .with_children(vec![MockComponent::pv_inverter(1000 + i)])
+                    .with_power(vec![1.0; 50])
+                    .with_children(vec![
+                        MockComponent::pv_inverter(1000 + i).with_power(vec![1.0; 50]),
+                    ])
             })
             .collect();
-        let api_client = MockMicrogridApiClient::new(
-            MockComponent::grid(1)
-                .with_children(vec![MockComponent::meter(2).with_children(branches)]),
-        );
+        let api_client = MockMicrogridApiClient::new(MockComponent::grid(1).with_children(vec![
+            MockComponent::meter(2)
+                .with_power(vec![500.0; 50])
+                .with_children(branches),
+        ]));
         let clock = api_client.clock();
         let lm = LogicalMeterHandle::try_new_with_clock(
             MicrogridClientHandle::new_from_client(api_client),
@@ -548,12 +551,14 @@ mod tests {
         .await
         .unwrap();
 
-        let Err(err) = lm.consumer::<crate::metric::AcPowerActive>() else {
-            panic!("expected the engine to reject the consumer formula");
-        };
-        assert_eq!(err.kind(), crate::ErrorKind::FormulaEngineError, "{err}");
-        assert!(err.to_string().contains("consumer"), "{err}");
-        assert!(err.to_string().contains("is deeper than"), "{err}");
+        let formula = lm.consumer::<crate::metric::AcPowerActive>().unwrap();
+        let values = fetch_samples(formula, 5)
+            .await
+            .iter()
+            .map(|sample| sample.value().map(|power| power.as_watts()))
+            .collect::<Vec<_>>();
+        // 500 W at the grid meter, minus 1 W at each of the 400 branch meters.
+        assert!(values.contains(&Some(100.0)), "{values:?}");
     }
 
     #[tokio::test]
@@ -609,13 +614,19 @@ mod tests {
             .pv::<crate::metric::AcPowerReactive>(None)
             .unwrap();
 
-        let samples = fetch_samples(formula, 10).await;
+        let samples = fetch_samples(formula, 11).await;
 
         check_samples(
             samples,
             |q| q.as_volt_amperes_reactive(),
             TimeDelta::try_seconds(1).unwrap(),
+            // The PV inverter is the coalesce's primary and sends no telemetry
+            // at all. The first tick waits for its first message, and the
+            // second finds it missing and subscribes to the PV meter fallback,
+            // so both read `None`.
             vec![
+                None,
+                None,
                 Some(-1.4),
                 Some(-0.5),
                 Some(-0.5),
@@ -625,7 +636,6 @@ mod tests {
                 Some(-0.5),
                 Some(4.0),
                 Some(-1.4),
-                Some(-0.5),
             ],
         )
     }
@@ -637,12 +647,18 @@ mod tests {
             .battery::<crate::metric::AcVoltage>(None)
             .unwrap();
 
-        let samples = fetch_samples(formula, 10).await;
+        let samples = fetch_samples(formula, 11).await;
         check_samples(
             samples,
             |q| q.as_volts(),
             TimeDelta::try_seconds(1).unwrap(),
+            // The battery meter is the coalesce's primary and sends no
+            // telemetry at all. The first tick waits for its first message, and
+            // the second finds it missing and subscribes to the inverter
+            // fallback, so both read `None`.
             vec![
+                None,
+                None,
                 Some(398.0),
                 Some(397.67),
                 Some(397.67),
@@ -652,7 +668,6 @@ mod tests {
                 Some(397.67),
                 Some(396.0),
                 Some(398.0),
-                Some(397.67),
             ],
         )
     }
@@ -667,12 +682,17 @@ mod tests {
         let lm = new_logical_meter_handle(lm_config).await;
         let bat_volt_formula = lm.battery::<crate::metric::AcVoltage>(None).unwrap();
 
-        let samples = fetch_samples(bat_volt_formula, 10).await;
+        let samples = fetch_samples(bat_volt_formula, 11).await;
         check_samples(
             samples,
             |q| q.as_volts(),
             TimeDelta::try_milliseconds(200).unwrap(),
+            // As in `test_battery_voltage_formula`, the first tick waits for
+            // the battery meter and the second pulls in the inverter fallback,
+            // so both read `None`.
             vec![
+                None,
+                None,
                 Some(400.0),
                 Some(400.0),
                 Some(398.0),
@@ -682,19 +702,20 @@ mod tests {
                 Some(396.0),
                 Some(396.0),
                 None,
-                None,
             ],
         );
 
         let cons_pow_formula = lm.consumer::<crate::metric::AcPowerActive>().unwrap();
 
-        let samples = fetch_samples(cons_pow_formula, 10).await;
+        let samples = fetch_samples(cons_pow_formula, 11).await;
         check_samples(
             samples,
             |q| q.as_watts(),
             TimeDelta::try_milliseconds(200).unwrap(),
+            // Some components in the formula send no telemetry at all, so the
+            // first tick waits for their first message and reads `None`.
             vec![
-                Some(1.0),
+                None,
                 Some(2.0),
                 Some(3.0),
                 Some(3.0),
@@ -702,6 +723,7 @@ mod tests {
                 Some(3.0),
                 Some(2.0),
                 Some(1.0),
+                Some(0.0),
                 Some(0.0),
                 Some(0.0),
             ],
@@ -718,18 +740,21 @@ mod tests {
         let lm = new_logical_meter_handle(lm_config).await;
         let formula = lm.consumer::<crate::metric::AcPowerActive>().unwrap();
 
-        let samples = fetch_samples(formula, 8).await;
+        let samples = fetch_samples(formula, 9).await;
         check_samples(
             samples,
             |q| q.as_watts(),
             TimeDelta::try_milliseconds(200).unwrap(),
+            // Some components in the formula send no telemetry at all, so the
+            // first tick waits for their first message and reads `None`.
             vec![
+                None,
                 Some(1.0),
                 Some(1.0),
                 Some(1.0),
                 Some(1.0),
                 Some(1.0),
-                Some(1.0),
+                Some(0.0),
                 Some(0.0),
                 Some(0.0),
             ],
@@ -743,13 +768,13 @@ mod tests {
         let lm = new_logical_meter_handle(lm_config).await;
         let formula = lm.consumer::<crate::metric::AcPowerActive>().unwrap();
 
-        let samples = fetch_samples(formula, 10).await;
+        let samples = fetch_samples(formula, 11).await;
         check_samples(
             samples,
             |q| q.as_watts(),
             TimeDelta::try_milliseconds(200).unwrap(),
             vec![
-                Some(1.0),
+                None,
                 Some(2.0),
                 Some(3.0),
                 Some(3.0),
@@ -757,6 +782,7 @@ mod tests {
                 Some(3.0),
                 Some(2.0),
                 Some(1.0),
+                Some(0.0),
                 Some(0.0),
                 Some(0.0),
             ],
@@ -777,13 +803,15 @@ mod tests {
         .consumer::<crate::metric::AcCurrent>()
         .unwrap();
 
-        let samples = fetch_samples(formula, 10).await;
+        let samples = fetch_samples(formula, 11).await;
         check_samples(
             samples,
             |q| q.as_amperes(),
             TimeDelta::try_seconds(1).unwrap(),
+            // Some components in the formula send no telemetry at all, so the
+            // first tick waits for their first message and reads `None`.
             vec![
-                Some(15.0),
+                None,
                 Some(14.75),
                 Some(14.75),
                 Some(13.5),
@@ -792,6 +820,7 @@ mod tests {
                 Some(14.75),
                 Some(13.5),
                 Some(15.0),
+                Some(14.75),
                 Some(14.75),
             ],
         )
@@ -953,11 +982,25 @@ mod tests {
         let v = voltage.to_string();
         assert!(v.starts_with("COALESCE(#"), "{v}");
         assert_eq!(averaged.to_string(), format!("AVG({v}, {v}) / 2 + 0"));
-        let (base, averaged) = tokio::join!(fetch_samples(voltage, 4), fetch_samples(averaged, 4));
-        for i in 0..4 {
-            let b = base[i].value().unwrap().as_volts();
-            assert!((averaged[i].value().unwrap().as_volts() - b / 2.0).abs() < 1e-3);
+        let (base, averaged) = tokio::join!(fetch_samples(voltage, 5), fetch_samples(averaged, 5));
+        let mut compared = 0;
+        for i in 0..5 {
+            match (base[i].value(), averaged[i].value()) {
+                // The first tick waits for the coalesce's silent primary and
+                // the second pulls in its fallback, so both formulas, which
+                // share the same components, read `None` for them.
+                (None, None) => {}
+                (Some(b), Some(a)) => {
+                    assert!((a.as_volts() - b.as_volts() / 2.0).abs() < 1e-3);
+                    compared += 1;
+                }
+                (b, a) => panic!("item {i}: base {b:?}, averaged {a:?}"),
+            }
         }
+        assert_eq!(
+            compared, 3,
+            "expected three valued samples after the first two ticks"
+        );
     }
 
     #[tokio::test]
@@ -1052,6 +1095,11 @@ mod tests {
             );
         });
 
+        assert_eq!(
+            values.len(),
+            expected_values.len(),
+            "sample count differs from expected"
+        );
         for (id, (v, ev)) in values.iter().zip(expected_values.iter()).enumerate() {
             match (v, ev) {
                 (Some(v), Some(ev)) => assert!(

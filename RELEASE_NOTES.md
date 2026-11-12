@@ -2,7 +2,7 @@
 
 ## Summary
 
-The logical meter now evaluates formulas once per resampling tick, against one snapshot of component data. Composed formulas no longer subscribe to each operand separately.
+The logical meter now evaluates formulas once per resampling tick, against one snapshot of component data. Composed formulas no longer subscribe to each operand separately, and the logical meter subscribes to a component only when a formula reads it.
 
 ## Upgrading
 
@@ -21,21 +21,32 @@ The logical meter now evaluates formulas once per resampling tick, against one s
   - Constants render as plain numbers in the quantity's base unit: `5 W` is now `5`, `Power::from_kilowatts(100.0)` is `100000`, and `0.0` is `0`.
 - `ErrorKind::DroppedUnusedFormulas` is removed. No public API returned it, so remove any match arm or comparison on it.
 - A NaN or infinite component value, constant or intermediate result is now treated as missing data. `COALESCE` moves past it to its next operand, `AVG` skips it, and the other operators give `None`.
-- A component-graph formula with more than about 1000 `+` and `-` operators is now rejected: the `LogicalMeterHandle` method that builds it returns `ErrorKind::FormulaEngineError`. This can happen at large sites, for example:
-  - for the consumer formula with phantom loads included, at a few hundred metered branches;
-  - for a battery or PV formula over a meter with more than about 510 inverters.
 - The formulas from `LogicalMeterHandle::consumer` and `LogicalMeterHandle::producer` are no longer clamped at zero, because component graph 0.6.3 removed the clamps: they replaced valid values of metrics other than active power, such as reactive power, with zero.
   - The consumer formula can now be negative. For active power, combine it with `max` and a zero `Power` to get the old result. With phantom loads included, the consumer formula is unchanged.
   - A producer that draws power now adds a positive value instead of zero, so the producer total can be positive. For example, with PV and a CHP behind separate meters, PV producing 10 kW and the CHP drawing 2 kW used to give -10 kW and now give -8 kW.
   - Combining the producer formula with `min` and a zero `Power` gets close to the old result, but differs from it when one producer draws power while another produces.
+- The first samples of a new subscription may be `None`. `subscribe()` returns as soon as the request is queued, and the component subscriptions complete later.
+  - A formula emits `None` while a component it reads is still being subscribed, and on the first tick after that if the component has not sent anything for that tick yet.
+  - So a `None` in the first samples does not always mean the data is missing.
+- A `COALESCE` fallback is subscribed only once the primary's value is missing, for example because the primary stopped sending data, does not send the metric, or sends NaN.
+  - While its fallback is being subscribed, a `COALESCE` can emit `None` for a few ticks. The fallback is used once it sends data. If it sends nothing by the second tick after its subscription completes, the `COALESCE` moves on to its next operand.
+  - When the primary has a value again, the fallback stays subscribed until no formula has read it for three ticks in a row, by default.
+- If the microgrid client stops running, components that are not subscribed yet can no longer be subscribed. A formula sends `None` on every tick on which it reads such a component, and its stream stays open.
 - `Quantity` can no longer be implemented outside this crate. Use the quantity types this crate provides.
 
 ## New Features
 
+- `Cargo.toml` now declares the minimum supported Rust version, 1.90. Version 0.7.1 already needed Rust 1.90.
 - All operands of a composed formula, including operands of different metrics, are evaluated against the same tick's snapshot instead of being lined up by timestamp.
+- The logical meter subscribes to component telemetry on demand: to a component only when a formula reads it, and to a `COALESCE` fallback only once the primary's value is missing. By default, a component whose subscription has succeeded is unsubscribed on the third tick in a row in which no formula reads it. The first tick after the wall clock jumps by more than one resampling interval is left out: it is not counted as unread, and a read on that tick does not reset the count. Change this with `LogicalMeterConfig::with_unsubscribe_after_unread_ticks`.
 - `Formula<Q> * Percentage` scales a formula by a percentage.
 - `Formula<Q>` implements `Clone`, and `avg` accepts constants as well as formulas.
+- `test-utils`: `MockMicrogridApiClient::open_telemetry_streams()` reports which components have an open telemetry stream, and `wait_for_open_streams()` waits until that set matches an expected one, and panics if it still does not match after the given number of attempts. `MockComponent::with_failed_starts(count)` makes the first `count` attempts to start a component's telemetry stream fail.
 
 ## Bug Fixes
 
-<!-- Here goes notable bug fixes that are worth a special mention or explanation -->
+- The microgrid client now closes a component's telemetry stream as soon as its last receiver is dropped. Before, the stream stayed open until the component sent its next message or the stream failed, so a component that sent nothing more could keep its stream open indefinitely.
+- The microgrid client no longer retries a failed telemetry stream after all its receivers are dropped. Before, it retried every few seconds for as long as the API kept failing.
+- The microgrid client no longer hangs when many telemetry streams start or fail at the same time, for example after a connection loss while more than 50 telemetry streams are open. Before, it stopped starting and reconnecting streams and stopped answering requests.
+- On the first tick after the wall clock jumps by more than one resampling interval, a formula that reads a component now sends `None`, except in rare cases where new data arrives while the tick is being processed. Before, it was computed from resamplers with no data, so `COALESCE(#1, 0)` sent a made-up 0.
+- When the logical meter cannot resample one metric of a component on a tick, the formulas that read it send `None` for that tick, and the other formulas are not affected. Before, no formula sent anything on that tick, and this could repeat for up to one more tick per resampled metric.

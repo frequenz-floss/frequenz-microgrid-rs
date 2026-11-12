@@ -42,7 +42,8 @@ impl MicrogridClientHandle {
     /// The connection is established lazily on the first RPC, so this method
     /// succeeds even when no server is reachable yet.  Per-call errors will
     /// surface from the individual RPC methods, and the actor's per-stream
-    /// retry loop will keep attempting to reconnect telemetry streams.
+    /// retry loop will keep attempting to reconnect telemetry streams that
+    /// still have receivers.
     ///
     /// Returns an error only if `url` is not a valid endpoint URL.
     pub async fn try_new(url: impl Into<String>) -> Result<Self, Error> {
@@ -60,13 +61,6 @@ impl MicrogridClientHandle {
     pub fn new_from_client(client: impl MicrogridApiClient) -> Self {
         let (instructions_tx, instructions_rx) = mpsc::channel(100);
         tokio::spawn(MicrogridClientActor::new_from_client(client, instructions_rx).run());
-        Self { instructions_tx }
-    }
-
-    /// A handle whose client actor is gone, so every request fails.
-    #[cfg(test)]
-    pub(crate) fn disconnected() -> Self {
-        let (instructions_tx, _) = mpsc::channel(1);
         Self { instructions_tx }
     }
 

@@ -6,6 +6,7 @@
 mod tokio_synced_clock;
 pub use tokio_synced_clock::TokioSyncedClock;
 
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 use std::{sync::Arc, time::SystemTime};
 use tokio_stream::wrappers::ReceiverStream;
@@ -54,6 +55,61 @@ pub struct MockMicrogridApiClient {
     /// [`MockMicrogridApiClient::new_with_clock`].
     clock: TokioSyncedClock,
     pub augment_bounds_calls: Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>>,
+    /// Component ids with a running telemetry-stream task.
+    open_streams: Arc<Mutex<OpenStreams>>,
+    /// Attempts to start a telemetry stream, per component id.
+    start_attempts: Arc<Mutex<HashMap<u64, usize>>>,
+}
+
+/// The component ids with a running telemetry-stream task.
+///
+/// Counts the tasks per component, so a reconnect that starts a new task before
+/// the previous one has ended keeps the id open.
+#[derive(Debug, Default)]
+pub struct OpenStreams {
+    task_counts: BTreeMap<u64, usize>,
+}
+
+impl OpenStreams {
+    /// The ids with at least one running stream task.
+    pub fn ids(&self) -> BTreeSet<u64> {
+        self.task_counts.keys().copied().collect()
+    }
+
+    /// Whether `id` has a running stream task.
+    pub fn contains(&self, id: u64) -> bool {
+        self.task_counts.contains_key(&id)
+    }
+}
+
+/// Counts one stream task for a component while it is alive.
+struct OpenStreamGuard {
+    streams: Arc<Mutex<OpenStreams>>,
+    id: u64,
+}
+
+impl OpenStreamGuard {
+    /// Counts a new stream task for `id`; dropping the guard counts it down.
+    fn track(streams: &Arc<Mutex<OpenStreams>>, id: u64) -> Self {
+        *streams.lock().unwrap().task_counts.entry(id).or_insert(0) += 1;
+        Self {
+            streams: streams.clone(),
+            id,
+        }
+    }
+}
+
+impl Drop for OpenStreamGuard {
+    fn drop(&mut self) {
+        if let Ok(mut streams) = self.streams.lock()
+            && let Some(count) = streams.task_counts.get_mut(&self.id)
+        {
+            *count -= 1;
+            if *count == 0 {
+                streams.task_counts.remove(&self.id);
+            }
+        }
+    }
 }
 
 /// One row per emitted telemetry frame: `(power, reactive_power, voltage,
@@ -82,6 +138,9 @@ pub struct MockComponent {
     /// prevents the client actor from reconnecting and replaying the same
     /// data. Useful for testing missing-data timeouts.
     silence_after_metrics: bool,
+    /// How many attempts to start the telemetry stream fail before one
+    /// succeeds. Set via [`MockComponent::with_failed_starts`].
+    failed_starts: usize,
     /// Bounds attached to every streamed `AcPowerActive` sample. Set via
     /// [`MockComponent::add_sample_power_bounds`]; empty by default.
     sample_power_bounds: Vec<Bounds>,
@@ -308,11 +367,18 @@ impl MockComponent {
         self
     }
 
-    /// Keeps the telemetry stream open and silent after the configured
-    /// metrics are exhausted, so the client actor doesn't reconnect and
-    /// replay the data. Useful for testing missing-data timeouts.
+    /// Keeps the telemetry stream open and silent after the configured metrics
+    /// are exhausted, so the client actor doesn't reconnect and replay the
+    /// data. Useful for testing missing-data timeouts.
     pub fn with_silence_after_metrics(mut self) -> Self {
         self.silence_after_metrics = true;
+        self
+    }
+
+    /// Makes the first `count` attempts to start the telemetry stream fail with
+    /// `Unavailable`. Later attempts succeed.
+    pub fn with_failed_starts(mut self, count: usize) -> Self {
+        self.failed_starts = count;
         self
     }
 }
@@ -352,6 +418,8 @@ impl MockMicrogridApiClient {
             connections: vec![],
             clock,
             augment_bounds_calls: Arc::new(Mutex::new(Vec::new())),
+            open_streams: Arc::new(Mutex::new(OpenStreams::default())),
+            start_attempts: Arc::default(),
         };
 
         fn traverse(node: &MockComponent, client: &mut MockMicrogridApiClient) {
@@ -376,6 +444,47 @@ impl MockMicrogridApiClient {
     ) -> Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>> {
         self.augment_bounds_calls.clone()
     }
+
+    /// The component ids whose telemetry stream is currently open.
+    ///
+    /// An id joins when the mock starts streaming it and leaves when its last
+    /// stream task ends: when the client drops the stream, or when the
+    /// component's samples run out, unless it was built with
+    /// [`MockComponent::with_silence_after_metrics`]. The client drops a stream
+    /// when its last receiver is gone. A reconnect that starts a new stream
+    /// task before the previous one has ended keeps the id open. A component
+    /// with no samples is never counted, because no stream task is started for
+    /// it.
+    pub fn open_telemetry_streams(&self) -> Arc<Mutex<OpenStreams>> {
+        self.open_streams.clone()
+    }
+
+    /// Counts the attempts to start a telemetry stream, per component id,
+    /// failed ones included.
+    #[cfg(test)]
+    pub(crate) fn telemetry_start_attempts(&self) -> Arc<Mutex<HashMap<u64, usize>>> {
+        self.start_attempts.clone()
+    }
+}
+
+/// Polls `open` (from [`MockMicrogridApiClient::open_telemetry_streams`]) until
+/// its ids equal `expected`. Checks up to `attempts + 1` times, sleeping `step`
+/// between checks, then panics.
+pub async fn wait_for_open_streams(
+    open: &Arc<Mutex<OpenStreams>>,
+    expected: BTreeSet<u64>,
+    step: std::time::Duration,
+    attempts: u32,
+) {
+    let mut ids = open.lock().unwrap().ids();
+    for _ in 0..attempts {
+        if ids == expected {
+            return;
+        }
+        tokio::time::sleep(step).await;
+        ids = open.lock().unwrap().ids();
+    }
+    assert_eq!(ids, expected, "open streams");
 }
 
 #[async_trait::async_trait]
@@ -432,6 +541,19 @@ impl MicrogridApiClient for MockMicrogridApiClient {
             .find(|c| c.component.id == comp_id)
             .cloned();
 
+        let failed_starts = component.as_ref().map_or(0, |c| c.failed_starts);
+        let attempts = {
+            let mut start_attempts = self.start_attempts.lock().unwrap();
+            let attempts = start_attempts.entry(comp_id).or_default();
+            *attempts += 1;
+            *attempts
+        };
+        if attempts <= failed_starts {
+            return Err(tonic::Status::unavailable(format!(
+                "telemetry stream for {comp_id} failed to start"
+            )));
+        }
+
         if let Some(component) = component
             && !component.metrics.is_empty()
         {
@@ -443,7 +565,9 @@ impl MicrogridApiClient for MockMicrogridApiClient {
             let silence_after_metrics = component.silence_after_metrics;
             let sample_power_bounds = component.sample_power_bounds.clone();
             let clock = self.clock.clone();
+            let guard = OpenStreamGuard::track(&self.open_streams, comp_id);
             tokio::spawn(async move {
+                let _guard = guard;
                 let dur = std::time::Duration::from_millis(200);
                 let mut interval = tokio::time::interval(dur);
                 let offset = chrono::TimeDelta::from_std(dur).unwrap_or_default();
@@ -573,10 +697,10 @@ impl MicrogridApiClient for MockMicrogridApiClient {
                     }
                 }
                 if silence_after_metrics {
-                    // Hold the sender open indefinitely so the client
-                    // actor doesn't see the stream end and reconnect.
-                    let _keep_open = tx;
-                    std::future::pending::<()>().await;
+                    // Hold the sender open so the client actor doesn't see the
+                    // stream end and reconnect. Finish when it drops the
+                    // stream.
+                    tx.closed().await;
                 }
             });
         }
