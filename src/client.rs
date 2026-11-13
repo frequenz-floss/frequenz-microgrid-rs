@@ -10,6 +10,9 @@ mod retry_tracker;
 mod microgrid_api_client;
 pub(crate) use microgrid_api_client::MicrogridApiClient;
 
+mod config;
+pub use config::MicrogridClientConfig;
+
 mod microgrid_client_handle;
 pub use microgrid_client_handle::MicrogridClientHandle;
 
