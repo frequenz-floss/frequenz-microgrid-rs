@@ -119,3 +119,160 @@ impl MicrogridClientConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{net::SocketAddr, time::Duration};
+
+    use tokio::io::AsyncReadExt as _;
+    use tonic::transport::Endpoint;
+
+    use super::{KeepAlive, MicrogridClientConfig};
+    use crate::{ErrorKind, MicrogridClientHandle};
+
+    /// Starts a server that accepts connections and never answers, and returns
+    /// its address.
+    async fn silent_server() -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut connections = Vec::new();
+            loop {
+                let (connection, _) = listener.accept().await.unwrap();
+                connections.push(connection);
+            }
+        });
+        address
+    }
+
+    #[test]
+    fn test_defaults() {
+        let config = MicrogridClientConfig::default();
+
+        assert_eq!(config.connect_timeout, Duration::from_secs(10));
+        assert_eq!(
+            config.keep_alive,
+            Some(KeepAlive {
+                interval: Duration::from_secs(60),
+                timeout: Duration::from_secs(20),
+            })
+        );
+    }
+
+    #[test]
+    fn test_builders() {
+        let config = MicrogridClientConfig::default()
+            .with_connect_timeout(Duration::from_secs(3))
+            .with_keep_alive(Duration::from_secs(5), Duration::from_secs(2));
+        assert_eq!(config.connect_timeout, Duration::from_secs(3));
+        assert_eq!(
+            config.keep_alive,
+            Some(KeepAlive {
+                interval: Duration::from_secs(5),
+                timeout: Duration::from_secs(2),
+            })
+        );
+
+        assert_eq!(config.without_keep_alive().keep_alive, None);
+    }
+
+    #[test]
+    fn test_connect_timeout_is_set_on_the_endpoint() {
+        let endpoint = Endpoint::from_static("http://localhost");
+        let config = MicrogridClientConfig::default();
+        assert_eq!(
+            config.apply_to(endpoint.clone()).get_connect_timeout(),
+            Some(Duration::from_secs(10))
+        );
+
+        let config = config.with_connect_timeout(Duration::from_secs(3));
+        assert_eq!(
+            config.apply_to(endpoint).get_connect_timeout(),
+            Some(Duration::from_secs(3))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_zero_durations_are_rejected() {
+        let zero = Duration::ZERO;
+        let one = Duration::from_secs(1);
+        for config in [
+            MicrogridClientConfig::default().with_connect_timeout(zero),
+            MicrogridClientConfig::default().with_keep_alive(zero, one),
+            MicrogridClientConfig::default().with_keep_alive(one, zero),
+        ] {
+            let result =
+                MicrogridClientHandle::try_new_with_config("http://localhost", config).await;
+
+            assert_eq!(
+                result.err().map(|e| e.kind()),
+                Some(ErrorKind::InvalidConfig)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_keep_alive_closes_a_silent_connection() {
+        let address = silent_server().await;
+        let config = MicrogridClientConfig::default()
+            .with_keep_alive(Duration::from_millis(100), Duration::from_millis(100));
+        let handle =
+            MicrogridClientHandle::try_new_with_config(format!("http://{address}"), config)
+                .await
+                .unwrap();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            handle.list_electrical_components(vec![], vec![]),
+        )
+        .await
+        .expect("the keepalive pings should close the silent connection");
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_keep_alive_closes_a_silent_idle_connection() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let config = MicrogridClientConfig::default()
+            .with_keep_alive(Duration::from_millis(100), Duration::from_millis(100));
+        let endpoint = Endpoint::from_shared(format!("http://{address}")).unwrap();
+        // Connect without a call, so the connection has nothing running.
+        let _channel = config.apply_to(endpoint).connect().await.unwrap();
+        let (mut connection, _) = listener.accept().await.unwrap();
+
+        let closed = async {
+            let mut buffer = [0; 1024];
+            while matches!(connection.read(&mut buffer).await, Ok(n) if n > 0) {}
+        };
+        tokio::time::timeout(Duration::from_secs(5), closed)
+            .await
+            .expect("the keepalive pings should close the idle connection");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_try_new_uses_the_default_keep_alive() {
+        let address = silent_server().await;
+        let handle = MicrogridClientHandle::try_new(format!("http://{address}"))
+            .await
+            .unwrap();
+
+        // With paused time, the clock jumps ahead while the call waits, so the
+        // default ping (after 60 s) and its timeout (20 s) pass at once.
+        let start = tokio::time::Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(200),
+            handle.list_electrical_components(vec![], vec![]),
+        )
+        .await
+        .expect("the default keepalive pings should close the silent connection");
+
+        assert!(result.is_err());
+        assert!(
+            start.elapsed() >= Duration::from_secs(80),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+}
