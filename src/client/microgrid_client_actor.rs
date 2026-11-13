@@ -10,11 +10,12 @@ use crate::client::{
     proto::microgrid::{
         ListElectricalComponentConnectionsRequest, ListElectricalComponentsRequest,
         ReceiveElectricalComponentTelemetryStreamRequest,
-        ReceiveElectricalComponentTelemetryStreamResponse,
+        ReceiveElectricalComponentTelemetryStreamResponse, SetElectricalComponentPowerRequest,
     },
+    proto::time,
     retry_tracker::RetryTracker,
+    set_power,
 };
-use chrono::DateTime;
 use futures::{Stream, StreamExt};
 use std::collections::HashMap;
 use tokio::{
@@ -201,10 +202,7 @@ async fn handle_instruction<T: MicrogridApiClient>(
                         electrical_component_id,
                         target_metric: target_metric as i32,
                         bounds,
-                        request_lifetime: request_lifetime.and_then(|d| {
-                            let secs = d.num_seconds();
-                            u64::try_from(secs).ok()
-                        }),
+                        request_lifetime: time::request_lifetime_secs(request_lifetime),
                     },
                 )
                 .await
@@ -214,8 +212,9 @@ async fn handle_instruction<T: MicrogridApiClient>(
                     ))
                 })
                 .map(|r| {
-                    r.into_inner().valid_until_time.and_then(|t| {
-                        match DateTime::from_timestamp(t.seconds, t.nanos as u32) {
+                    r.into_inner()
+                        .valid_until_time
+                        .and_then(|t| match time::timestamp_to_datetime(t) {
                             dt @ Some(_) => dt,
                             None => {
                                 tracing::error!(
@@ -227,13 +226,37 @@ async fn handle_instruction<T: MicrogridApiClient>(
                                 );
                                 None
                             }
-                        }
-                    })
+                        })
                 });
 
             response_tx
                 .send(response)
                 .map_err(|_| Error::internal("failed to send response"))?;
+        }
+        Some(Instruction::SetElectricalComponentPower {
+            electrical_component_id,
+            power_type,
+            power,
+            request_lifetime,
+            response_tx,
+        }) => {
+            // The caller has given up, so don't set the power.
+            if response_tx.is_closed() {
+                return Ok(());
+            }
+            tokio::spawn(
+                set_power::send_and_relay(
+                    client.clone(),
+                    SetElectricalComponentPowerRequest {
+                        electrical_component_id,
+                        power_type: power_type as i32,
+                        power,
+                        request_lifetime: time::request_lifetime_secs(request_lifetime),
+                    },
+                    response_tx,
+                )
+                .in_current_span(),
+            );
         }
         None => {}
     }
