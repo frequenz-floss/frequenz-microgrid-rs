@@ -33,6 +33,7 @@ The logical meter now evaluates formulas once per resampling tick, against one s
   - When the primary has a value again, the fallback stays subscribed until no formula has read it for three ticks in a row, by default.
 - If the microgrid client stops running, components that are not subscribed yet can no longer be subscribed. A formula sends `None` on every tick on which it reads such a component, and its stream stays open.
 - `Quantity` can no longer be implemented outside this crate. Use the quantity types this crate provides.
+- `MicrogridClientHandle::list_electrical_components` and `list_electrical_component_connections` now return an `ErrorKind::APIServerError` when the call to the service fails, like `augment_electrical_component_bounds` and `set_electrical_component_power`. Before, they returned an `ErrorKind::ConnectionFailure`. If you match on the error kind of these calls, match on `ErrorKind::APIServerError` instead.
 
 ## New Features
 
