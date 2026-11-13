@@ -19,8 +19,8 @@ pub use bounds::Bounds;
 
 pub mod client;
 pub use client::{
-    MicrogridClientHandle, SetPowerAccepted, SetPowerOutcome, SetPowerOutcomeReceiver,
-    SetPowerQuantity,
+    MicrogridClientConfig, MicrogridClientHandle, SetPowerAccepted, SetPowerOutcome,
+    SetPowerOutcomeReceiver, SetPowerQuantity,
 };
 
 mod error;

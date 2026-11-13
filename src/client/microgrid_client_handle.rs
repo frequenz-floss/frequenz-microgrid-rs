@@ -25,7 +25,7 @@ use crate::{
 };
 
 use super::{
-    SetPowerAccepted, SetPowerQuantity, instruction::Instruction,
+    MicrogridClientConfig, SetPowerAccepted, SetPowerQuantity, instruction::Instruction,
     microgrid_client_actor::MicrogridClientActor,
 };
 
@@ -40,7 +40,7 @@ pub struct MicrogridClientHandle {
 
 impl MicrogridClientHandle {
     /// Creates a new `MicrogridClientHandle` for the microgrid API at the
-    /// specified URL.
+    /// specified URL, with the default [`MicrogridClientConfig`].
     ///
     /// The connection is established lazily on the first RPC, so this method
     /// succeeds even when no server is reachable yet.  Per-call errors will
@@ -50,12 +50,24 @@ impl MicrogridClientHandle {
     ///
     /// Returns an error only if `url` is not a valid endpoint URL.
     pub async fn try_new(url: impl Into<String>) -> Result<Self, Error> {
+        Self::try_new_with_config(url, MicrogridClientConfig::default()).await
+    }
+
+    /// Creates a new `MicrogridClientHandle` for the microgrid API at the
+    /// specified URL, with the given connection settings.
+    ///
+    /// Returns an `ErrorKind::InvalidConfig` error if a duration in `config` is
+    /// zero. Behaves like [`Self::try_new`] otherwise.
+    pub async fn try_new_with_config(
+        url: impl Into<String>,
+        config: MicrogridClientConfig,
+    ) -> Result<Self, Error> {
+        config.validate()?;
         let url = url.into();
-        let channel = Endpoint::from_shared(url.clone())
-            .map_err(|e| {
-                Error::connection_failure(format!("Invalid microgrid API URL {url}: {e}"))
-            })?
-            .connect_lazy();
+        let endpoint = Endpoint::from_shared(url.clone()).map_err(|e| {
+            Error::connection_failure(format!("Invalid microgrid API URL {url}: {e}"))
+        })?;
+        let channel = config.apply_to(endpoint).connect_lazy();
         Ok(Self::new_from_client(MicrogridClient::<Channel>::new(
             channel,
         )))

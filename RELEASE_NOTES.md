@@ -34,6 +34,7 @@ The logical meter now evaluates formulas once per resampling tick, against one s
 - If the microgrid client stops running, components that are not subscribed yet can no longer be subscribed. A formula sends `None` on every tick on which it reads such a component, and its stream stays open.
 - `Quantity` can no longer be implemented outside this crate. Use the quantity types this crate provides.
 - `MicrogridClientHandle::list_electrical_components` and `list_electrical_component_connections` now return an `ErrorKind::APIServerError` when the call to the service fails, like `augment_electrical_component_bounds` and `set_electrical_component_power`. Before, they returned an `ErrorKind::ConnectionFailure`. If you match on the error kind of these calls, match on `ErrorKind::APIServerError` instead.
+- `MicrogridClientHandle::try_new`, and so `Microgrid::try_new`, now use the default `MicrogridClientConfig`. A call that can't connect within 10 seconds fails, and a connection the service stops answering on closes. If your service, or a proxy in front of it, rejects keepalive pings, create the client with `MicrogridClientHandle::try_new_with_config(url, MicrogridClientConfig::default().without_keep_alive())`. For a `Microgrid`, pass that client and a `LogicalMeterHandle` created on it to `Microgrid::new_from_handles`.
 
 ## New Features
 
@@ -47,6 +48,7 @@ The logical meter now evaluates formulas once per resampling tick, against one s
 - `Formula<Q>` implements `Clone`, and `avg` accepts constants as well as formulas.
 - `test-utils`: `MockMicrogridApiClient::open_telemetry_streams()` reports which components have an open telemetry stream, and `wait_for_open_streams()` waits until that set matches an expected one, and panics if it still does not match after the given number of attempts. `MockComponent::with_failed_starts(count)` makes the first `count` attempts to start a component's telemetry stream fail.
 - `test-utils`: `MockMicrogridApiClient::with_set_power_statuses()` sets the statuses that each set-power response stream sends, `ACCEPTED` and then `SUCCESS` by default, and `set_power_calls_handle()` returns the set-power requests received. `MockMicrogridApiClient` now implements `Clone`.
+- `MicrogridClientHandle::try_new_with_config` takes a `MicrogridClientConfig` with the connection settings: a connect timeout, and HTTP/2 keepalive pings that close a connection the service no longer answers on. The defaults are a 10-second connect timeout, and a ping after 60 seconds without data from the service, also while no call is running, with a 20-second timeout. `try_new_with_config` rejects a zero duration with `ErrorKind::InvalidConfig`.
 
 ## Bug Fixes
 
