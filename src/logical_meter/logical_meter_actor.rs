@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet, hash_map::Entry};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::client::proto::common::metrics::{Metric, metric_value_variant::MetricValueVariant};
+use crate::client::proto::time;
 use crate::logical_meter::formula::Key;
 use crate::wall_clock_timer::{Clock, WallClockTimer};
 use crate::{
@@ -542,9 +543,7 @@ impl<C: Clock> LogicalMeterActor<C> {
             );
             return None;
         };
-        let timestamp = dd.sample_time.and_then(|timestamp| {
-            DateTime::from_timestamp(timestamp.seconds, timestamp.nanos as u32)
-        })?;
+        let timestamp = dd.sample_time.and_then(time::timestamp_to_datetime)?;
         let variant = dd
             .value
             .as_ref()
@@ -958,17 +957,11 @@ mod tests {
 
     /// A message from `key`'s component with one sample of `key`'s metric.
     fn telemetry(key: Key, timestamp: DateTime<Utc>, value: f32) -> ElectricalComponentTelemetry {
-        use crate::client::proto::{
-            common::metrics::{self, MetricSample, SimpleMetricValue},
-            google::protobuf,
-        };
+        use crate::client::proto::common::metrics::{self, MetricSample, SimpleMetricValue};
         ElectricalComponentTelemetry {
             electrical_component_id: key.component_id,
             metric_samples: vec![MetricSample {
-                sample_time: Some(protobuf::Timestamp {
-                    seconds: timestamp.timestamp(),
-                    nanos: timestamp.timestamp_subsec_nanos() as i32,
-                }),
+                sample_time: Some(time::datetime_to_timestamp(timestamp)),
                 metric: key.metric as i32,
                 value: Some(metrics::MetricValueVariant {
                     metric_value_variant: Some(MetricValueVariant::SimpleMetric(
