@@ -10,10 +10,11 @@ use crate::client::{
     proto::microgrid::{
         ListElectricalComponentConnectionsRequest, ListElectricalComponentsRequest,
         ReceiveElectricalComponentTelemetryStreamRequest,
-        ReceiveElectricalComponentTelemetryStreamResponse,
+        ReceiveElectricalComponentTelemetryStreamResponse, SetElectricalComponentPowerRequest,
     },
     proto::time,
     retry_tracker::RetryTracker,
+    set_power,
 };
 use futures::{Stream, StreamExt};
 use std::collections::HashMap;
@@ -231,6 +232,31 @@ async fn handle_instruction<T: MicrogridApiClient>(
             response_tx
                 .send(response)
                 .map_err(|_| Error::internal("failed to send response"))?;
+        }
+        Some(Instruction::SetElectricalComponentPower {
+            electrical_component_id,
+            power_type,
+            power,
+            request_lifetime,
+            response_tx,
+        }) => {
+            // The caller has given up, so don't set the power.
+            if response_tx.is_closed() {
+                return Ok(());
+            }
+            tokio::spawn(
+                set_power::send_and_relay(
+                    client.clone(),
+                    SetElectricalComponentPowerRequest {
+                        electrical_component_id,
+                        power_type: power_type as i32,
+                        power,
+                        request_lifetime: time::request_lifetime_secs(request_lifetime),
+                    },
+                    response_tx,
+                )
+                .in_current_span(),
+            );
         }
         None => {}
     }
