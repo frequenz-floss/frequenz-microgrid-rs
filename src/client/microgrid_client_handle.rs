@@ -412,6 +412,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_invalid_url_is_a_connection_failure() {
+        let result = MicrogridClientHandle::try_new("not a url").await;
+
+        assert_eq!(
+            result.err().map(|e| e.kind()),
+            Some(ErrorKind::ConnectionFailure)
+        );
+    }
+
+    #[tokio::test]
     async fn test_failed_list_calls_are_api_server_errors() {
         for status in [
             tonic::Status::unavailable("down"),
