@@ -52,6 +52,7 @@ The logical meter now evaluates formulas once per resampling tick, against one s
 
 ## Bug Fixes
 
+- While the service can't be reached, the microgrid client makes at most one failed telemetry stream retry at a time, then waits a second before it retries more streams, so it answers other requests in between. Before, retrying many failed streams could hold up other requests for one connection attempt per stream. A stream is now due for a retry 3 seconds after its last failed attempt.
 - `MicrogridClientHandle::augment_electrical_component_bounds` now sends a negative `request_lifetime` as 0 seconds, which the API doesn't allow, so the service can reject it. Before, a lifetime of -1 second or less was left out of the request, and the service applied its default lifetime.
 - The microgrid client now closes a component's telemetry stream as soon as its last receiver is dropped. Before, the stream stayed open until the component sent its next message or the stream failed, so a component that sent nothing more could keep its stream open indefinitely.
 - The microgrid client no longer retries a failed telemetry stream after all its receivers are dropped. Before, it retried every few seconds for as long as the API kept failing.

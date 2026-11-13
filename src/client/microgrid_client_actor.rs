@@ -103,6 +103,9 @@ impl<T: MicrogridApiClient> MicrogridClientActor<T> {
                         stream_status_tx.clone(),
                         now,
                     ).await;
+                    // A slow round could leave the next tick due already. Wait
+                    // a full period, so waiting instructions go first.
+                    retry_timer.reset();
                 }
             }
         }
@@ -273,12 +276,15 @@ async fn handle_retry_timer<T: MicrogridApiClient>(
     stream_status_tx: mpsc::Sender<StreamStatus>,
     now: tokio::time::Instant,
 ) {
-    let due: Vec<u64> = components_to_retry
+    // Due longest first: a stream is due a fixed delay after its last failure,
+    // so streams that keep failing can't take every round from the others.
+    let mut due: Vec<(tokio::time::Instant, u64)> = components_to_retry
         .iter()
         .filter(|(_, tracker)| tracker.next_retry_time() <= now)
-        .map(|(component_id, _)| *component_id)
+        .map(|(component_id, tracker)| (tracker.next_retry_time(), *component_id))
         .collect();
-    for component_id in due {
+    due.sort_unstable();
+    for (_, component_id) in due {
         restart_or_forget(
             client,
             component_streams,
@@ -287,6 +293,14 @@ async fn handle_retry_timer<T: MicrogridApiClient>(
             stream_status_tx.clone(),
         )
         .await;
+        // The component stays in `components_to_retry` only if its stream
+        // didn't start. While the service can't be reached, each start can take
+        // about the connect timeout, and while it doesn't answer, up to the
+        // ping interval plus the ping timeout. So leave the other due streams
+        // for the next tick, and let the actor handle instructions in between.
+        if components_to_retry.contains_key(&component_id) {
+            break;
+        }
     }
 }
 

@@ -5,16 +5,17 @@
 
 use std::time::Duration;
 
+/// How long to wait after a failure before retrying.
+const RETRY_DELAY: Duration = Duration::from_secs(3);
+
 pub(super) struct RetryTracker {
-    failure_start: tokio::time::Instant,
-    num_failures: u64,
+    last_failure: tokio::time::Instant,
 }
 
 impl RetryTracker {
     pub(super) fn new() -> Self {
         Self {
-            failure_start: tokio::time::Instant::now(),
-            num_failures: 0,
+            last_failure: tokio::time::Instant::now(),
         }
     }
 
@@ -25,11 +26,14 @@ impl RetryTracker {
     ///
     /// If the last attempt was successful, this method should not be called.
     pub(super) fn mark_new_failure(&mut self) {
-        self.num_failures += 1;
+        self.last_failure = tokio::time::Instant::now();
     }
 
-    /// Returns the next retry time based on the number of failures.
+    /// Returns the next retry time: a fixed delay after the last failure.
+    ///
+    /// So a stream whose retries ran late isn't overdue again right after it
+    /// fails.
     pub(super) fn next_retry_time(&self) -> tokio::time::Instant {
-        self.failure_start + Duration::from_secs(self.num_failures * 3)
+        self.last_failure + RETRY_DELAY
     }
 }
