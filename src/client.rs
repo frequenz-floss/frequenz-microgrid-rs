@@ -5,7 +5,6 @@
 
 mod instruction;
 mod microgrid_client_actor;
-mod retry_tracker;
 
 mod microgrid_api_client;
 pub(crate) use microgrid_api_client::MicrogridApiClient;

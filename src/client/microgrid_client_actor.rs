@@ -13,7 +13,6 @@ use crate::client::{
         ReceiveElectricalComponentTelemetryStreamResponse, SetElectricalComponentPowerRequest,
     },
     proto::time,
-    retry_tracker::RetryTracker,
     set_power,
 };
 use futures::{Stream, StreamExt};
@@ -25,6 +24,9 @@ use tokio::{
 use tracing::Instrument as _;
 
 use crate::Error;
+
+/// How long to wait after a stream fails before retrying it.
+const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 
 enum StreamStatus {
     Failed(u64),
@@ -103,6 +105,9 @@ impl<T: MicrogridApiClient> MicrogridClientActor<T> {
                         stream_status_tx.clone(),
                         now,
                     ).await;
+                    // A slow round could leave the next tick due already. Wait
+                    // a full period, so waiting instructions go first.
+                    retry_timer.reset();
                 }
             }
         }
@@ -113,7 +118,7 @@ impl<T: MicrogridApiClient> MicrogridClientActor<T> {
 async fn handle_instruction<T: MicrogridApiClient>(
     client: &mut T,
     component_streams: &mut HashMap<u64, broadcast::Sender<ElectricalComponentTelemetry>>,
-    components_to_retry: &mut HashMap<u64, RetryTracker>,
+    components_to_retry: &mut HashMap<u64, tokio::time::Instant>,
     instruction: Option<Instruction>,
     stream_status_tx: mpsc::Sender<StreamStatus>,
 ) -> Result<(), Error> {
@@ -269,16 +274,19 @@ async fn handle_instruction<T: MicrogridApiClient>(
 async fn handle_retry_timer<T: MicrogridApiClient>(
     client: &mut T,
     component_streams: &mut HashMap<u64, broadcast::Sender<ElectricalComponentTelemetry>>,
-    components_to_retry: &mut HashMap<u64, RetryTracker>,
+    components_to_retry: &mut HashMap<u64, tokio::time::Instant>,
     stream_status_tx: mpsc::Sender<StreamStatus>,
     now: tokio::time::Instant,
 ) {
-    let due: Vec<u64> = components_to_retry
+    // Due longest first: a stream is due a fixed delay after its last failure,
+    // so streams that keep failing can't take every round from the others.
+    let mut due: Vec<(tokio::time::Instant, u64)> = components_to_retry
         .iter()
-        .filter(|(_, tracker)| tracker.next_retry_time() <= now)
-        .map(|(component_id, _)| *component_id)
+        .filter(|(_, retry_at)| **retry_at <= now)
+        .map(|(component_id, retry_at)| (*retry_at, *component_id))
         .collect();
-    for component_id in due {
+    due.sort_unstable();
+    for (_, component_id) in due {
         restart_or_forget(
             client,
             component_streams,
@@ -287,6 +295,14 @@ async fn handle_retry_timer<T: MicrogridApiClient>(
             stream_status_tx.clone(),
         )
         .await;
+        // The component stays in `components_to_retry` only if its stream
+        // didn't start. While the service can't be reached, each start can take
+        // about the connect timeout, and while it doesn't answer, up to the
+        // ping interval plus the ping timeout. So leave the other due streams
+        // for the next tick, and let the actor handle instructions in between.
+        if components_to_retry.contains_key(&component_id) {
+            break;
+        }
     }
 }
 
@@ -297,7 +313,7 @@ async fn handle_retry_timer<T: MicrogridApiClient>(
 async fn restart_or_forget<T: MicrogridApiClient>(
     client: &mut T,
     component_streams: &mut HashMap<u64, broadcast::Sender<ElectricalComponentTelemetry>>,
-    components_to_retry: &mut HashMap<u64, RetryTracker>,
+    components_to_retry: &mut HashMap<u64, tokio::time::Instant>,
     component_id: u64,
     stream_status_tx: mpsc::Sender<StreamStatus>,
 ) {
@@ -326,12 +342,12 @@ async fn restart_or_forget<T: MicrogridApiClient>(
 }
 
 /// Marks a new failure for a component's stream, so that the retry timer
-/// restarts it.
-fn mark_stream_failed(components_to_retry: &mut HashMap<u64, RetryTracker>, component_id: u64) {
-    components_to_retry
-        .entry(component_id)
-        .or_insert_with(RetryTracker::new)
-        .mark_new_failure();
+/// restarts it [`RETRY_DELAY`] from now.
+fn mark_stream_failed(
+    components_to_retry: &mut HashMap<u64, tokio::time::Instant>,
+    component_id: u64,
+) {
+    components_to_retry.insert(component_id, tokio::time::Instant::now() + RETRY_DELAY);
 }
 
 /// Creates a new data stream for the given component ID and starts a task to
@@ -342,7 +358,7 @@ fn mark_stream_failed(components_to_retry: &mut HashMap<u64, RetryTracker>, comp
 /// `stream_status_tx` when the stream fails or ends later.
 async fn start_electrical_component_telemetry_stream<T: MicrogridApiClient>(
     client: &mut T,
-    components_to_retry: &mut HashMap<u64, RetryTracker>,
+    components_to_retry: &mut HashMap<u64, tokio::time::Instant>,
     electrical_component_id: u64,
     tx: broadcast::Sender<ElectricalComponentTelemetry>,
     stream_status_tx: mpsc::Sender<StreamStatus>,
