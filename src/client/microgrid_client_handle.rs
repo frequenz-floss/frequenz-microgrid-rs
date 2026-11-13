@@ -24,7 +24,10 @@ use crate::{
     metric::Metric,
 };
 
-use super::{instruction::Instruction, microgrid_client_actor::MicrogridClientActor};
+use super::{
+    SetPowerAccepted, SetPowerQuantity, instruction::Instruction,
+    microgrid_client_actor::MicrogridClientActor,
+};
 
 /// A handle to the microgrid client connection.
 ///
@@ -229,6 +232,65 @@ impl MicrogridClientHandle {
                 target_metric: M::METRIC,
                 bounds: bounds.into_iter().map(|x| x.into().into()).collect(),
                 request_lifetime,
+            })
+            .await
+            .map_err(|_| Error::internal("failed to send instruction"))?;
+
+        response_rx
+            .await
+            .map_err(|e| Error::internal(format!("failed to receive response: {e}")))?
+    }
+
+    /// Sets the active or reactive power of an electrical component.
+    ///
+    /// A [`Power`](crate::quantity::Power) sets active power, and a
+    /// [`ReactivePower`](crate::quantity::ReactivePower) sets reactive power.
+    ///
+    /// For active power, negative values supply power towards the grid, and
+    /// positive values consume power from it. For reactive power, negative
+    /// values are capacitive (current leads voltage), and positive values are
+    /// inductive (current lags voltage).
+    ///
+    /// The setpoint stays in effect for `request_lifetime`, rounded down to
+    /// whole seconds. The API allows between 10 seconds and 15 minutes, and a
+    /// negative lifetime is sent as 0 seconds. `None` uses the service's
+    /// default, 60 seconds. After that, the component returns to its default
+    /// state, unless it gets another setpoint.
+    ///
+    /// Returns once the API service accepts the request, with the time until
+    /// which the setpoint stays in effect, and a receiver for its outcome:
+    /// [`SetPowerOutcome::Success`](crate::SetPowerOutcome::Success),
+    /// [`Failed`](crate::SetPowerOutcome::Failed), or
+    /// [`Overridden`](crate::SetPowerOutcome::Overridden). If the service sends
+    /// a final status straight away, the receiver already holds it, and
+    /// [`SetPowerAccepted::valid_until`](crate::SetPowerAccepted::valid_until)
+    /// is the time that response carries, which the API leaves unset for
+    /// `FAILED` and `OVERRIDDEN`.
+    ///
+    /// Before the service accepts the request, a rejection, a gRPC error or a
+    /// broken response stream, for example after a lost connection, returns an
+    /// [`ErrorKind::APIServerError`](crate::ErrorKind::APIServerError). After
+    /// that, such an error resolves the outcome receiver.
+    ///
+    /// A slow set-power call doesn't hold up other requests on the client. Two
+    /// calls for the same component can reach the service in either order,
+    /// unless the first has been accepted before the second starts. If the call
+    /// is dropped before it returns, the setpoint may still be applied.
+    pub async fn set_electrical_component_power<Q: SetPowerQuantity>(
+        &self,
+        electrical_component_id: u64,
+        power: Q,
+        request_lifetime: Option<TimeDelta>,
+    ) -> Result<SetPowerAccepted, Error> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.instructions_tx
+            .send(Instruction::SetElectricalComponentPower {
+                electrical_component_id,
+                power_type: Q::POWER_TYPE,
+                power: power.base_value(),
+                request_lifetime,
+                response_tx,
             })
             .await
             .map_err(|_| Error::internal("failed to send instruction"))?;
