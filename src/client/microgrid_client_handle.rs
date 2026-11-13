@@ -24,7 +24,10 @@ use crate::{
     metric::Metric,
 };
 
-use super::{instruction::Instruction, microgrid_client_actor::MicrogridClientActor};
+use super::{
+    MicrogridClientConfig, SetPowerAccepted, SetPowerQuantity, instruction::Instruction,
+    microgrid_client_actor::MicrogridClientActor,
+};
 
 /// A handle to the microgrid client connection.
 ///
@@ -37,7 +40,7 @@ pub struct MicrogridClientHandle {
 
 impl MicrogridClientHandle {
     /// Creates a new `MicrogridClientHandle` for the microgrid API at the
-    /// specified URL.
+    /// specified URL, with the default [`MicrogridClientConfig`].
     ///
     /// The connection is established lazily on the first RPC, so this method
     /// succeeds even when no server is reachable yet.  Per-call errors will
@@ -47,12 +50,24 @@ impl MicrogridClientHandle {
     ///
     /// Returns an error only if `url` is not a valid endpoint URL.
     pub async fn try_new(url: impl Into<String>) -> Result<Self, Error> {
+        Self::try_new_with_config(url, MicrogridClientConfig::default()).await
+    }
+
+    /// Creates a new `MicrogridClientHandle` for the microgrid API at the
+    /// specified URL, with the given connection settings.
+    ///
+    /// Returns an `ErrorKind::InvalidConfig` error if a duration in `config` is
+    /// zero. Behaves like [`Self::try_new`] otherwise.
+    pub async fn try_new_with_config(
+        url: impl Into<String>,
+        config: MicrogridClientConfig,
+    ) -> Result<Self, Error> {
+        config.validate()?;
         let url = url.into();
-        let channel = Endpoint::from_shared(url.clone())
-            .map_err(|e| {
-                Error::connection_failure(format!("Invalid microgrid API URL {url}: {e}"))
-            })?
-            .connect_lazy();
+        let endpoint = Endpoint::from_shared(url.clone()).map_err(|e| {
+            Error::connection_failure(format!("Invalid microgrid API URL {url}: {e}"))
+        })?;
+        let channel = config.apply_to(endpoint).connect_lazy();
         Ok(Self::new_from_client(MicrogridClient::<Channel>::new(
             channel,
         )))
@@ -106,6 +121,9 @@ impl MicrogridClientHandle {
     /// `ComponentCategory::COMPONENT_CATEGORY_BATTERY`.
     ///
     /// If a filter list is empty, then that filter is not applied.
+    ///
+    /// A failed call to the service returns an
+    /// [`ErrorKind::APIServerError`](crate::ErrorKind::APIServerError).
     pub async fn list_electrical_components(
         &self,
         electrical_component_ids: Vec<u64>,
@@ -144,6 +162,9 @@ impl MicrogridClientHandle {
     /// * each `start` component ID is either `1`, `2`, OR `3`,
     ///   AND
     /// * each `end` component ID is either `4`, `5`, OR `6`.
+    ///
+    /// A failed call to the service returns an
+    /// [`ErrorKind::APIServerError`](crate::ErrorKind::APIServerError).
     pub async fn list_electrical_component_connections(
         &self,
         source_electrical_component_ids: Vec<u64>,
@@ -204,6 +225,10 @@ impl MicrogridClientHandle {
     ///
     /// Note that for power metrics, regardless of the bounds, 0W is always
     /// allowed.
+    ///
+    /// The bounds stay in effect for `request_lifetime`, rounded down to whole
+    /// seconds. The API allows between 5 seconds and 15 minutes, and a negative
+    /// lifetime is sent as 0 seconds. `None` uses the service's default.
     pub async fn augment_electrical_component_bounds<M, I>(
         &self,
         electrical_component_id: u64,
@@ -233,6 +258,65 @@ impl MicrogridClientHandle {
             .await
             .map_err(|e| Error::internal(format!("failed to receive response: {e}")))?
     }
+
+    /// Sets the active or reactive power of an electrical component.
+    ///
+    /// A [`Power`](crate::quantity::Power) sets active power, and a
+    /// [`ReactivePower`](crate::quantity::ReactivePower) sets reactive power.
+    ///
+    /// For active power, negative values supply power towards the grid, and
+    /// positive values consume power from it. For reactive power, negative
+    /// values are capacitive (current leads voltage), and positive values are
+    /// inductive (current lags voltage).
+    ///
+    /// The setpoint stays in effect for `request_lifetime`, rounded down to
+    /// whole seconds. The API allows between 10 seconds and 15 minutes, and a
+    /// negative lifetime is sent as 0 seconds. `None` uses the service's
+    /// default, 60 seconds. After that, the component returns to its default
+    /// state, unless it gets another setpoint.
+    ///
+    /// Returns once the API service accepts the request, with the time until
+    /// which the setpoint stays in effect, and a receiver for its outcome:
+    /// [`SetPowerOutcome::Success`](crate::SetPowerOutcome::Success),
+    /// [`Failed`](crate::SetPowerOutcome::Failed), or
+    /// [`Overridden`](crate::SetPowerOutcome::Overridden). If the service sends
+    /// a final status straight away, the receiver already holds it, and
+    /// [`SetPowerAccepted::valid_until`](crate::SetPowerAccepted::valid_until)
+    /// is the time that response carries, which the API leaves unset for
+    /// `FAILED` and `OVERRIDDEN`.
+    ///
+    /// Before the service accepts the request, a rejection, a gRPC error or a
+    /// broken response stream, for example after a lost connection, returns an
+    /// [`ErrorKind::APIServerError`](crate::ErrorKind::APIServerError). After
+    /// that, such an error resolves the outcome receiver.
+    ///
+    /// A slow set-power call doesn't hold up other requests on the client. Two
+    /// calls for the same component can reach the service in either order,
+    /// unless the first has been accepted before the second starts. If the call
+    /// is dropped before it returns, the setpoint may still be applied.
+    pub async fn set_electrical_component_power<Q: SetPowerQuantity>(
+        &self,
+        electrical_component_id: u64,
+        power: Q,
+        request_lifetime: Option<TimeDelta>,
+    ) -> Result<SetPowerAccepted, Error> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.instructions_tx
+            .send(Instruction::SetElectricalComponentPower {
+                electrical_component_id,
+                power_type: Q::POWER_TYPE,
+                power: power.base_value(),
+                request_lifetime,
+                response_tx,
+            })
+            .await
+            .map_err(|_| Error::internal("failed to send instruction"))?;
+
+        response_rx
+            .await
+            .map_err(|e| Error::internal(format!("failed to receive response: {e}")))?
+    }
 }
 
 #[cfg(test)]
@@ -241,7 +325,7 @@ mod tests {
     use tokio::time::Instant;
 
     use crate::{
-        MicrogridClientHandle,
+        ErrorKind, MicrogridClientHandle,
         client::proto::common::{
             metrics::{SimpleMetricValue, metric_value_variant},
             microgrid::electrical_components::ElectricalComponentCategory,
@@ -325,6 +409,35 @@ mod tests {
             .unwrap();
         let component_ids: Vec<u64> = components.iter().map(|c| c.id).collect();
         assert_eq!(component_ids, vec![2, 3]);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_url_is_a_connection_failure() {
+        let result = MicrogridClientHandle::try_new("not a url").await;
+
+        assert_eq!(
+            result.err().map(|e| e.kind()),
+            Some(ErrorKind::ConnectionFailure)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_failed_list_calls_are_api_server_errors() {
+        for status in [
+            tonic::Status::unavailable("down"),
+            tonic::Status::invalid_argument("bad"),
+        ] {
+            let handle = MicrogridClientHandle::new_from_client(
+                MockMicrogridApiClient::new(MockComponent::grid(1)).with_list_call_error(status),
+            );
+
+            let components = handle.list_electrical_components(vec![], vec![]).await;
+            assert_eq!(components.unwrap_err().kind(), ErrorKind::APIServerError);
+            let connections = handle
+                .list_electrical_component_connections(vec![], vec![])
+                .await;
+            assert_eq!(connections.unwrap_err().kind(), ErrorKind::APIServerError);
+        }
     }
 
     #[tokio::test]
@@ -433,5 +546,330 @@ mod tests {
             .await
             .expect("no telemetry after resubscribing; stale stream cache?")
             .unwrap();
+    }
+
+    mod set_power {
+        use std::{
+            collections::BTreeSet,
+            sync::{Arc, Mutex},
+            time::Duration,
+        };
+
+        use chrono::TimeDelta;
+
+        use crate::{
+            Error, ErrorKind, MicrogridClientHandle, SetPowerAccepted, SetPowerOutcome,
+            client::proto::microgrid::{
+                PowerType, SetElectricalComponentPowerRequest,
+                SetElectricalComponentPowerRequestStatus as RequestStatus,
+            },
+            client::test_utils::{
+                MockComponent, MockMicrogridApiClient, TokioSyncedClock, wait_for_open_streams,
+            },
+            quantity::{Power, ReactivePower},
+            wall_clock_timer::Clock as _,
+        };
+
+        /// Returns a mock with one battery inverter, component 6.
+        fn mock() -> MockMicrogridApiClient {
+            MockMicrogridApiClient::new(MockComponent::grid(1).with_children(vec![
+                MockComponent::battery_inverter(6).with_children(vec![MockComponent::battery(7)]),
+            ]))
+        }
+
+        /// Returns a handle on `mock`, the mock's clock, and the set-power
+        /// requests the mock receives.
+        fn handle_on(
+            mock: MockMicrogridApiClient,
+        ) -> (
+            MicrogridClientHandle,
+            TokioSyncedClock,
+            Arc<Mutex<Vec<SetElectricalComponentPowerRequest>>>,
+        ) {
+            let clock = mock.clock();
+            let calls = mock.set_power_calls_handle();
+            (MicrogridClientHandle::new_from_client(mock), clock, calls)
+        }
+
+        /// Sets 100 W on component 6 through a handle on `mock`.
+        async fn set_100w(mock: MockMicrogridApiClient) -> Result<SetPowerAccepted, Error> {
+            let (handle, _, _) = handle_on(mock);
+            handle
+                .set_electrical_component_power(6, Power::from_watts(100.0), None)
+                .await
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn test_active_power_success() {
+            let (handle, clock, calls) = handle_on(mock());
+            let accepted_until = clock.wall_now() + TimeDelta::seconds(30);
+
+            let accepted = handle
+                .set_electrical_component_power(
+                    6,
+                    Power::from_kilowatts(-50.0),
+                    Some(TimeDelta::seconds(30)),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(accepted.valid_until, Some(accepted_until));
+            assert_eq!(
+                accepted.outcome.await.unwrap(),
+                SetPowerOutcome::Success {
+                    valid_until: Some(accepted_until + TimeDelta::seconds(1))
+                }
+            );
+            assert_eq!(
+                *calls.lock().unwrap(),
+                vec![SetElectricalComponentPowerRequest {
+                    electrical_component_id: 6,
+                    power_type: PowerType::Active as i32,
+                    power: -50_000.0,
+                    request_lifetime: Some(30),
+                }]
+            );
+        }
+
+        #[tokio::test]
+        async fn test_reactive_power_without_lifetime() {
+            let (handle, _, calls) = handle_on(mock());
+
+            let accepted = handle
+                .set_electrical_component_power(
+                    6,
+                    ReactivePower::from_kilovolt_amperes_reactive(2.5),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            assert!(matches!(
+                accepted.outcome.await.unwrap(),
+                SetPowerOutcome::Success { .. }
+            ));
+            assert_eq!(
+                *calls.lock().unwrap(),
+                vec![SetElectricalComponentPowerRequest {
+                    electrical_component_id: 6,
+                    power_type: PowerType::Reactive as i32,
+                    power: 2_500.0,
+                    request_lifetime: None,
+                }]
+            );
+        }
+
+        #[tokio::test]
+        async fn test_negative_lifetime_is_sent_as_zero() {
+            let (handle, _, calls) = handle_on(mock());
+
+            handle
+                .set_electrical_component_power(
+                    6,
+                    Power::from_watts(100.0),
+                    Some(TimeDelta::seconds(-5)),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(calls.lock().unwrap()[0].request_lifetime, Some(0));
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn test_final_statuses_become_outcomes() {
+            // How long after now the mock's ACCEPTED and SUCCESS responses say
+            // the setpoint stays in effect.
+            let accepted_valid_for = TimeDelta::seconds(60);
+            let success_valid_for = TimeDelta::seconds(61);
+            for (statuses, returned_valid_for, outcome_valid_for) in [
+                (
+                    vec![RequestStatus::Accepted, RequestStatus::Success],
+                    Some(accepted_valid_for),
+                    Some(success_valid_for),
+                ),
+                (
+                    vec![RequestStatus::Accepted, RequestStatus::Failed],
+                    Some(accepted_valid_for),
+                    None,
+                ),
+                (
+                    vec![RequestStatus::Accepted, RequestStatus::Overridden],
+                    Some(accepted_valid_for),
+                    None,
+                ),
+                // A repeated ACCEPTED is skipped.
+                (
+                    vec![
+                        RequestStatus::Accepted,
+                        RequestStatus::Accepted,
+                        RequestStatus::Failed,
+                    ],
+                    Some(accepted_valid_for),
+                    None,
+                ),
+                // A final status without an initial response.
+                (
+                    vec![RequestStatus::Success],
+                    Some(success_valid_for),
+                    Some(success_valid_for),
+                ),
+                (vec![RequestStatus::Overridden], None, None),
+            ] {
+                let (handle, clock, _) =
+                    handle_on(mock().with_set_power_statuses(statuses.clone()));
+                let now = clock.wall_now();
+                let expected_outcome = match statuses.last() {
+                    Some(RequestStatus::Success) => SetPowerOutcome::Success {
+                        valid_until: outcome_valid_for.map(|d| now + d),
+                    },
+                    Some(RequestStatus::Failed) => SetPowerOutcome::Failed,
+                    Some(RequestStatus::Overridden) => SetPowerOutcome::Overridden,
+                    other => unreachable!("no final status in the table: {other:?}"),
+                };
+
+                let accepted = handle
+                    .set_electrical_component_power(6, Power::from_watts(100.0), None)
+                    .await
+                    .unwrap();
+
+                assert_eq!(
+                    accepted.valid_until,
+                    returned_valid_for.map(|d| now + d),
+                    "{statuses:?}"
+                );
+                assert_eq!(
+                    accepted.outcome.await.unwrap(),
+                    expected_outcome,
+                    "{statuses:?}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn test_not_accepted_is_an_error() {
+            for mock in [
+                mock().with_set_power_statuses(vec![RequestStatus::Rejected]),
+                mock().with_set_power_statuses(vec![RequestStatus::Unspecified]),
+                mock().with_set_power_statuses(vec![]),
+                mock().with_set_power_responses(vec![Ok(99)]),
+                mock().with_set_power_responses(vec![Err(tonic::Status::internal("boom"))]),
+                mock().with_set_power_call_error(tonic::Status::invalid_argument("bad")),
+                mock().with_set_power_call_error(tonic::Status::unavailable("down")),
+            ] {
+                let err = set_100w(mock).await.unwrap_err();
+
+                assert_eq!(err.kind(), ErrorKind::APIServerError, "{err}");
+            }
+        }
+
+        #[tokio::test]
+        async fn test_no_final_status_is_an_error() {
+            for after_accepted in [
+                vec![],
+                vec![Ok(RequestStatus::Rejected as i32)],
+                vec![Ok(RequestStatus::Unspecified as i32)],
+                vec![Ok(99)],
+                vec![Err(tonic::Status::unknown("h2 protocol error"))],
+            ] {
+                let responses = [vec![Ok(RequestStatus::Accepted as i32)], after_accepted].concat();
+                let accepted = set_100w(mock().with_set_power_responses(responses))
+                    .await
+                    .unwrap();
+
+                let err = accepted.outcome.await.unwrap_err();
+                assert_eq!(err.kind(), ErrorKind::APIServerError, "{err}");
+            }
+        }
+
+        #[tokio::test]
+        async fn test_dropping_outcome_receiver_closes_stream() {
+            let mock = mock()
+                .with_set_power_statuses(vec![RequestStatus::Accepted])
+                .with_held_set_power_streams();
+            let open = mock.open_set_power_streams();
+
+            let accepted = set_100w(mock).await.unwrap();
+            wait_for_open_streams(&open, BTreeSet::from([6]), Duration::from_millis(10), 100).await;
+
+            drop(accepted.outcome);
+            wait_for_open_streams(&open, BTreeSet::new(), Duration::from_millis(10), 100).await;
+        }
+
+        #[tokio::test]
+        async fn test_dropping_call_before_first_response_closes_stream() {
+            let mock = mock()
+                .with_set_power_statuses(vec![])
+                .with_held_set_power_streams();
+            let open = mock.open_set_power_streams();
+            let (handle, _, _) = handle_on(mock);
+
+            let call = tokio::spawn(async move {
+                handle
+                    .set_electrical_component_power(6, Power::from_watts(100.0), None)
+                    .await
+            });
+            wait_for_open_streams(&open, BTreeSet::from([6]), Duration::from_millis(10), 100).await;
+
+            call.abort();
+            wait_for_open_streams(&open, BTreeSet::new(), Duration::from_millis(10), 100).await;
+        }
+
+        #[tokio::test]
+        async fn test_unanswered_call_does_not_block_the_client() {
+            let (handle, _, calls) = handle_on(mock().with_unanswered_set_power_calls());
+
+            let unanswered = tokio::spawn({
+                let handle = handle.clone();
+                async move {
+                    handle
+                        .set_electrical_component_power(6, Power::from_watts(100.0), None)
+                        .await
+                }
+            });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while calls.lock().unwrap().is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the set-power call should reach the mock");
+
+            let components = tokio::time::timeout(
+                Duration::from_secs(5),
+                handle.list_electrical_components(vec![6], vec![]),
+            )
+            .await
+            .expect("the client should answer while a set-power call waits");
+            assert_eq!(components.unwrap().len(), 1);
+            assert!(!unanswered.is_finished());
+            unanswered.abort();
+        }
+
+        #[tokio::test]
+        async fn test_call_dropped_before_the_client_handles_it_is_not_sent() {
+            let (handle, _, calls) = handle_on(mock());
+
+            for _ in 0..20 {
+                let call = handle.set_electrical_component_power(6, Power::from_watts(100.0), None);
+                let mut call = std::pin::pin!(call);
+                // Queue the instruction, then give up before the client handles
+                // it.
+                assert!(futures::poll!(call.as_mut()).is_pending());
+            }
+            // The client handles instructions in order, so once this call
+            // returns, it has handled the dropped ones.
+            handle
+                .set_electrical_component_power(7, Power::from_watts(100.0), None)
+                .await
+                .unwrap();
+
+            let ids: Vec<u64> = calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|request| request.electrical_component_id)
+                .collect();
+            assert_eq!(ids, vec![7]);
+        }
     }
 }

@@ -18,7 +18,10 @@ mod bounds;
 pub use bounds::Bounds;
 
 pub mod client;
-pub use client::MicrogridClientHandle;
+pub use client::{
+    MicrogridClientConfig, MicrogridClientHandle, SetPowerAccepted, SetPowerOutcome,
+    SetPowerOutcomeReceiver, SetPowerQuantity,
+};
 
 mod error;
 pub use error::{Error, ErrorKind};

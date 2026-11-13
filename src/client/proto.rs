@@ -22,3 +22,4 @@ pub use pb::google;
 
 mod electrical_component;
 mod graph;
+pub(crate) mod time;

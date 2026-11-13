@@ -8,6 +8,7 @@ use tokio::sync::{broadcast, oneshot};
 
 use crate::{
     Error,
+    client::SetPowerAccepted,
     client::proto::common::{
         metrics::{Bounds, Metric},
         microgrid::electrical_components::{
@@ -15,6 +16,7 @@ use crate::{
             ElectricalComponentTelemetry,
         },
     },
+    client::proto::microgrid::PowerType,
 };
 
 /// Instructions that can be sent to the client actor from client handles.
@@ -40,5 +42,14 @@ pub(super) enum Instruction {
         bounds: Vec<Bounds>,
         request_lifetime: Option<TimeDelta>,
         response_tx: oneshot::Sender<Result<Option<chrono::DateTime<chrono::Utc>>, Error>>,
+    },
+    SetElectricalComponentPower {
+        electrical_component_id: u64,
+        power_type: PowerType,
+        /// In W for active power, or VAr for reactive power, with the API's
+        /// sign convention.
+        power: f32,
+        request_lifetime: Option<TimeDelta>,
+        response_tx: oneshot::Sender<Result<SetPowerAccepted, Error>>,
     },
 }

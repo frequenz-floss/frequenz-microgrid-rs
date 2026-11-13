@@ -47,6 +47,13 @@ impl Microgrid {
     /// this call blocks until the server is reachable and returns valid data.
     /// Returns an error only if the URL is malformed or if the provided
     /// logical meter configuration is invalid.
+    ///
+    /// The client uses the default
+    /// [`MicrogridClientConfig`](crate::MicrogridClientConfig). For other
+    /// connection settings, create the client with
+    /// [`MicrogridClientHandle::try_new_with_config`], create a logical meter
+    /// on it with [`LogicalMeterHandle::try_new`], and pass both to
+    /// [`Self::new_from_handles`].
     pub async fn try_new(
         url: impl Into<String>,
         config: LogicalMeterConfig,

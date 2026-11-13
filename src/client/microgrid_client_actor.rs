@@ -10,11 +10,12 @@ use crate::client::{
     proto::microgrid::{
         ListElectricalComponentConnectionsRequest, ListElectricalComponentsRequest,
         ReceiveElectricalComponentTelemetryStreamRequest,
-        ReceiveElectricalComponentTelemetryStreamResponse,
+        ReceiveElectricalComponentTelemetryStreamResponse, SetElectricalComponentPowerRequest,
     },
+    proto::time,
     retry_tracker::RetryTracker,
+    set_power,
 };
-use chrono::DateTime;
 use futures::{Stream, StreamExt};
 use std::collections::HashMap;
 use tokio::{
@@ -56,10 +57,24 @@ impl<T: MicrogridApiClient> MicrogridClientActor<T> {
         let mut retry_timer = tokio::time::interval(std::time::Duration::from_secs(1));
         retry_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut components_to_retry = HashMap::new();
+        // Set once every handle is gone, so no instruction can come anymore.
+        let mut handles_dropped = false;
 
         loop {
+            // Without handles, the actor keeps running only the streams that
+            // still have receivers, and stops when none is left.
+            if handles_dropped && !has_receivers(&component_streams) {
+                tracing::debug!(
+                    "MicrogridClientActor: All handles and receivers dropped, exiting."
+                );
+                return;
+            }
             select! {
-                instruction = self.instructions_rx.recv() => {
+                instruction = self.instructions_rx.recv(), if !handles_dropped => {
+                    let Some(instruction) = instruction else {
+                        handles_dropped = true;
+                        continue;
+                    };
                     if let Err(e) = handle_instruction(
                         &mut self.client,
                         &mut component_streams,
@@ -102,10 +117,20 @@ impl<T: MicrogridApiClient> MicrogridClientActor<T> {
                         stream_status_tx.clone(),
                         now,
                     ).await;
+                    // A slow round could leave the next tick due already. Wait
+                    // a full period, so waiting instructions go first.
+                    retry_timer.reset();
                 }
             }
         }
     }
+}
+
+/// Returns whether any component stream still has a receiver.
+fn has_receivers(
+    component_streams: &HashMap<u64, broadcast::Sender<ElectricalComponentTelemetry>>,
+) -> bool {
+    component_streams.values().any(|tx| tx.receiver_count() > 0)
 }
 
 /// Handles the instructions received from the `MicrogridClientHandle` instances.
@@ -113,14 +138,14 @@ async fn handle_instruction<T: MicrogridApiClient>(
     client: &mut T,
     component_streams: &mut HashMap<u64, broadcast::Sender<ElectricalComponentTelemetry>>,
     components_to_retry: &mut HashMap<u64, RetryTracker>,
-    instruction: Option<Instruction>,
+    instruction: Instruction,
     stream_status_tx: mpsc::Sender<StreamStatus>,
 ) -> Result<(), Error> {
     match instruction {
-        Some(Instruction::ReceiveElectricalComponentTelemetryStream {
+        Instruction::ReceiveElectricalComponentTelemetryStream {
             electrical_component_id,
             response_tx,
-        }) => {
+        } => {
             // If a stream for the given component already exists, subscribe to
             // it and return.
             if let Some(stream) = component_streams.get(&electrical_component_id) {
@@ -149,11 +174,11 @@ async fn handle_instruction<T: MicrogridApiClient>(
                 Error::internal("failed to send response")
             })?;
         }
-        Some(Instruction::ListElectricalComponents {
+        Instruction::ListElectricalComponents {
             response_tx,
             electrical_component_ids,
             electrical_component_categories,
-        }) => {
+        } => {
             let components = client
                 .list_electrical_components(ListElectricalComponentsRequest {
                     electrical_component_ids,
@@ -163,48 +188,45 @@ async fn handle_instruction<T: MicrogridApiClient>(
                         .collect(),
                 })
                 .await
-                .map_err(|e| Error::connection_failure(format!("list_components failed: {e}")))
+                .map_err(|e| Error::api_server_error(format!("list_components failed: {e}")))
                 .map(|r| r.into_inner().electrical_components);
 
             response_tx
                 .send(components)
                 .map_err(|_| Error::internal("failed to send response"))?;
         }
-        Some(Instruction::ListElectricalComponentConnections {
+        Instruction::ListElectricalComponentConnections {
             response_tx,
             source_electrical_component_ids,
             destination_electrical_component_ids,
-        }) => {
+        } => {
             let connections = client
                 .list_electrical_component_connections(ListElectricalComponentConnectionsRequest {
                     source_electrical_component_ids,
                     destination_electrical_component_ids,
                 })
                 .await
-                .map_err(|e| Error::connection_failure(format!("list_connections failed: {e}")))
+                .map_err(|e| Error::api_server_error(format!("list_connections failed: {e}")))
                 .map(|r| r.into_inner().electrical_component_connections);
 
             response_tx
                 .send(connections)
                 .map_err(|_| Error::internal("failed to send response"))?;
         }
-        Some(Instruction::AugmentElectricalComponentBounds {
+        Instruction::AugmentElectricalComponentBounds {
             electrical_component_id,
             target_metric,
             bounds,
             request_lifetime,
             response_tx,
-        }) => {
+        } => {
             let response = client
                 .augment_electrical_component_bounds(
                     crate::client::proto::microgrid::AugmentElectricalComponentBoundsRequest {
                         electrical_component_id,
                         target_metric: target_metric as i32,
                         bounds,
-                        request_lifetime: request_lifetime.and_then(|d| {
-                            let secs = d.num_seconds();
-                            u64::try_from(secs).ok()
-                        }),
+                        request_lifetime: time::request_lifetime_secs(request_lifetime),
                     },
                 )
                 .await
@@ -214,8 +236,9 @@ async fn handle_instruction<T: MicrogridApiClient>(
                     ))
                 })
                 .map(|r| {
-                    r.into_inner().valid_until_time.and_then(|t| {
-                        match DateTime::from_timestamp(t.seconds, t.nanos as u32) {
+                    r.into_inner()
+                        .valid_until_time
+                        .and_then(|t| match time::timestamp_to_datetime(t) {
                             dt @ Some(_) => dt,
                             None => {
                                 tracing::error!(
@@ -227,15 +250,38 @@ async fn handle_instruction<T: MicrogridApiClient>(
                                 );
                                 None
                             }
-                        }
-                    })
+                        })
                 });
 
             response_tx
                 .send(response)
                 .map_err(|_| Error::internal("failed to send response"))?;
         }
-        None => {}
+        Instruction::SetElectricalComponentPower {
+            electrical_component_id,
+            power_type,
+            power,
+            request_lifetime,
+            response_tx,
+        } => {
+            // The caller has given up, so don't set the power.
+            if response_tx.is_closed() {
+                return Ok(());
+            }
+            tokio::spawn(
+                set_power::send_and_relay(
+                    client.clone(),
+                    SetElectricalComponentPowerRequest {
+                        electrical_component_id,
+                        power_type: power_type as i32,
+                        power,
+                        request_lifetime: time::request_lifetime_secs(request_lifetime),
+                    },
+                    response_tx,
+                )
+                .in_current_span(),
+            );
+        }
     }
 
     Ok(())
@@ -250,12 +296,15 @@ async fn handle_retry_timer<T: MicrogridApiClient>(
     stream_status_tx: mpsc::Sender<StreamStatus>,
     now: tokio::time::Instant,
 ) {
-    let due: Vec<u64> = components_to_retry
+    // Due longest first: a stream is due a fixed delay after its last failure,
+    // so streams that keep failing can't take every round from the others.
+    let mut due: Vec<(tokio::time::Instant, u64)> = components_to_retry
         .iter()
         .filter(|(_, tracker)| tracker.next_retry_time() <= now)
-        .map(|(component_id, _)| *component_id)
+        .map(|(component_id, tracker)| (tracker.next_retry_time(), *component_id))
         .collect();
-    for component_id in due {
+    due.sort_unstable();
+    for (_, component_id) in due {
         restart_or_forget(
             client,
             component_streams,
@@ -264,6 +313,14 @@ async fn handle_retry_timer<T: MicrogridApiClient>(
             stream_status_tx.clone(),
         )
         .await;
+        // The component stays in `components_to_retry` only if its stream
+        // didn't start. While the service can't be reached, each start can take
+        // about the connect timeout, and while it doesn't answer, up to the
+        // ping interval plus the ping timeout. So leave the other due streams
+        // for the next tick, and let the actor handle instructions in between.
+        if components_to_retry.contains_key(&component_id) {
+            break;
+        }
     }
 }
 
@@ -355,7 +412,7 @@ async fn start_electrical_component_telemetry_stream<T: MicrogridApiClient>(
 }
 
 /// Runs a component's telemetry stream, then reports to the actor why it
-/// stopped.
+/// stopped, unless the actor has stopped too.
 async fn run_electrical_component_telemetry_stream(
     stream: impl Stream<Item = Result<ReceiveElectricalComponentTelemetryStreamResponse, tonic::Status>>
     + Unpin,
@@ -367,8 +424,12 @@ async fn run_electrical_component_telemetry_stream(
     // task waits on the status channel. The server may limit open streams, and
     // the actor must not wait for a slot that this task holds.
     let status = forward_telemetry(stream, electrical_component_id, &tx).await;
-    if let Err(e) = stream_status_tx.send(status).await {
-        tracing::error!("Failed to send stream status for {electrical_component_id}: {e}");
+    if stream_status_tx.send(status).await.is_err() {
+        // The actor has stopped, normally because every client handle and
+        // receiver is gone.
+        tracing::debug!(
+            "Not reporting stream status for {electrical_component_id}: client stopped"
+        );
     }
 }
 
@@ -432,7 +493,7 @@ async fn forward_telemetry(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::{collections::BTreeSet, sync::Arc};
 
     use tokio::sync::broadcast;
 
@@ -524,6 +585,247 @@ mod tests {
             .unwrap();
         // The retries after the two failed starts are due at 3 s and 6 s.
         assert!(start.elapsed() >= std::time::Duration::from_secs(6));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_retry_round_defers_other_streams_after_a_failed_start() {
+        let api = MockMicrogridApiClient::new(MockComponent::grid(1).with_children(vec![
+            MockComponent::meter(2)
+                .with_power(vec![1.0; 10])
+                .with_failed_starts(10),
+            MockComponent::meter(3)
+                .with_power(vec![1.0; 10])
+                .with_failed_starts(10),
+        ]));
+        let attempts = api.telemetry_start_attempts();
+        let client = MicrogridClientHandle::new_from_client(api);
+        let _rx2 = client
+            .receive_electrical_component_telemetry_stream(2)
+            .await
+            .unwrap();
+        let _rx3 = client
+            .receive_electrical_component_telemetry_stream(3)
+            .await
+            .unwrap();
+        let total = || attempts.lock().unwrap().values().sum::<usize>();
+        assert_eq!(total(), 2);
+
+        // Both retries are due at 3 s, but the round stops at the first
+        // failure, and the other one waits for the next tick.
+        tokio::time::sleep(std::time::Duration::from_millis(3500)).await;
+        assert_eq!(total(), 3);
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        assert_eq!(total(), 4);
+    }
+
+    /// Returns a client whose service always rejects the streams of meters 10
+    /// to 21, with a receiver for each of them, and rejects the stream of meter
+    /// 2 once.
+    async fn rejected_streams_client() -> (
+        MicrogridClientHandle,
+        Vec<broadcast::Receiver<ElectricalComponentTelemetry>>,
+    ) {
+        let rejected = (10..22).map(|id| {
+            MockComponent::meter(id)
+                .with_power(vec![1.0; 10])
+                .with_failed_starts(usize::MAX)
+        });
+        let api = MockMicrogridApiClient::new(
+            MockComponent::grid(1).with_children(
+                rejected
+                    .chain([MockComponent::meter(2)
+                        .with_power(vec![1.0; 10])
+                        .with_failed_starts(1)])
+                    .collect(),
+            ),
+        );
+        let client = MicrogridClientHandle::new_from_client(api);
+        let mut receivers = Vec::new();
+        for id in 10..22 {
+            receivers.push(
+                client
+                    .receive_electrical_component_telemetry_stream(id)
+                    .await
+                    .unwrap(),
+            );
+        }
+        (client, receivers)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_retry_round_tries_the_longest_due_stream_first() {
+        // Twelve streams the service always rejects, more than the one failed
+        // start per tick can keep on schedule, and one that fails only once. A
+        // round may stop at the first failed start, but the stream that waited
+        // longest must still get its turn. Each client has its own retry map,
+        // so each run sees a new map order.
+        for _ in 0..10 {
+            let (client, _receivers) = rejected_streams_client().await;
+            let mut rx = client
+                .receive_electrical_component_telemetry_stream(2)
+                .await
+                .unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(60), rx.recv())
+                .await
+                .expect("the retry of meter 2 was starved")
+                .unwrap();
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_a_backlog_of_failing_streams_doesnt_starve_a_new_retry() {
+        // Twelve streams the service always rejects fall behind their retry
+        // schedule, because a round makes one failed start per tick. A stream
+        // that fails much later must still be retried soon after it is due.
+        let (client, _receivers) = rejected_streams_client().await;
+        tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+
+        let mut rx = client
+            .receive_electrical_component_telemetry_stream(2)
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
+            .await
+            .expect("the retry of meter 2 waited behind the backlog")
+            .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_instruction_is_handled_between_slow_failed_retries() {
+        // Three streams whose failed starts each take 10 s, like a connect
+        // timeout. After each round, a waiting subscription must go before the
+        // next round. The actor picks its next event at random, so 20 clients
+        // make a false pass unlikely.
+        for _ in 0..20 {
+            let slow = (10..13).map(|id| {
+                MockComponent::meter(id)
+                    .with_power(vec![1.0; 10])
+                    .with_failed_starts(usize::MAX)
+                    .with_failed_start_delay(std::time::Duration::from_secs(10))
+            });
+            let api = MockMicrogridApiClient::new(
+                MockComponent::grid(1).with_children(
+                    slow.chain([MockComponent::meter(2).with_power(vec![1.0; 10])])
+                        .collect(),
+                ),
+            );
+            let client = MicrogridClientHandle::new_from_client(api);
+            let mut receivers = Vec::new();
+            for id in 10..13 {
+                receivers.push(
+                    client
+                        .receive_electrical_component_telemetry_stream(id)
+                        .await
+                        .unwrap(),
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(60_500)).await;
+
+            let start = tokio::time::Instant::now();
+            let _rx = client
+                .receive_electrical_component_telemetry_stream(2)
+                .await
+                .unwrap();
+            let waited = start.elapsed();
+            assert!(
+                waited <= std::time::Duration::from_secs(10),
+                "the subscription waited {waited:?}, behind more than one round"
+            );
+        }
+    }
+
+    /// Waits up to `tries` × 10 ms for the actor that owns the mock behind
+    /// `shared` to stop, and returns whether it did.
+    ///
+    /// `shared` is part of the mock's shared state, such as
+    /// `set_power_calls_handle()`. The actor owns the mock, so that state loses
+    /// a holder when the actor stops.
+    async fn actor_stopped<T>(shared: &Arc<T>, tries: u32) -> bool {
+        for _ in 0..tries {
+            if Arc::strong_count(shared) == 1 {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    #[test]
+    fn test_actor_retries_streams_with_receivers_after_every_handle_is_dropped() {
+        // An actor that spins stalls paused time, so the test runs on its own
+        // thread, and this thread fails it after a real-time limit instead of
+        // hanging.
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let test = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .start_paused(true)
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let api = MockMicrogridApiClient::new(MockComponent::grid(1).with_children(vec![
+                    MockComponent::meter(2)
+                        .with_power(vec![1.0; 400])
+                        .with_failed_starts(1),
+                ]));
+                let calls = api.set_power_calls_handle();
+                let client = MicrogridClientHandle::new_from_client(api);
+                let mut rx = client
+                    .receive_electrical_component_telemetry_stream(2)
+                    .await
+                    .unwrap();
+
+                // The first start failed. The retry must still happen without a
+                // handle.
+                drop(client);
+                tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+                    .await
+                    .expect("the stream was not retried after the handle was dropped")
+                    .unwrap();
+
+                // Without the receiver, nothing is left to keep the actor
+                // running.
+                drop(rx);
+                assert!(
+                    actor_stopped(&calls, 200).await,
+                    "the actor kept running after every handle and receiver was dropped"
+                );
+            });
+            let _ = done_tx.send(());
+        });
+        match done_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                if let Err(panic) = test.join() {
+                    std::panic::resume_unwind(panic);
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!(
+                    "the test didn't finish within 10 s of real time: something, \
+                     such as a spinning actor, kept paused time from advancing"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_actor_stops_when_every_handle_is_dropped() {
+        let api = MockMicrogridApiClient::new(MockComponent::grid(1));
+        let calls = api.set_power_calls_handle();
+        let client = MicrogridClientHandle::new_from_client(api);
+        let other_client = client.clone();
+
+        drop(client);
+        assert!(
+            !actor_stopped(&calls, 5).await,
+            "the actor stopped while a handle was left"
+        );
+
+        drop(other_client);
+        assert!(
+            actor_stopped(&calls, 200).await,
+            "the actor kept running after every handle was dropped"
+        );
     }
 
     #[tokio::test(start_paused = true)]
