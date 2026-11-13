@@ -77,37 +77,41 @@ pub struct MockMicrogridApiClient {
     start_attempts: Arc<Mutex<HashMap<u64, usize>>>,
 }
 
-/// The component ids with a running telemetry-stream task.
+/// The component ids with an open stream that a mock tracks.
 ///
-/// Counts the tasks per component, so a reconnect that starts a new task before
-/// the previous one has ended keeps the id open.
+/// Each mock keeps one for its running telemetry-stream tasks, and one for the
+/// set-power response streams it holds open after
+/// `with_held_set_power_streams`.
+///
+/// Counts the streams per component, so a reconnect that starts a new stream
+/// before the previous one has ended keeps the id open.
 #[derive(Debug, Default)]
 pub struct OpenStreams {
-    task_counts: BTreeMap<u64, usize>,
+    stream_counts: BTreeMap<u64, usize>,
 }
 
 impl OpenStreams {
-    /// The ids with at least one running stream task.
+    /// The ids with at least one tracked stream.
     pub fn ids(&self) -> BTreeSet<u64> {
-        self.task_counts.keys().copied().collect()
+        self.stream_counts.keys().copied().collect()
     }
 
-    /// Whether `id` has a running stream task.
+    /// Whether `id` has a tracked stream.
     pub fn contains(&self, id: u64) -> bool {
-        self.task_counts.contains_key(&id)
+        self.stream_counts.contains_key(&id)
     }
 }
 
-/// Counts one stream task for a component while it is alive.
+/// Counts one tracked stream for a component while it is alive.
 struct OpenStreamGuard {
     streams: Arc<Mutex<OpenStreams>>,
     id: u64,
 }
 
 impl OpenStreamGuard {
-    /// Counts a new stream task for `id`; dropping the guard counts it down.
+    /// Counts a new tracked stream for `id`; dropping the guard counts it down.
     fn track(streams: &Arc<Mutex<OpenStreams>>, id: u64) -> Self {
-        *streams.lock().unwrap().task_counts.entry(id).or_insert(0) += 1;
+        *streams.lock().unwrap().stream_counts.entry(id).or_insert(0) += 1;
         Self {
             streams: streams.clone(),
             id,
@@ -118,11 +122,11 @@ impl OpenStreamGuard {
 impl Drop for OpenStreamGuard {
     fn drop(&mut self) {
         if let Ok(mut streams) = self.streams.lock()
-            && let Some(count) = streams.task_counts.get_mut(&self.id)
+            && let Some(count) = streams.stream_counts.get_mut(&self.id)
         {
             *count -= 1;
             if *count == 0 {
-                streams.task_counts.remove(&self.id);
+                streams.stream_counts.remove(&self.id);
             }
         }
     }
@@ -489,6 +493,51 @@ impl MockMicrogridApiClient {
         self
     }
 
+    /// Makes every set-power response stream send `responses`, in order. Each
+    /// is a raw status value, or a stream error.
+    ///
+    /// Replaces the statuses set by `with_set_power_statuses`, and the other
+    /// way round. Responses with an `ACCEPTED` or `SUCCESS` status carry the
+    /// same `valid_until_time` as with `with_set_power_statuses`.
+    #[cfg(test)]
+    pub(crate) fn with_set_power_responses(
+        mut self,
+        responses: Vec<Result<i32, tonic::Status>>,
+    ) -> Self {
+        self.set_power_responses = responses;
+        self
+    }
+
+    /// Makes every set-power call fail with `status`.
+    #[cfg(test)]
+    pub(crate) fn with_set_power_call_error(mut self, status: tonic::Status) -> Self {
+        self.set_power_call_error = Some(status);
+        self
+    }
+
+    /// Makes every set-power call record its request, then wait for ever
+    /// without returning a response stream.
+    #[cfg(test)]
+    pub(crate) fn with_unanswered_set_power_calls(mut self) -> Self {
+        self.leave_set_power_calls_unanswered = true;
+        self
+    }
+
+    /// Keeps set-power response streams open after their responses, until the
+    /// client drops them.
+    #[cfg(test)]
+    pub(crate) fn with_held_set_power_streams(mut self) -> Self {
+        self.hold_set_power_streams = true;
+        self
+    }
+
+    /// The component ids whose set-power response stream is held open by
+    /// `with_held_set_power_streams`.
+    #[cfg(test)]
+    pub(crate) fn open_set_power_streams(&self) -> Arc<Mutex<OpenStreams>> {
+        self.open_set_power_streams.clone()
+    }
+
     /// Return a handle to captured set-power requests.
     pub fn set_power_calls_handle(&self) -> Arc<Mutex<Vec<SetElectricalComponentPowerRequest>>> {
         self.set_power_calls.clone()
@@ -516,9 +565,9 @@ impl MockMicrogridApiClient {
     }
 }
 
-/// Polls `open` (from [`MockMicrogridApiClient::open_telemetry_streams`]) until
-/// its ids equal `expected`. Checks up to `attempts + 1` times, sleeping `step`
-/// between checks, then panics.
+/// Polls `open` (e.g. from [`MockMicrogridApiClient::open_telemetry_streams`])
+/// until its ids equal `expected`. Checks up to `attempts + 1` times, sleeping
+/// `step` between checks, then panics.
 pub async fn wait_for_open_streams(
     open: &Arc<Mutex<OpenStreams>>,
     expected: BTreeSet<u64>,
