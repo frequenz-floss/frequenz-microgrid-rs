@@ -564,6 +564,159 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn test_retry_round_defers_other_streams_after_a_failed_start() {
+        let api = MockMicrogridApiClient::new(MockComponent::grid(1).with_children(vec![
+            MockComponent::meter(2)
+                .with_power(vec![1.0; 10])
+                .with_failed_starts(10),
+            MockComponent::meter(3)
+                .with_power(vec![1.0; 10])
+                .with_failed_starts(10),
+        ]));
+        let attempts = api.telemetry_start_attempts();
+        let client = MicrogridClientHandle::new_from_client(api);
+        let _rx2 = client
+            .receive_electrical_component_telemetry_stream(2)
+            .await
+            .unwrap();
+        let _rx3 = client
+            .receive_electrical_component_telemetry_stream(3)
+            .await
+            .unwrap();
+        let total = || attempts.lock().unwrap().values().sum::<usize>();
+        assert_eq!(total(), 2);
+
+        // Both retries are due at 3 s, but the round stops at the first
+        // failure, and the other one waits for the next tick.
+        tokio::time::sleep(std::time::Duration::from_millis(3500)).await;
+        assert_eq!(total(), 3);
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        assert_eq!(total(), 4);
+    }
+
+    /// Returns a client whose service always rejects the streams of meters 10
+    /// to 21, with a receiver for each of them, and rejects the stream of meter
+    /// 2 once.
+    async fn rejected_streams_client() -> (
+        MicrogridClientHandle,
+        Vec<broadcast::Receiver<ElectricalComponentTelemetry>>,
+    ) {
+        let rejected = (10..22).map(|id| {
+            MockComponent::meter(id)
+                .with_power(vec![1.0; 10])
+                .with_failed_starts(usize::MAX)
+        });
+        let api = MockMicrogridApiClient::new(
+            MockComponent::grid(1).with_children(
+                rejected
+                    .chain([MockComponent::meter(2)
+                        .with_power(vec![1.0; 10])
+                        .with_failed_starts(1)])
+                    .collect(),
+            ),
+        );
+        let client = MicrogridClientHandle::new_from_client(api);
+        let mut receivers = Vec::new();
+        for id in 10..22 {
+            receivers.push(
+                client
+                    .receive_electrical_component_telemetry_stream(id)
+                    .await
+                    .unwrap(),
+            );
+        }
+        (client, receivers)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_retry_round_tries_the_longest_due_stream_first() {
+        // Twelve streams the service always rejects, more than the one failed
+        // start per tick can keep on schedule, and one that fails only once. A
+        // round may stop at the first failed start, but the stream that waited
+        // longest must still get its turn. Each client has its own retry map,
+        // so each run sees a new map order. The clients stay alive: the actor
+        // of a dropped client busy-loops, and that stalls paused time.
+        let mut alive = Vec::new();
+        for _ in 0..10 {
+            let (client, receivers) = rejected_streams_client().await;
+            let mut rx = client
+                .receive_electrical_component_telemetry_stream(2)
+                .await
+                .unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(60), rx.recv())
+                .await
+                .expect("the retry of meter 2 was starved")
+                .unwrap();
+            alive.push((client, receivers, rx));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_a_backlog_of_failing_streams_doesnt_starve_a_new_retry() {
+        // Twelve streams the service always rejects fall behind their retry
+        // schedule, because a round makes one failed start per tick. A stream
+        // that fails much later must still be retried soon after it is due.
+        let (client, _receivers) = rejected_streams_client().await;
+        tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+
+        let mut rx = client
+            .receive_electrical_component_telemetry_stream(2)
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
+            .await
+            .expect("the retry of meter 2 waited behind the backlog")
+            .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_instruction_is_handled_between_slow_failed_retries() {
+        // Three streams whose failed starts each take 10 s, like a connect
+        // timeout. After each round, a waiting subscription must go before the
+        // next round. The actor picks its next event at random, so 20 clients
+        // make a false pass unlikely. The clients stay alive: the actor of a
+        // dropped client busy-loops, and that stalls paused time.
+        let mut alive = Vec::new();
+        for _ in 0..20 {
+            let slow = (10..13).map(|id| {
+                MockComponent::meter(id)
+                    .with_power(vec![1.0; 10])
+                    .with_failed_starts(usize::MAX)
+                    .with_failed_start_delay(std::time::Duration::from_secs(10))
+            });
+            let api = MockMicrogridApiClient::new(
+                MockComponent::grid(1).with_children(
+                    slow.chain([MockComponent::meter(2).with_power(vec![1.0; 10])])
+                        .collect(),
+                ),
+            );
+            let client = MicrogridClientHandle::new_from_client(api);
+            let mut receivers = Vec::new();
+            for id in 10..13 {
+                receivers.push(
+                    client
+                        .receive_electrical_component_telemetry_stream(id)
+                        .await
+                        .unwrap(),
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(60_500)).await;
+
+            let start = tokio::time::Instant::now();
+            let rx = client
+                .receive_electrical_component_telemetry_stream(2)
+                .await
+                .unwrap();
+            let waited = start.elapsed();
+            assert!(
+                waited <= std::time::Duration::from_secs(10),
+                "the subscription waited {waited:?}, behind more than one round"
+            );
+            alive.push((client, receivers, rx));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn test_failed_stream_is_not_retried_without_receivers() {
         let api = MockMicrogridApiClient::new(MockComponent::grid(1).with_children(vec![
             MockComponent::meter(2)
