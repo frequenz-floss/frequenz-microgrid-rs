@@ -204,6 +204,10 @@ impl MicrogridClientHandle {
     ///
     /// Note that for power metrics, regardless of the bounds, 0W is always
     /// allowed.
+    ///
+    /// The bounds stay in effect for `request_lifetime`, rounded down to whole
+    /// seconds. The API allows between 5 seconds and 15 minutes, and a negative
+    /// lifetime is sent as 0 seconds. `None` uses the service's default.
     pub async fn augment_electrical_component_bounds<M, I>(
         &self,
         electrical_component_id: u64,
