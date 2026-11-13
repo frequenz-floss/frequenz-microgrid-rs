@@ -42,6 +42,7 @@ The logical meter now evaluates formulas once per resampling tick, against one s
 - `Formula<Q> * Percentage` scales a formula by a percentage.
 - `Formula<Q>` implements `Clone`, and `avg` accepts constants as well as formulas.
 - `test-utils`: `MockMicrogridApiClient::open_telemetry_streams()` reports which components have an open telemetry stream, and `wait_for_open_streams()` waits until that set matches an expected one, and panics if it still does not match after the given number of attempts. `MockComponent::with_failed_starts(count)` makes the first `count` attempts to start a component's telemetry stream fail.
+- `test-utils`: `MockMicrogridApiClient::with_set_power_statuses()` sets the statuses that each set-power response stream sends, `ACCEPTED` and then `SUCCESS` by default, and `set_power_calls_handle()` returns the set-power requests received. `MockMicrogridApiClient` now implements `Clone`.
 
 ## Bug Fixes
 

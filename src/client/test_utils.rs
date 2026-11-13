@@ -36,8 +36,10 @@ use crate::{
             ListElectricalComponentConnectionsRequest, ListElectricalComponentConnectionsResponse,
             ListElectricalComponentsRequest, ListElectricalComponentsResponse,
             ReceiveElectricalComponentTelemetryStreamRequest,
-            ReceiveElectricalComponentTelemetryStreamResponse,
+            ReceiveElectricalComponentTelemetryStreamResponse, SetElectricalComponentPowerRequest,
+            SetElectricalComponentPowerRequestStatus, SetElectricalComponentPowerResponse,
         },
+        time,
     },
     quantity::{Current, Frequency, Power, ReactivePower, Voltage},
 };
@@ -46,6 +48,7 @@ use crate::{
 ///
 /// This mock client allows setting predefined responses for each method,
 /// enabling controlled testing of components that depend on the microgrid API client.
+#[derive(Clone)]
 pub struct MockMicrogridApiClient {
     pub components: Vec<Arc<MockComponent>>,
     pub connections: Vec<ElectricalComponentConnection>,
@@ -55,6 +58,19 @@ pub struct MockMicrogridApiClient {
     /// [`MockMicrogridApiClient::new_with_clock`].
     clock: TokioSyncedClock,
     pub augment_bounds_calls: Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>>,
+    /// The set-power requests received, in order.
+    set_power_calls: Arc<Mutex<Vec<SetElectricalComponentPowerRequest>>>,
+    /// The status, or stream error, of each response that a set-power response
+    /// stream sends, in order.
+    set_power_responses: Vec<Result<i32, tonic::Status>>,
+    /// The error that set-power calls fail with, if any.
+    set_power_call_error: Option<tonic::Status>,
+    /// Whether set-power response streams stay open after their responses.
+    hold_set_power_streams: bool,
+    /// Whether set-power calls never return.
+    leave_set_power_calls_unanswered: bool,
+    /// The component ids with a held-open set-power response stream.
+    open_set_power_streams: Arc<Mutex<OpenStreams>>,
     /// Component ids with a running telemetry-stream task.
     open_streams: Arc<Mutex<OpenStreams>>,
     /// Attempts to start a telemetry stream, per component id.
@@ -418,6 +434,15 @@ impl MockMicrogridApiClient {
             connections: vec![],
             clock,
             augment_bounds_calls: Arc::new(Mutex::new(Vec::new())),
+            set_power_calls: Arc::default(),
+            set_power_responses: vec![
+                Ok(SetElectricalComponentPowerRequestStatus::Accepted as i32),
+                Ok(SetElectricalComponentPowerRequestStatus::Success as i32),
+            ],
+            set_power_call_error: None,
+            hold_set_power_streams: false,
+            leave_set_power_calls_unanswered: false,
+            open_set_power_streams: Arc::default(),
             open_streams: Arc::new(Mutex::new(OpenStreams::default())),
             start_attempts: Arc::default(),
         };
@@ -443,6 +468,30 @@ impl MockMicrogridApiClient {
         &self,
     ) -> Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>> {
         self.augment_bounds_calls.clone()
+    }
+
+    /// Makes every set-power response stream send `statuses`, in order, and
+    /// then end.
+    ///
+    /// By default, each stream sends `ACCEPTED` and then `SUCCESS`. An
+    /// `ACCEPTED` response carries a `valid_until_time` of the mock clock's
+    /// time plus the request lifetime, or 60 seconds if the request has none. A
+    /// `SUCCESS` response carries one second more, so tests can tell the two
+    /// apart.
+    pub fn with_set_power_statuses(
+        mut self,
+        statuses: Vec<SetElectricalComponentPowerRequestStatus>,
+    ) -> Self {
+        self.set_power_responses = statuses
+            .into_iter()
+            .map(|status| Ok(status as i32))
+            .collect();
+        self
+    }
+
+    /// Return a handle to captured set-power requests.
+    pub fn set_power_calls_handle(&self) -> Arc<Mutex<Vec<SetElectricalComponentPowerRequest>>> {
+        self.set_power_calls.clone()
     }
 
     /// The component ids whose telemetry stream is currently open.
@@ -721,6 +770,72 @@ impl MicrogridApiClient for MockMicrogridApiClient {
         Ok(Response::new(AugmentElectricalComponentBoundsResponse {
             valid_until_time: None,
         }))
+    }
+
+    type SetPowerStream = futures::stream::BoxStream<
+        'static,
+        std::result::Result<SetElectricalComponentPowerResponse, tonic::Status>,
+    >;
+
+    async fn set_electrical_component_power(
+        &mut self,
+        request: impl tonic::IntoRequest<SetElectricalComponentPowerRequest> + Send,
+    ) -> std::result::Result<tonic::Response<Self::SetPowerStream>, tonic::Status> {
+        use futures::StreamExt as _;
+
+        let req = request.into_request().into_inner();
+        let component_id = req.electrical_component_id;
+        let lifetime_secs = req.request_lifetime.unwrap_or(60);
+        self.set_power_calls.lock().unwrap().push(req);
+        if let Some(status) = &self.set_power_call_error {
+            return Err(status.clone());
+        }
+        if self.leave_set_power_calls_unanswered {
+            std::future::pending::<()>().await;
+        }
+
+        let valid_until = self.clock.wall_now() + chrono::TimeDelta::seconds(lifetime_secs as i64);
+        let responses = self
+            .set_power_responses
+            .iter()
+            .map(|response| {
+                response.clone().map(|status| {
+                    let valid_until_time =
+                        match SetElectricalComponentPowerRequestStatus::try_from(status) {
+                            Ok(SetElectricalComponentPowerRequestStatus::Accepted) => {
+                                Some(time::datetime_to_timestamp(valid_until))
+                            }
+                            Ok(SetElectricalComponentPowerRequestStatus::Success) => {
+                                Some(time::datetime_to_timestamp(
+                                    valid_until + chrono::TimeDelta::seconds(1),
+                                ))
+                            }
+                            Ok(
+                                SetElectricalComponentPowerRequestStatus::Unspecified
+                                | SetElectricalComponentPowerRequestStatus::Rejected
+                                | SetElectricalComponentPowerRequestStatus::Failed
+                                | SetElectricalComponentPowerRequestStatus::Overridden,
+                            )
+                            | Err(_) => None,
+                        };
+                    SetElectricalComponentPowerResponse {
+                        valid_until_time,
+                        status,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let stream = futures::stream::iter(responses);
+        if !self.hold_set_power_streams {
+            return Ok(Response::new(stream.boxed()));
+        }
+
+        let open = OpenStreamGuard::track(&self.open_set_power_streams, component_id);
+        let held_open = futures::stream::once(async move {
+            let _open = open;
+            std::future::pending().await
+        });
+        Ok(Response::new(stream.chain(held_open).boxed()))
     }
 }
 

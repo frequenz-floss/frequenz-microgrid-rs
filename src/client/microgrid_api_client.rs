@@ -13,7 +13,8 @@ use crate::client::proto::{
         ListElectricalComponentConnectionsRequest, ListElectricalComponentConnectionsResponse,
         ListElectricalComponentsRequest, ListElectricalComponentsResponse,
         ReceiveElectricalComponentTelemetryStreamRequest,
-        ReceiveElectricalComponentTelemetryStreamResponse,
+        ReceiveElectricalComponentTelemetryStreamResponse, SetElectricalComponentPowerRequest,
+        SetElectricalComponentPowerResponse,
     },
 };
 
@@ -21,7 +22,7 @@ use crate::client::proto::{
 ///
 /// Includes all the client methods that are used by the `MicrogridClientActor`.
 #[async_trait::async_trait]
-pub trait MicrogridApiClient: Send + Sync + 'static {
+pub trait MicrogridApiClient: Clone + Send + Sync + 'static {
     async fn list_electrical_components(
         &mut self,
         request: impl tonic::IntoRequest<ListElectricalComponentsRequest> + Send,
@@ -53,6 +54,17 @@ pub trait MicrogridApiClient: Send + Sync + 'static {
         &mut self,
         request: impl tonic::IntoRequest<AugmentElectricalComponentBoundsRequest> + Send,
     ) -> std::result::Result<tonic::Response<AugmentElectricalComponentBoundsResponse>, tonic::Status>;
+
+    type SetPowerStream: futures::Stream<
+            Item = std::result::Result<SetElectricalComponentPowerResponse, tonic::Status>,
+        > + Send
+        + Unpin
+        + 'static;
+
+    async fn set_electrical_component_power(
+        &mut self,
+        request: impl tonic::IntoRequest<SetElectricalComponentPowerRequest> + Send,
+    ) -> std::result::Result<tonic::Response<Self::SetPowerStream>, tonic::Status>;
 }
 
 /// Implement the MicrogridApiClient trait for the generated gRPC client.
@@ -94,5 +106,14 @@ impl MicrogridApiClient for proto::microgrid::microgrid_client::MicrogridClient<
     ) -> std::result::Result<tonic::Response<AugmentElectricalComponentBoundsResponse>, tonic::Status>
     {
         self.augment_electrical_component_bounds(request).await
+    }
+
+    type SetPowerStream = tonic::codec::Streaming<SetElectricalComponentPowerResponse>;
+
+    async fn set_electrical_component_power(
+        &mut self,
+        request: impl tonic::IntoRequest<SetElectricalComponentPowerRequest> + Send,
+    ) -> std::result::Result<tonic::Response<Self::SetPowerStream>, tonic::Status> {
+        self.set_electrical_component_power(request).await
     }
 }
