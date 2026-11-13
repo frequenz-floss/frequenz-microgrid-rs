@@ -164,7 +164,7 @@ async fn handle_instruction<T: MicrogridApiClient>(
                         .collect(),
                 })
                 .await
-                .map_err(|e| Error::connection_failure(format!("list_components failed: {e}")))
+                .map_err(|e| Error::api_server_error(format!("list_components failed: {e}")))
                 .map(|r| r.into_inner().electrical_components);
 
             response_tx
@@ -182,7 +182,7 @@ async fn handle_instruction<T: MicrogridApiClient>(
                     destination_electrical_component_ids,
                 })
                 .await
-                .map_err(|e| Error::connection_failure(format!("list_connections failed: {e}")))
+                .map_err(|e| Error::api_server_error(format!("list_connections failed: {e}")))
                 .map(|r| r.into_inner().electrical_component_connections);
 
             response_tx

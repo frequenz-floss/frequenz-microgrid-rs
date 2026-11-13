@@ -58,6 +58,8 @@ pub struct MockMicrogridApiClient {
     /// [`MockMicrogridApiClient::new_with_clock`].
     clock: TokioSyncedClock,
     pub augment_bounds_calls: Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>>,
+    /// The error that the list calls fail with, if any.
+    list_call_error: Option<tonic::Status>,
     /// The set-power requests received, in order.
     set_power_calls: Arc<Mutex<Vec<SetElectricalComponentPowerRequest>>>,
     /// The status, or stream error, of each response that a set-power response
@@ -438,6 +440,7 @@ impl MockMicrogridApiClient {
             connections: vec![],
             clock,
             augment_bounds_calls: Arc::new(Mutex::new(Vec::new())),
+            list_call_error: None,
             set_power_calls: Arc::default(),
             set_power_responses: vec![
                 Ok(SetElectricalComponentPowerRequestStatus::Accepted as i32),
@@ -472,6 +475,13 @@ impl MockMicrogridApiClient {
         &self,
     ) -> Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>> {
         self.augment_bounds_calls.clone()
+    }
+
+    /// Makes the calls that list components and connections fail with `status`.
+    #[cfg(test)]
+    pub(crate) fn with_list_call_error(mut self, status: tonic::Status) -> Self {
+        self.list_call_error = Some(status);
+        self
     }
 
     /// Makes every set-power response stream send `statuses`, in order, and
@@ -591,6 +601,9 @@ impl MicrogridApiClient for MockMicrogridApiClient {
         &mut self,
         _request: impl tonic::IntoRequest<ListElectricalComponentsRequest> + Send,
     ) -> std::result::Result<tonic::Response<ListElectricalComponentsResponse>, tonic::Status> {
+        if let Some(status) = &self.list_call_error {
+            return Err(status.clone());
+        }
         let ListElectricalComponentsRequest {
             electrical_component_ids,
             electrical_component_categories,
@@ -617,6 +630,9 @@ impl MicrogridApiClient for MockMicrogridApiClient {
         tonic::Response<ListElectricalComponentConnectionsResponse>,
         tonic::Status,
     > {
+        if let Some(status) = &self.list_call_error {
+            return Err(status.clone());
+        }
         Ok(Response::new(ListElectricalComponentConnectionsResponse {
             electrical_component_connections: self.connections.clone(),
         }))

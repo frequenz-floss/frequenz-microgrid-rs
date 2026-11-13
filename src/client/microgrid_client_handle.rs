@@ -109,6 +109,9 @@ impl MicrogridClientHandle {
     /// `ComponentCategory::COMPONENT_CATEGORY_BATTERY`.
     ///
     /// If a filter list is empty, then that filter is not applied.
+    ///
+    /// A failed call to the service returns an
+    /// [`ErrorKind::APIServerError`](crate::ErrorKind::APIServerError).
     pub async fn list_electrical_components(
         &self,
         electrical_component_ids: Vec<u64>,
@@ -147,6 +150,9 @@ impl MicrogridClientHandle {
     /// * each `start` component ID is either `1`, `2`, OR `3`,
     ///   AND
     /// * each `end` component ID is either `4`, `5`, OR `6`.
+    ///
+    /// A failed call to the service returns an
+    /// [`ErrorKind::APIServerError`](crate::ErrorKind::APIServerError).
     pub async fn list_electrical_component_connections(
         &self,
         source_electrical_component_ids: Vec<u64>,
@@ -307,7 +313,7 @@ mod tests {
     use tokio::time::Instant;
 
     use crate::{
-        MicrogridClientHandle,
+        ErrorKind, MicrogridClientHandle,
         client::proto::common::{
             metrics::{SimpleMetricValue, metric_value_variant},
             microgrid::electrical_components::ElectricalComponentCategory,
@@ -391,6 +397,25 @@ mod tests {
             .unwrap();
         let component_ids: Vec<u64> = components.iter().map(|c| c.id).collect();
         assert_eq!(component_ids, vec![2, 3]);
+    }
+
+    #[tokio::test]
+    async fn test_failed_list_calls_are_api_server_errors() {
+        for status in [
+            tonic::Status::unavailable("down"),
+            tonic::Status::invalid_argument("bad"),
+        ] {
+            let handle = MicrogridClientHandle::new_from_client(
+                MockMicrogridApiClient::new(MockComponent::grid(1)).with_list_call_error(status),
+            );
+
+            let components = handle.list_electrical_components(vec![], vec![]).await;
+            assert_eq!(components.unwrap_err().kind(), ErrorKind::APIServerError);
+            let connections = handle
+                .list_electrical_component_connections(vec![], vec![])
+                .await;
+            assert_eq!(connections.unwrap_err().kind(), ErrorKind::APIServerError);
+        }
     }
 
     #[tokio::test]
