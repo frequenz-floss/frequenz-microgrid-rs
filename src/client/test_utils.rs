@@ -58,6 +58,8 @@ pub struct MockMicrogridApiClient {
     /// [`MockMicrogridApiClient::new_with_clock`].
     clock: TokioSyncedClock,
     pub augment_bounds_calls: Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>>,
+    /// The error that the list calls fail with, if any.
+    list_call_error: Option<tonic::Status>,
     /// The set-power requests received, in order.
     set_power_calls: Arc<Mutex<Vec<SetElectricalComponentPowerRequest>>>,
     /// The status, or stream error, of each response that a set-power response
@@ -161,6 +163,9 @@ pub struct MockComponent {
     /// How many attempts to start the telemetry stream fail before one
     /// succeeds. Set via [`MockComponent::with_failed_starts`].
     failed_starts: usize,
+    /// How long each failed start takes. Set via
+    /// [`MockComponent::with_failed_start_delay`].
+    failed_start_delay: std::time::Duration,
     /// Bounds attached to every streamed `AcPowerActive` sample. Set via
     /// [`MockComponent::add_sample_power_bounds`]; empty by default.
     sample_power_bounds: Vec<Bounds>,
@@ -401,6 +406,14 @@ impl MockComponent {
         self.failed_starts = count;
         self
     }
+
+    /// Makes each failed start of the telemetry stream take `delay`, like a
+    /// connect attempt that times out.
+    #[cfg(test)]
+    pub(crate) fn with_failed_start_delay(mut self, delay: std::time::Duration) -> Self {
+        self.failed_start_delay = delay;
+        self
+    }
 }
 
 impl MockMicrogridApiClient {
@@ -438,6 +451,7 @@ impl MockMicrogridApiClient {
             connections: vec![],
             clock,
             augment_bounds_calls: Arc::new(Mutex::new(Vec::new())),
+            list_call_error: None,
             set_power_calls: Arc::default(),
             set_power_responses: vec![
                 Ok(SetElectricalComponentPowerRequestStatus::Accepted as i32),
@@ -472,6 +486,13 @@ impl MockMicrogridApiClient {
         &self,
     ) -> Arc<Mutex<Vec<AugmentElectricalComponentBoundsRequest>>> {
         self.augment_bounds_calls.clone()
+    }
+
+    /// Makes the calls that list components and connections fail with `status`.
+    #[cfg(test)]
+    pub(crate) fn with_list_call_error(mut self, status: tonic::Status) -> Self {
+        self.list_call_error = Some(status);
+        self
     }
 
     /// Makes every set-power response stream send `statuses`, in order, and
@@ -593,6 +614,9 @@ impl MicrogridApiClient for MockMicrogridApiClient {
         &mut self,
         _request: impl tonic::IntoRequest<ListElectricalComponentsRequest> + Send,
     ) -> std::result::Result<tonic::Response<ListElectricalComponentsResponse>, tonic::Status> {
+        if let Some(status) = &self.list_call_error {
+            return Err(status.clone());
+        }
         let ListElectricalComponentsRequest {
             electrical_component_ids,
             electrical_component_categories,
@@ -619,6 +643,9 @@ impl MicrogridApiClient for MockMicrogridApiClient {
         tonic::Response<ListElectricalComponentConnectionsResponse>,
         tonic::Status,
     > {
+        if let Some(status) = &self.list_call_error {
+            return Err(status.clone());
+        }
         Ok(Response::new(ListElectricalComponentConnectionsResponse {
             electrical_component_connections: self.connections.clone(),
         }))
@@ -649,6 +676,10 @@ impl MicrogridApiClient for MockMicrogridApiClient {
             *attempts
         };
         if attempts <= failed_starts {
+            let delay = component
+                .as_ref()
+                .map_or(std::time::Duration::ZERO, |c| c.failed_start_delay);
+            tokio::time::sleep(delay).await;
             return Err(tonic::Status::unavailable(format!(
                 "telemetry stream for {comp_id} failed to start"
             )));

@@ -25,7 +25,7 @@ use crate::{
 };
 
 use super::{
-    SetPowerAccepted, SetPowerQuantity, instruction::Instruction,
+    MicrogridClientConfig, SetPowerAccepted, SetPowerQuantity, instruction::Instruction,
     microgrid_client_actor::MicrogridClientActor,
 };
 
@@ -40,7 +40,7 @@ pub struct MicrogridClientHandle {
 
 impl MicrogridClientHandle {
     /// Creates a new `MicrogridClientHandle` for the microgrid API at the
-    /// specified URL.
+    /// specified URL, with the default [`MicrogridClientConfig`].
     ///
     /// The connection is established lazily on the first RPC, so this method
     /// succeeds even when no server is reachable yet.  Per-call errors will
@@ -50,12 +50,24 @@ impl MicrogridClientHandle {
     ///
     /// Returns an error only if `url` is not a valid endpoint URL.
     pub async fn try_new(url: impl Into<String>) -> Result<Self, Error> {
+        Self::try_new_with_config(url, MicrogridClientConfig::default()).await
+    }
+
+    /// Creates a new `MicrogridClientHandle` for the microgrid API at the
+    /// specified URL, with the given connection settings.
+    ///
+    /// Returns an `ErrorKind::InvalidConfig` error if a duration in `config` is
+    /// zero. Behaves like [`Self::try_new`] otherwise.
+    pub async fn try_new_with_config(
+        url: impl Into<String>,
+        config: MicrogridClientConfig,
+    ) -> Result<Self, Error> {
+        config.validate()?;
         let url = url.into();
-        let channel = Endpoint::from_shared(url.clone())
-            .map_err(|e| {
-                Error::connection_failure(format!("Invalid microgrid API URL {url}: {e}"))
-            })?
-            .connect_lazy();
+        let endpoint = Endpoint::from_shared(url.clone()).map_err(|e| {
+            Error::connection_failure(format!("Invalid microgrid API URL {url}: {e}"))
+        })?;
+        let channel = config.apply_to(endpoint).connect_lazy();
         Ok(Self::new_from_client(MicrogridClient::<Channel>::new(
             channel,
         )))
@@ -109,6 +121,9 @@ impl MicrogridClientHandle {
     /// `ComponentCategory::COMPONENT_CATEGORY_BATTERY`.
     ///
     /// If a filter list is empty, then that filter is not applied.
+    ///
+    /// A failed call to the service returns an
+    /// [`ErrorKind::APIServerError`](crate::ErrorKind::APIServerError).
     pub async fn list_electrical_components(
         &self,
         electrical_component_ids: Vec<u64>,
@@ -147,6 +162,9 @@ impl MicrogridClientHandle {
     /// * each `start` component ID is either `1`, `2`, OR `3`,
     ///   AND
     /// * each `end` component ID is either `4`, `5`, OR `6`.
+    ///
+    /// A failed call to the service returns an
+    /// [`ErrorKind::APIServerError`](crate::ErrorKind::APIServerError).
     pub async fn list_electrical_component_connections(
         &self,
         source_electrical_component_ids: Vec<u64>,
@@ -315,7 +333,7 @@ mod tests {
     use tokio::time::Instant;
 
     use crate::{
-        MicrogridClientHandle,
+        ErrorKind, MicrogridClientHandle,
         client::proto::common::{
             metrics::{SimpleMetricValue, metric_value_variant},
             microgrid::electrical_components::ElectricalComponentCategory,
@@ -399,6 +417,35 @@ mod tests {
             .unwrap();
         let component_ids: Vec<u64> = components.iter().map(|c| c.id).collect();
         assert_eq!(component_ids, vec![2, 3]);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_url_is_a_connection_failure() {
+        let result = MicrogridClientHandle::try_new("not a url").await;
+
+        assert_eq!(
+            result.err().map(|e| e.kind()),
+            Some(ErrorKind::ConnectionFailure)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_failed_list_calls_are_api_server_errors() {
+        for status in [
+            tonic::Status::unavailable("down"),
+            tonic::Status::invalid_argument("bad"),
+        ] {
+            let handle = MicrogridClientHandle::new_from_client(
+                MockMicrogridApiClient::new(MockComponent::grid(1)).with_list_call_error(status),
+            );
+
+            let components = handle.list_electrical_components(vec![], vec![]).await;
+            assert_eq!(components.unwrap_err().kind(), ErrorKind::APIServerError);
+            let connections = handle
+                .list_electrical_component_connections(vec![], vec![])
+                .await;
+            assert_eq!(connections.unwrap_err().kind(), ErrorKind::APIServerError);
+        }
     }
 
     #[tokio::test]
